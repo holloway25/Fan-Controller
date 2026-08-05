@@ -29,8 +29,11 @@ reading has not yet crossed its off threshold.
 The UI polls `/api/state` every 5 seconds. If the server log shows `GET /`
 with no follow-up requests, the JavaScript died on load. Errors are posted
 to `/api/clienterror` and appear in the log and activity feed. Check the
-browser console too. Confirm the URL is `http://`, not `https://` - the
-service does not serve TLS and a forced upgrade fails with HTTP 400.
+browser console too. Check the scheme against how you reached the page.
+Through the reverse proxy HTTPS is required: TLS terminates at nginx,
+force-ssl redirects plain HTTP, and HSTS makes the browser refuse it.
+Reaching the service directly on `http://<host>:8096` is plain HTTP only -
+it serves no TLS and a forced upgrade there fails with HTTP 400.
 
 ## Settings appear not to save
 

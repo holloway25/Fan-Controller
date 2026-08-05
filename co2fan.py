@@ -11,6 +11,7 @@ import atexit, copy, hashlib, hmac, json, math, os, signal, sys
 import threading, time
 import requests, urllib3
 from flask import Flask, Response, jsonify, request, render_template
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -790,6 +791,12 @@ def loop():
 
 
 app = Flask(__name__)
+
+# One reverse proxy fronts this service, so the peer address is always
+# the proxy and every request logged as the same client. Trust a single
+# hop of X-Forwarded-For / -Proto / -Host to recover the real client.
+# One hop only: trusting more lets a client forge the chain.
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 
 
 def _safe_cfg():
