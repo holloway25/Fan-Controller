@@ -29,13 +29,23 @@ account without two-factor - a UI Cloud login will not authenticate against
 the private API, and a 2FA account returns HTTP 499, which the service
 reports explicitly. `sensor_id` is chosen in the UI via Find sensors.
 
-## hue
+## plug
 
-`bridge` is the bridge IP. `key` is created by pressing the round button on
-the bridge and clicking Pair - it is an application key, not a password.
-`lights` is a list of light IDs; Hue smart plugs appear as lights.
+`host` is the Tasmota device running the fan. `user` is its web username
+(usually `admin`) and `password` its web admin password; leave the
+password blank if none is set.
 
-The client prefers the CLIP v2 API and falls back to v1 automatically.
+Tasmota accepts credentials only as query parameters on `/cm`, so they
+travel in the URL. This service never logs request URLs, but it is a
+limitation of the device rather than a choice.
+
+The HTTP command API must be enabled on the plug. If `/cm` returns an
+empty reply while the web UI still works, it is disabled - the service
+reports this explicitly.
+
+Switching is confirmed from the plug's own reply, and its CSE7766 power
+reading is polled alongside CO2, so a relay that closed without the fan
+drawing current is visible rather than silent.
 
 ## Choosing thresholds
 
@@ -56,8 +66,8 @@ While it is empty there is no authentication at all. Setting it protects
 everything that changes state or exposes internals, while leaving the
 dashboard readable without credentials, so a wall display needs no login.
 
-Open without a password: `GET /`, `GET /api/state`, `GET /api/hue/lights`
-and `POST /api/clienterror`. Everything else requires it, including
+Open without a password: `GET /`, `GET /api/state` and
+`POST /api/clienterror`. Everything else requires it, including
 `/api/debug/sensor`, which returns the raw Protect payload.
 
 Browsers do not reliably raise the Basic auth dialog for a fetch, so the

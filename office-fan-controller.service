@@ -1,5 +1,5 @@
 [Unit]
-Description=Office Fan Controller (CO2-driven Hue fan control)
+Description=Office Fan Controller (CO2-driven fan control)
 Documentation=https://github.com/holloway25/Fan-Controller
 After=network-online.target
 Wants=network-online.target

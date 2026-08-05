@@ -1,7 +1,7 @@
 # Office Fan Controller
 
-Reads CO2 from a UniFi Protect UP-AirQuality sensor and switches Hue
-lights/plugs with hysteresis. Web UI on port 8096.
+Reads CO2 from a UniFi Protect UP-AirQuality sensor and switches a
+Tasmota smart plug with hysteresis. Web UI on port 8096.
 
     ~/co2fan/run.sh          # start (idempotent, safe from cron)
     pkill -f '[c]o2fan.py'   # stop
@@ -14,8 +14,9 @@ lights/plugs with hysteresis. Web UI on port 8096.
 2. Open http://<server>:8096 and fill in the sensor card, then
    **Find sensors**. Each sensor is listed with its CO2 reading, or
    "no CO2 field" if Protect is not publishing one.
-3. Press the round button on the Hue bridge, then **Pair bridge**.
-   Tick the light or plug driving the fan and save.
+3. Open **Fan plug**, enter the plug's address and web password,
+   then **Test plug**. It reports relay state and current draw.
+   The plug's HTTP command API must be enabled.
 4. Set thresholds and tick **Run the control loop**.
 
 ## How it switches

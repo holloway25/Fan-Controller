@@ -5,10 +5,10 @@
     "password": "",
     "sensor_id": ""
   },
-  "hue": {
-    "bridge": "192.168.1.2",
-    "key": "",
-    "lights": []
+  "plug": {
+    "host": "192.168.1.10",
+    "user": "admin",
+    "password": ""
   },
   "control": {
     "mode": "manual",

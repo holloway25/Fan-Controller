@@ -165,7 +165,7 @@ def load_cfg():
 
 def save_cfg(cfg):
     tmp = CFG_PATH + ".tmp"
-    # Created 0600 up front: the temp file holds the UniFi password and Hue
+    # Created 0600 up front: the temp file holds the UniFi and plug
     # key, and chmod after the rename left a window at the process umask.
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
@@ -417,7 +417,7 @@ class Tasmota:
     """Athom/Tasmota plug over the HTTP command API.
 
     Credentials go in the query string because /cm accepts no other form;
-    the URL is never logged. Single relay, so unlike the previous Hue
+    the URL is never logged. Single relay, so unlike the previous Hue plug
     client there is no multi-output split state to reconcile.
     """
 
@@ -459,8 +459,12 @@ class Tasmota:
         return None
 
     def state(self):
-        """True/False, or None if the reply carries no power field."""
-        return self._power(self._cmd("Power"))
+        """True or False. Raises if the plug reports no power field, so an
+        unknown state is never mistaken for off."""
+        v = self._power(self._cmd("Power"))
+        if v is None:
+            raise PlugError("Plug reported no power state")
+        return v
 
     def set(self, on):
         """Switch, and confirm from the same reply so a rejected command
@@ -582,7 +586,7 @@ def _fan_status(plug):
     """What the plug says it is doing, or None if unreadable.
 
     Single relay, so there is no multi-output split to reconcile as there
-    was with the Hue client.
+    was with the previous multi-output client.
     """
     try:
         return plug.state()
@@ -590,9 +594,36 @@ def _fan_status(plug):
         return None
 
 
+def _manual_off(plug):
+    """The one-time switch-off on entering manual mode.
+
+    Runs before the sensor read, so a Protect outage cannot block a manual
+    command, and the flag is cleared only once the plug has confirmed the
+    switch - otherwise a failed call silently dropped the request forever.
+    """
+    with _state_lock:
+        pending = STATE.get("manual_off_pending")
+    if not pending:
+        return
+    try:
+        already_off = plug.state() is False
+    except PlugError:
+        already_off = False          # unknown: switch anyway
+    if not already_off:
+        plug.set(False)              # raises: flag stays set, retried
+    with _state_lock:
+        STATE["manual_off_pending"] = False
+        STATE["fan"] = False
+        STATE["changed_at"] = time.time()
+    if not already_off:
+        _log("Manual mode - switched off, now hands off")
+
 def tick():
     p, h = _clients()
     c = CFG["control"]
+    # Before the sensor read: a manual stop must not depend on Protect.
+    if c["mode"] == "manual":
+        _manual_off(h)
     sid = CFG["protect"]["sensor_id"]
     if not sid:
         raise ProtectError("No air-quality sensor selected yet")
@@ -636,15 +667,6 @@ def tick():
         _log(ext_msg)
     ran_for = (now - changed) if changed else None
     if c["mode"] == "manual":
-        with _state_lock:
-            pending = STATE.get("manual_off_pending")
-            STATE["manual_off_pending"] = False
-        if pending and fan_on:
-            h.set(False)
-            with _state_lock:
-                STATE["fan"] = False
-                STATE["changed_at"] = now
-            _log("Manual mode - switched off, now hands off")
         return
     want, why = decide(co2, vals.get('temperature'), fan_on, c, ran_for,
                        STATE["latch"])
@@ -669,15 +691,19 @@ def _failsafe():
         return
     with _state_lock:
         last = STATE["reading_at"]
-        already = STATE["fan"]
     # "Never read anything" is measured from startup, not treated as fresh:
     # otherwise a service that never got a first reading stayed passive.
     since = last if last is not None else START_TIME
     if time.time() - since < mins * 60:
         return
-    if already:
-        return
+    # Ask the plug rather than trusting cached state: it may have rebooted
+    # off, or been switched off while Protect was unreachable.
     _, h = _clients()
+    try:
+        if h.state() is True:
+            return
+    except PlugError:
+        pass                         # unreadable: assert ON anyway
     h.set(True)
     with _state_lock:
         STATE["fan"] = True
@@ -915,7 +941,7 @@ def api_config():
     now_mode = CFG["control"].get("mode")
     if now_mode == "manual" and was != "manual":
         # Entering manual switches the fan off once, then hands control to
-        # the Hue app or Google Home without further interference.
+        # the plug's own controls or Google Home without interference.
         with _state_lock:
             STATE["manual_off_pending"] = True
     if was == "on" and now_mode != "on":

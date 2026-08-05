@@ -4,8 +4,8 @@ A single Flask process on the dashboard server. One background thread polls
 the sensor and switches the fan; the Flask routes serve the UI and settings.
 
 ```
-UniFi Protect  --HTTPS-->  Fan Controller  --HTTPS-->  Hue bridge
-(UP-AirQuality)            (poll, decide)             (light / plug)
+UniFi Protect  --HTTPS-->  Fan Controller  --HTTP-->   Tasmota plug
+(UP-AirQuality)            (poll, decide)            (relay + power)
 ```
 
 ## Why the private Protect API
@@ -36,7 +36,7 @@ The search is scoped to `airQuality` so sibling config blocks such as
 
 ## Session reuse
 
-Protect and Hue clients are cached and rebuilt only when the relevant
+Protect and plug clients are cached and rebuilt only when the relevant
 settings change. An earlier version constructed a new client per poll,
 which meant a fresh `/api/auth/login` every 30 seconds and eventually
 HTTP 429 rate limiting from UniFi. The 401 retry path handles genuine
@@ -54,6 +54,6 @@ session expiry.
   most recent 60 returned to the UI each poll. Not in git.
 - In-memory only - latch state and current fan state.
 
-Fan state is re-read from the Hue bridge every poll rather than trusted
-from memory, so switching the light in the Hue app or Google Home is
+Fan state is re-read from the plug every poll rather than trusted
+from memory, so switching it from Google Home or the plug itself is
 noticed and does not desynchronise the controller.

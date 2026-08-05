@@ -8,7 +8,7 @@
 | Manual | Switches the fan off once, then leaves it alone |
 | Force on | Holds the fan on regardless of readings |
 
-Manual hands control to Google Home or the Hue app. Entering it switches
+Manual hands control back to Google Home or the plug itself. Entering it switches
 the fan off once so it is not left running, and after that nothing is
 touched - external switching is recorded but never undone.
 
