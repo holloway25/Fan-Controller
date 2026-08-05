@@ -299,7 +299,8 @@ STATE = {
     "latch": {"co2": False, "temp": False},
     "history": [], "events": [],
 }
-_state_lock = threading.Lock()
+# RLock, not Lock: nested acquisition deadlocked the poll thread.
+_state_lock = threading.RLock()
 _wake = threading.Event()  # set to make the poll loop act at once
 CFG = load_cfg()
 STATE["history"] = load_hist()
@@ -380,13 +381,26 @@ def decide(co2, temp, fan_on, c, ran_for, latch):
 
 
 def _actual_fan(h, ids):
-    """Ask the bridge what the fan is really doing. None if unknown."""
+    """What the bridge says the selected outputs are doing.
+
+    True only if every selected output is on, False if every one is off,
+    None if they disagree or are unknown. A split state must not read as
+    "already correct", or a partial switching failure is never repaired.
+    """
     if not ids:
         return None
     try:
-        return {l["id"]: l["on"] for l in h.lights()}.get(ids[0])
+        state = {l["id"]: l["on"] for l in h.lights()}
     except HueError:
         return None
+    vals = [state.get(i) for i in ids]
+    if any(v is None for v in vals):
+        return None
+    if all(vals):
+        return True
+    if not any(vals):
+        return False
+    return None
 
 
 def tick():
@@ -400,6 +414,7 @@ def tick():
     now = time.time()
     ids = CFG["hue"]["lights"]
     actual = _actual_fan(h, ids)
+    ext_msg = None
     with _state_lock:
         STATE.update(co2=co2, co2_path=path, reading_at=now, error=None,
                      temperature=vals.get('temperature'),
@@ -421,11 +436,13 @@ def tick():
                 # clock; the first reading after startup must not grant a
                 # fresh lease to a fan that was already running.
                 STATE["changed_at"] = now
-                _log("Fan switched to %s outside this service"
-                     % ("on" if actual else "off"))
+                ext_msg = ("Fan switched to %s outside this service"
+                           % ("on" if actual else "off"))
         fan_on = STATE["fan"]
         changed = STATE["changed_at"]
     save_hist(hsnap)
+    if ext_msg:
+        _log(ext_msg)
     ran_for = (now - changed) if changed else None
     want, why = decide(co2, vals.get('temperature'), fan_on, c, ran_for,
                        STATE["latch"])
@@ -444,7 +461,11 @@ def tick():
 def loop():
     fails = 0
     while True:
-        base = max(5, int(CFG["control"].get("poll_seconds", 30)))
+        try:
+            # Inside the try: a bad value here used to kill the thread.
+            base = max(5, min(3600, int(float(CFG["control"]["poll_seconds"]))))
+        except (TypeError, ValueError, KeyError):
+            base = 30
         try:
             tick()
             fails = 0

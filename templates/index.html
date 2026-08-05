@@ -327,10 +327,19 @@ function render(s){
   $("pm").textContent=s.pm25==null?"-- pm2.5":s.pm25.toFixed(1)+" pm2.5";
   document.querySelectorAll("#mode button").forEach(b=>
     b.classList.toggle("sel",b.dataset.mode===c.mode));
-  $("log").innerHTML=(s.events&&s.events.length)
-    ? s.events.map(e=>"<div><span>"+new Date(e.at*1000)
-        .toLocaleTimeString()+"</span>"+e.msg+"</div>").join("")
-    : "Nothing yet.";
+  // Built as DOM nodes with textContent: event text can originate from
+  // /api/clienterror, so interpolating it into innerHTML was a stored XSS.
+  const logEl=$("log");
+  logEl.textContent="";
+  if(s.events&&s.events.length){
+    s.events.forEach(e=>{
+      const row=document.createElement("div");
+      const when=document.createElement("span");
+      when.textContent=new Date(e.at*1000).toLocaleTimeString();
+      row.appendChild(when);
+      row.appendChild(document.createTextNode(e.msg==null?"":String(e.msg)));
+      logEl.appendChild(row)});
+  }else{logEl.textContent="Nothing yet."}
   if(touched)return;
   CFG=s.config;
   ["on_at","off_at","min_run_minutes","poll_seconds","temp_on","temp_off"]
