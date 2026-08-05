@@ -1,11 +1,13 @@
 # Office Fan Controller
 
-Reads CO2 from a UniFi Protect UP-AirQuality sensor and switches a
-Tasmota smart plug with hysteresis. Web UI on port 8096.
+Reads CO2, temperature, humidity and PM2.5 from a UniFi Protect
+UP-AirQuality sensor and switches a fan through a Tasmota smart plug,
+with hysteresis on CO2 and optionally temperature. The plug's energy
+meter confirms the fan is actually drawing current. Web UI on port 8096.
 
-    ~/co2fan/run.sh          # start (idempotent, safe from cron)
-    pkill -f '[c]o2fan.py'   # stop
-    tail -f ~/co2fan/co2fan.log
+    sudo systemctl status office-fan-controller
+    sudo systemctl restart office-fan-controller
+    journalctl -u office-fan-controller -f
 
 ## Setup
 
@@ -56,8 +58,26 @@ few lines against the documented API.
 
 ## Install
 
-    pip install --target ./libs flask requests
+    git clone https://github.com/holloway25/Fan-Controller.git
+    cd Fan-Controller
+    python3 -m venv venv
+    ./venv/bin/pip install -r requirements.txt
     cp config.example.json config.json
-    ./run.sh
 
-Then open port 8096 and complete setup in the UI.
+Run it under systemd, editing the paths and user in the unit first:
+
+    sudo cp office-fan-controller.service /etc/systemd/system/
+    sudo systemctl enable --now office-fan-controller
+
+`./run.sh` starts it without systemd, using `setsid --fork` so it survives
+an SSH session ending. Then open port 8096 and complete setup in the UI.
+
+## Authentication
+
+Off by default. Setting a password protects everything that changes state
+while leaving the dashboard readable, so a wall display needs no login:
+
+    curl -X POST http://<server>:8096/api/ui/password \
+      -H 'Content-Type: application/json' -d '{"password":"..."}'
+
+Post an empty password to disable it again. See Docs/configuration.md.

@@ -15,8 +15,7 @@ All settings are editable in the web UI and stored in `config.json`
 | `temp_enabled` | false | Use temperature as a second trigger |
 | `temp_on` | 26.0 | Degrees C that starts the fan |
 | `temp_off` | 24.5 | Degrees C that releases it |
-| `stale_minutes` | 0 | Minutes without a reading before the fan is
-turned on as a fail-safe. 0 disables it. |
+| `stale_minutes` | 0 | Minutes without a reading before the fan is turned on as a fail-safe; 0 disables it |
 
 `on_at` must be above `off_at`, and `temp_on` above `temp_off`; the API
 rejects a save otherwise, since equal or inverted values leave the fan
@@ -24,7 +23,8 @@ running permanently.
 
 ## protect
 
-`host` is the UniFi console. `username` / `password` must be a **local**
+`host` is the UniFi console. Set `verify_tls` only when that address is a
+hostname the certificate covers - an IP will not validate. `username` / `password` must be a **local**
 account without two-factor - a UI Cloud login will not authenticate against
 the private API, and a 2FA account returns HTTP 499, which the service
 reports explicitly. `sensor_id` is chosen in the UI via Find sensors.

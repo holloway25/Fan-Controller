@@ -41,5 +41,37 @@ it into the dirty list or edits will be silently reverted.
 
 ## Service will not stay running
 
-Start with `run.sh`, which uses `setsid --fork`. Backgrounding with `&`
-alone does not survive an SSH session ending.
+Run it under systemd:
+
+    sudo systemctl status office-fan-controller
+    journalctl -u office-fan-controller -f
+
+`run.sh` is the fallback where systemd is unavailable. It uses
+`setsid --fork`, because backgrounding with `&` alone does not survive an
+SSH session ending.
+
+## Plug returns HTTP 401
+
+A web password is set on the plug but the service does not have it, or has
+the wrong one. Enter it under Fan plug and press Test plug.
+
+## Plug returns an empty reply
+
+Tasmota's HTTP command API is disabled on the device. `/` and `/?m=1` keep
+working while `/cm`, `/cs` and `/in` return zero bytes, which looks like a
+network fault but is not. Enable the command API in the device's web
+settings.
+
+Do not fall back to the web root's `/?m=1&o=1`: it toggles rather than
+setting a state, so a dropped response leaves the fan wrong with no way to
+tell.
+
+## Fan reports on but draws no power
+
+The relay closed and nothing is running: a tripped fan, a loose plug, or a
+seized motor. The CSE7766 only meters while the relay is closed, so 0 W
+with the relay off is normal and not a fault.
+
+If it reads 0 W with the fan audibly running, the plug needs power
+monitoring calibration - see the Athom template notes at
+templates.blakadder.com.

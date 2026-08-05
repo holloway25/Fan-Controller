@@ -1,6 +1,6 @@
 # Architecture
 
-A single Flask process on the dashboard server. One background thread polls
+A single Flask process run under systemd. One background thread polls
 the sensor and switches the fan; the Flask routes serve the UI and settings.
 
 ```
@@ -57,3 +57,19 @@ session expiry.
 Fan state is re-read from the plug every poll rather than trusted
 from memory, so switching it from Google Home or the plug itself is
 noticed and does not desynchronise the controller.
+
+## Why a Tasmota plug
+
+The fan previously ran from a Hue smart plug via the bridge. The Tasmota
+plug is a direct HTTP call with explicit `Power ON` / `Power OFF` rather
+than a toggle, and every switch is confirmed from the device's own reply,
+so a rejected command cannot be recorded as a success.
+
+It also meters. Draw from the CSE7766 is polled alongside CO2, which
+separates "the relay closed" from "the fan is actually running" - a
+seized motor or unplugged fan becomes visible rather than silently doing
+nothing while CO2 climbs.
+
+Credentials go in the query string because Tasmota's `/cm` accepts no
+other form. The URL is never logged, and errors report only the exception
+type, since `requests` includes the full URL in its exception text.

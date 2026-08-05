@@ -1,17 +1,37 @@
 # HTTP API
 
-Served on port 8096. All responses are JSON except `/`.
+Served on port 8096. All responses are JSON except `/` and `/signin`.
 
-| Method | Path | Purpose |
-|---|---|---|
-| GET | `/` | Web UI |
-| GET | `/api/state` | Readings, fan state, latches, history, events, config |
-| POST | `/api/config` | Partial settings update; validates then commits |
-| POST | `/api/protect/sensors` | List adopted sensors with their CO2 value |
-| POST | `/api/plug/test` | Check the plug answers; returns relay state and watts |
-| GET | `/api/debug/sensor` | Raw Protect payload for the selected sensor |
-| POST | `/api/clienterror` | Browser JS errors, logged server side |
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| GET | `/` | open | Web UI |
+| GET | `/api/state` | open | Readings, fan state, latches, history, events, config |
+| POST | `/api/clienterror` | open | Browser JS errors, logged server side |
+| GET | `/signin` | required | Empty page whose only job is to raise the browser auth prompt |
+| POST | `/api/config` | required | Partial settings update; validates, then commits |
+| POST | `/api/protect/sensors` | required | Adopted sensors with their current CO2 value |
+| POST | `/api/plug/test` | required | Check the plug answers; returns relay state and watts |
+| POST | `/api/ui/password` | required | Set or clear the UI password |
+| GET | `/api/debug/sensor` | required | Raw Protect payload for the selected sensor |
 
-Secrets are redacted in responses: `protect.password`, `plug.password` and `ui.password_hash` return
-the literal `SET` when present, and a posted `SET` is ignored rather than
-written back.
+"Auth" applies only once a UI password is set; until then every endpoint
+is open. Reading stays open even when auth is on, so a wall display needs
+no credentials. `/api/debug/sensor` is protected because it returns the
+raw Protect payload, which is diagnostic rather than dashboard data.
+
+## Secrets
+
+`protect.password`, `plug.password` and `ui.password_hash` return the
+literal `SET` when present, and a posted `SET` is ignored rather than
+written back, so a client can round-trip the config without erasing them.
+
+Error text in `/api/state` passes through a redactor that strips stored
+secrets. That endpoint is public and the plug's credentials travel as
+query parameters, so an unfiltered connection error would otherwise
+publish the password.
+
+## Validation
+
+Every field is coerced and range-checked against a schema before being
+stored, and unknown keys are rejected. State-changing endpoints require an
+`application/json` content type; a form-encoded post returns 415.
