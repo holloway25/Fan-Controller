@@ -435,13 +435,15 @@ class Tasmota:
             r = requests.get("http://%s/cm" % self.host, params=params,
                              timeout=12)
         except requests.RequestException as e:
-            raise PlugError("Cannot reach the plug at %s: %s"
-                            % (self.host, str(e)[:120]))
+            # Only the exception type: requests puts the full URL in the
+            # message, and the credentials are query parameters.
+            raise PlugError("Cannot reach the plug at %s (%s)"
+                            % (self.host, type(e).__name__))
         if r.status_code >= 400:
             raise PlugError("Plug returned HTTP %d" % r.status_code)
         if not r.content:
-            raise PlugError("Plug returned an empty reply. Enable the HTTP "
-                            "command API on the device (SetOption128 0).")
+            raise PlugError("Plug returned an empty reply. Check that the "
+                            "HTTP command API is enabled on the device.")
         try:
             data = r.json()
         except ValueError:
@@ -503,6 +505,23 @@ _wake = threading.Event()  # set to make the poll loop act at once
 CFG = load_cfg()
 STATE["history"] = load_hist()
 STATE["events"] = load_events()
+
+
+def _redact(text):
+    """Strip stored secrets from anything reaching the public API.
+
+    /api/state is deliberately readable without a password and error text
+    ends up there. Reporting only exception types at each raise site is the
+    primary defence; this is the backstop for paths not anticipated.
+    """
+    out = str(text)
+    for section, key in (("plug", "password"), ("protect", "password"),
+                         ("ui", "password_hash")):
+        secret = (CFG.get(section) or {}).get(key)
+        if secret and len(str(secret)) >= 4:
+            out = out.replace(str(secret), "***")
+    return out
+
 
 
 def _log(msg):
@@ -725,11 +744,12 @@ def loop():
         except (ProtectError, PlugError) as e:
             fails += 1
             with _state_lock:
-                STATE["error"] = str(e)
+                STATE["error"] = _redact(e)
         except Exception as e:  # keep the loop alive on anything unexpected
             fails += 1
             with _state_lock:
-                STATE["error"] = "%s: %s" % (type(e).__name__, e)
+                STATE["error"] = _redact(
+                    "%s: %s" % (type(e).__name__, e))
         if fails:
             # After both branches: a login timeout or malformed payload is
             # exactly when ventilation matters, and neither raises
@@ -737,7 +757,8 @@ def loop():
             try:
                 _failsafe()
             except Exception as e:
-                _log("Fail-safe failed: %s: %s" % (type(e).__name__, e))
+                _log(_redact("Fail-safe failed: %s: %s"
+                 % (type(e).__name__, e)))
         # Back off on repeated failures so a rate limit is not made worse.
         delay = base if not fails else min(300, base * 2 ** min(fails, 5))
         # Wake early when settings change so mode switches are instant.
@@ -877,6 +898,28 @@ def api_state():
     return jsonify(s)
 
 
+MODE_LABELS = {"auto": "Auto", "manual": "Manual", "on": "Force on"}
+SECRET_FIELDS = {("protect", "password"), ("plug", "password"),
+                 ("ui", "password_hash")}
+
+
+def _describe_changes(cand):
+    """Human summary of what a save actually alters, or None if nothing.
+
+    A generic "Settings saved" on every click buried the fan events that
+    matter, and fired even when a save changed nothing at all.
+    """
+    changed = [(sec, k) for sec in cand for k, v in cand[sec].items()
+               if CFG.get(sec, {}).get(k) != v]
+    if not changed:
+        return None
+    if ("control", "mode") in changed and len(changed) == 1:
+        mode = cand["control"]["mode"]
+        return "Mode: %s" % MODE_LABELS.get(mode, mode)
+    names = sorted({"%s (hidden)" % k if (sec, k) in SECRET_FIELDS else k
+                    for sec, k in changed})
+    return "Changed: %s" % ", ".join(names)
+
 def _guard_credentials(cand, body):
     """Clear a stored secret when the host it belongs to changes.
 
@@ -935,6 +978,7 @@ def api_config():
         if t_on <= t_off:
             return jsonify(error="Cool-to temperature must be below the "
                                  "turn-on temperature."), 400
+    summary = _describe_changes(cand)
     was = CFG["control"].get("mode")
     for section in cand:
         CFG[section] = cand[section]
@@ -950,7 +994,8 @@ def api_config():
         with _state_lock:
             STATE["changed_at"] = None
     save_cfg(CFG)
-    _log("Settings saved")
+    if summary:
+        _log(summary)
     _wake.set()
     return jsonify(ok=True, config=_safe_cfg(), notice=notice)
 

@@ -7,7 +7,7 @@ All settings are editable in the web UI and stored in `config.json`
 
 | Key | Default | Meaning |
 |---|---|---|
-| `mode` | `auto` | auto / manual / on / off |
+| `mode` | `auto` | auto / manual / on |
 | `on_at` | 1000 | CO2 ppm that starts the fan |
 | `off_at` | 700 | CO2 ppm that releases it |
 | `poll_seconds` | 30 | Seconds between readings |

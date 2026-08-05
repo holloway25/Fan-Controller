@@ -23,8 +23,9 @@ Tasmota smart plug with hysteresis. Web UI on port 8096.
 
 Above the on level the fan starts. It keeps running until CO2 falls to the
 off level, so the gap between the two prevents short-cycling. A freshly
-started fan is also held on for the minimum run time. Force on / force off
-override the thresholds entirely.
+started fan is also held on for the minimum run time. Force on overrides
+the thresholds entirely; Manual switches the fan off once and then leaves
+it to Google Home or the plug itself.
 
 The API refuses any save where the on level is not above the off level,
 since that leaves the fan running forever.
