@@ -25,9 +25,9 @@ server {
     add_header X-Content-Type-Options "nosniff" always;
     add_header X-Frame-Options "SAMEORIGIN" always;
 
-    # /api/state returns the full 24h history on every 5 second poll and
-    # is well over 100KB uncompressed. nginx does not gzip JSON by default:
-    # gzip_types defaults to text/html only.
+    # /api/history carries the 24h trace and is well over 100KB
+    # uncompressed. nginx does not gzip JSON by default: gzip_types
+    # defaults to text/html only.
     gzip on;
     gzip_types application/json;
     gzip_proxied any;

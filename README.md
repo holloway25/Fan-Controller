@@ -56,6 +56,8 @@ few lines against the documented API.
 - [Docs/configuration.md](Docs/configuration.md) - every setting
 - [Docs/api.md](Docs/api.md) - HTTP endpoints
 - [Docs/troubleshooting.md](Docs/troubleshooting.md) - known failure modes
+- [deploy/nginx.conf.example](deploy/nginx.conf.example) - reference nginx
+  site config, since Flask binds loopback and needs a proxy
 
 ## Install
 
@@ -81,6 +83,31 @@ setup with an SSH tunnel:
 
 then browse to http://127.0.0.1:8096 on your own machine.
 
+## Serving it over HTTPS
+
+Flask binds `127.0.0.1`, so a reverse proxy on the same host is required
+for network access.
+[deploy/nginx.conf.example](deploy/nginx.conf.example) is a working site
+config - copy it to `/etc/nginx/sites-available/`, replace `example.com`,
+and symlink it into `sites-enabled`.
+
+It expects a certificate at the usual certbot path. Any issuance method
+works; DNS-01 suits a host with no inbound port 80, e.g. with the
+Cloudflare plugin:
+
+    sudo apt install nginx certbot python3-certbot-dns-cloudflare
+    sudo certbot certonly --dns-cloudflare \
+      --dns-cloudflare-credentials /etc/letsencrypt/cloudflare.ini \
+      -d example.com
+
+Scope the API token narrowly - DNS edit rights on the one zone are enough,
+and a zone-wide token can mint a certificate for any name you host. Add a
+deploy hook so nginx reloads on renewal, or it keeps serving the old
+certificate from memory until it expires:
+
+    echo "systemctl reload nginx" | sudo tee \
+      /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh
+    sudo chmod 755 /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh
 ## Authentication
 
 Off by default. Setting a password protects everything that changes state

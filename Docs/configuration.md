@@ -44,8 +44,9 @@ empty reply while the web UI still works, it is disabled - the service
 reports this explicitly.
 
 Switching is confirmed from the plug's own reply, and its CSE7766 power
-reading is polled alongside CO2, so a relay that closed without the fan
-drawing current is visible rather than silent.
+reading is polled every 5 seconds on its own thread, independent of
+`poll_seconds`, so a relay that closed without the fan drawing current is
+visible rather than silent.
 
 ## Choosing thresholds
 
