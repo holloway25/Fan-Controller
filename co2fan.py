@@ -650,13 +650,8 @@ def tick():
     co2 = vals['co2']
     now = time.time()
     actual = _fan_status(h)
-    try:
-        watts = h.power_w()
-    except PlugError:
-        watts = None
     ext_msg = None
     with _state_lock:
-        STATE["watts"] = watts
         STATE.update(co2=co2, co2_path=path, reading_at=now, error=None,
                      temperature=vals.get('temperature'),
                      humidity=vals.get('humidity'),
@@ -729,6 +724,28 @@ def _failsafe():
         STATE["changed_at"] = time.time()
     _log("FAIL-SAFE: no reading for %d min, ventilating" % mins)
 
+
+
+WATTS_SECONDS = 5
+
+
+def watts_loop():
+    """Poll the plug's meter on its own short cadence.
+
+    Draw is read here rather than in tick() because the Protect bootstrap
+    is the expensive call: tying watts to poll_seconds left the reading up
+    to 30s stale while the UI refreshed every 5s. Errors are swallowed so
+    a plug hiccup cannot overwrite the control loop's error.
+    """
+    while True:
+        try:
+            _, plug = _clients()
+            w = plug.power_w()
+            with _state_lock:
+                STATE["watts"] = w
+        except Exception:
+            pass
+        time.sleep(WATTS_SECONDS)
 
 def loop():
     fails = 0
@@ -1046,4 +1063,5 @@ if __name__ == "__main__":
     for _sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(_sig, flush_hist)
     threading.Thread(target=loop, daemon=True).start()
+    threading.Thread(target=watts_loop, daemon=True).start()
     app.run(host="0.0.0.0", port=8096, threaded=True)
