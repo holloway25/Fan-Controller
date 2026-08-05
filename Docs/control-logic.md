@@ -5,13 +5,15 @@
 | Mode | Behaviour |
 |---|---|
 | Auto | Thresholds below decide |
-| Manual | Never switches the fan; keeps polling and charting |
+| Manual | Switches the fan off once, then leaves it alone |
 | Force on | Holds the fan on regardless of readings |
-| Force off | Holds the fan off regardless of readings |
 
-Force off is not "hands off" - it actively holds the fan off and will undo
-a manual switch within one poll. Use Manual to hand control to Google Home
-or the Hue app.
+Manual hands control to Google Home or the Hue app. Entering it switches
+the fan off once so it is not left running, and after that nothing is
+touched - external switching is recorded but never undone.
+
+There is no force-off mode: holding the fan off actively fought manual
+control. Configs still holding the old `off` value migrate to `manual`.
 
 ## Per-rule latching
 

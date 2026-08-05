@@ -37,7 +37,7 @@ VALUE_KEYS = ("value", "val", "current", "ppm", "reading")
 
 
 CONTROL_SCHEMA = {
-    "mode": ("enum", ("auto", "manual", "on", "off")),
+    "mode": ("enum", ("auto", "manual", "on")),
     "on_at": ("num", 300.0, 10000.0),
     "off_at": ("num", 300.0, 10000.0),
     "poll_seconds": ("int", 5, 3600),
@@ -137,6 +137,10 @@ def load_cfg():
                 cfg[k] = v
     ctl = cfg.get("control")
     ctl = ctl if isinstance(ctl, dict) else {}
+    if ctl.get("mode") == "off":
+        # Force off was removed; manual now switches off once,
+        # then leaves the fan alone.
+        ctl["mode"] = "manual"
     if "enabled" in ctl:
         # Older configs used a separate enable flag; "not enabled" is now
         # simply manual mode. Fold it in and drop the duplicate control.
@@ -482,6 +486,7 @@ STATE = {
     "changed_at": None, "error": None, "sensor_name": None,
     "temperature": None, "humidity": None, "pm25": None,
     "latch": {"co2": False, "temp": False},
+    "manual_off_pending": False,
     "history": [], "events": [],
 }
 # RLock, not Lock: nested acquisition deadlocked the poll thread.
@@ -532,8 +537,6 @@ def decide(co2, temp, fan_on, c, ran_for, latch):
     """
     if c["mode"] == "on":
         return True, "forced on"
-    if c["mode"] == "off":
-        return False, "forced off"
     if c["mode"] == "manual":
         latch["co2"] = latch["temp"] = False
         return None, None
@@ -633,6 +636,18 @@ def tick():
     if ext_msg:
         _log(ext_msg)
     ran_for = (now - changed) if changed else None
+    if c["mode"] == "manual":
+        with _state_lock:
+            pending = STATE.get("manual_off_pending")
+            STATE["manual_off_pending"] = False
+        if pending and fan_on and ids:
+            for lid in ids:
+                h.set(lid, False)
+            with _state_lock:
+                STATE["fan"] = False
+                STATE["changed_at"] = now
+            _log("Manual mode - switched off, now hands off")
+        return
     want, why = decide(co2, vals.get('temperature'), fan_on, c, ran_for,
                        STATE["latch"])
     if split:
@@ -912,7 +927,12 @@ def api_config():
     for section in cand:
         CFG[section] = cand[section]
     now_mode = CFG["control"].get("mode")
-    if was in ("on", "off") and now_mode not in ("on", "off"):
+    if now_mode == "manual" and was != "manual":
+        # Entering manual switches the fan off once, then hands control to
+        # the Hue app or Google Home without further interference.
+        with _state_lock:
+            STATE["manual_off_pending"] = True
+    if was == "on" and now_mode != "on":
         # Leaving a forced state: do not let the minimum-run timer from the
         # forced switch hold the fan on once automatic control resumes.
         with _state_lock:
