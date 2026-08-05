@@ -29,11 +29,10 @@ reading has not yet crossed its off threshold.
 The UI polls `/api/state` every 5 seconds. If the server log shows `GET /`
 with no follow-up requests, the JavaScript died on load. Errors are posted
 to `/api/clienterror` and appear in the log and activity feed. Check the
-browser console too. Check the scheme against how you reached the page.
-Through the reverse proxy HTTPS is required: TLS terminates at nginx,
-force-ssl redirects plain HTTP, and HSTS makes the browser refuse it.
-Reaching the service directly on `http://<host>:8096` is plain HTTP only -
-it serves no TLS and a forced upgrade there fails with HTTP 400.
+browser console too. The UI is only reachable over HTTPS: nginx redirects
+plain HTTP and HSTS makes the browser refuse it anyway. Port 8096 is bound
+to loopback, so it is not an alternative route - use an SSH tunnel if you
+need to bypass nginx.
 
 ## Settings appear not to save
 

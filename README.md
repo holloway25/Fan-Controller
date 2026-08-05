@@ -3,7 +3,8 @@
 Reads CO2, temperature, humidity and PM2.5 from a UniFi Protect
 UP-AirQuality sensor and switches a fan through a Tasmota smart plug,
 with hysteresis on CO2 and optionally temperature. The plug's energy
-meter confirms the fan is actually drawing current. Web UI on port 8096.
+meter confirms the fan is actually drawing current. Web UI is served over
+HTTPS by nginx on the same host; Flask itself listens on 127.0.0.1 only.
 
     sudo systemctl status office-fan-controller
     sudo systemctl restart office-fan-controller
@@ -13,7 +14,7 @@ meter confirms the fan is actually drawing current. Web UI on port 8096.
 
 1. In UniFi, create a **local** user with no two-factor. Cloud SSO logins
    will not work against the private Protect API.
-2. Open http://<server>:8096 and fill in the sensor card, then
+2. Open the dashboard and fill in the sensor card, then
    **Find sensors**. Each sensor is listed with its CO2 reading, or
    "no CO2 field" if Protect is not publishing one.
 3. Open **Fan plug**, enter the plug's address and web password,
@@ -70,14 +71,22 @@ Run it under systemd, editing the paths and user in the unit first:
     sudo systemctl enable --now office-fan-controller
 
 `./run.sh` starts it without systemd, using `setsid --fork` so it survives
-an SSH session ending. Then open port 8096 and complete setup in the UI.
+an SSH session ending.
+
+Flask binds `127.0.0.1` only, so nothing reaches it except a reverse proxy
+on the same host. Before that proxy exists, reach the UI for first-time
+setup with an SSH tunnel:
+
+    ssh -L 8096:127.0.0.1:8096 <user>@<server>
+
+then browse to http://127.0.0.1:8096 on your own machine.
 
 ## Authentication
 
 Off by default. Setting a password protects everything that changes state
 while leaving the dashboard readable, so a wall display needs no login:
 
-    curl -X POST http://<server>:8096/api/ui/password \
+    curl -X POST https://<your-host>/api/ui/password \
       -H 'Content-Type: application/json' -d '{"password":"..."}'
 
 Post an empty password to disable it again. See Docs/configuration.md.

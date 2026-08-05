@@ -1,6 +1,7 @@
 # HTTP API
 
-Served on port 8096. All responses are JSON except `/` and `/signin`.
+Served by Flask on 127.0.0.1:8096 and fronted by nginx on the same host.
+All responses are JSON except `/` and `/signin`.
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|

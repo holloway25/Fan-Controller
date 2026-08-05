@@ -59,7 +59,7 @@ much within a reasonable run.
 `password_hash` holds a salted PBKDF2-SHA256 hash; the plaintext is never
 stored and the API returns only `SET`. Set it with:
 
-    curl -X POST http://<server>:8096/api/ui/password \
+    curl -X POST https://<your-host>/api/ui/password \
       -H 'Content-Type: application/json' -d '{"password":"your-password"}'
 
 While it is empty there is no authentication at all. Setting it protects
@@ -76,6 +76,8 @@ Browsers do not reliably raise the Basic auth dialog for a fetch, so the
 UI opens `/signin` when a save is refused. Authenticate there once and the
 browser caches the credentials. Post an empty password to disable auth.
 
-Basic auth over plain HTTP is base64, not encryption. Treat it as defence
-in depth behind a firewall rule restricting inbound access to port 8096,
-not as a replacement for one.
+Basic auth travels over the TLS connection nginx terminates, so it is not
+exposed on the wire. Flask itself binds `127.0.0.1`, so port 8096 is not
+reachable from the network at all and credentials never traverse it. Treat
+the password as access control for a trusted network, not as a hard
+security boundary.

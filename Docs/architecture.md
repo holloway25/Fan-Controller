@@ -46,14 +46,23 @@ session expiry.
 
 ## Behind a reverse proxy
 
-The service serves plain HTTP and is expected to sit behind a reverse proxy
-that terminates TLS. Without help every request therefore appeared to come
-from the proxy, so the access log could not tell one client from another.
+The service serves plain HTTP and binds `127.0.0.1` only. nginx runs on the
+same host, terminates TLS and proxies to it over loopback, so the whole
+deployment is self contained on one machine.
 
-The WSGI app is wrapped in ProxyFix trusting exactly one hop of
-X-Forwarded-For, -Proto and -Host. One hop, not more: each additional
-trusted hop is another entry a client can forge by sending the header
-itself. Icons live under /static and are served by Flask directly.
+The bind address is the security boundary. ProxyFix trusts a hop count, not
+a peer, so on a socket bound to 0.0.0.0 any client could forge
+X-Forwarded-For and be believed. Binding loopback removes that: nginx is
+the only process that can connect, and it overwrites the header with
+$remote_addr rather than appending, so no client-supplied value survives.
+
+ProxyFix is therefore correct at exactly one hop. If another proxy is ever
+placed in front, the count must change to match or the logged address
+silently reverts to the nearest proxy.
+
+Icons live under /static and are served by Flask directly. nginx also
+compresses application/json, without which /api/state ships well over
+100KB uncompressed on every 5 second poll.
 
 ## State
 

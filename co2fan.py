@@ -1085,4 +1085,4 @@ if __name__ == "__main__":
         signal.signal(_sig, flush_hist)
     threading.Thread(target=loop, daemon=True).start()
     threading.Thread(target=watts_loop, daemon=True).start()
-    app.run(host="0.0.0.0", port=8096, threaded=True)
+    app.run(host="127.0.0.1", port=8096, threaded=True)
