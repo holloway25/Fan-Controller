@@ -66,9 +66,11 @@ While it is empty there is no authentication at all. Setting it protects
 everything that changes state or exposes internals, while leaving the
 dashboard readable without credentials, so a wall display needs no login.
 
-Open without a password: `GET /`, `GET /api/state` and
+Open without a password: `GET /`, `GET /api/state`, `GET /static/*` and
 `POST /api/clienterror`. Everything else requires it, including
-`/api/debug/sensor`, which returns the raw Protect payload.
+`/api/debug/sensor`, which returns the raw Protect payload. Icons are open
+for the same reason the dashboard is: a wall display would otherwise show a
+broken tab icon with no way to authenticate.
 
 Browsers do not reliably raise the Basic auth dialog for a fetch, so the
 UI opens `/signin` when a save is refused. Authenticate there once and the

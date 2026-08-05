@@ -44,6 +44,17 @@ which meant a fresh `/api/auth/login` every 30 seconds and eventually
 HTTP 429 rate limiting from UniFi. The 401 retry path handles genuine
 session expiry.
 
+## Behind a reverse proxy
+
+The service serves plain HTTP and is expected to sit behind a reverse proxy
+that terminates TLS. Without help every request therefore appeared to come
+from the proxy, so the access log could not tell one client from another.
+
+The WSGI app is wrapped in ProxyFix trusting exactly one hop of
+X-Forwarded-For, -Proto and -Host. One hop, not more: each additional
+trusted hop is another entry a client can forge by sending the header
+itself. Icons live under /static and are served by Flask directly.
+
 ## State
 
 - `config.json` - settings, written atomically, mode 0600. Not in git.

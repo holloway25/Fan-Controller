@@ -7,6 +7,7 @@ Served on port 8096. All responses are JSON except `/` and `/signin`.
 | GET | `/` | open | Web UI |
 | GET | `/api/state` | open | Readings, fan state, latches, history, events, config |
 | POST | `/api/clienterror` | open | Browser JS errors, logged server side |
+| GET | `/static/*` | open | Icons: browser tab and iOS home screen |
 | GET | `/signin` | required | Empty page whose only job is to raise the browser auth prompt |
 | POST | `/api/config` | required | Partial settings update; validates, then commits |
 | POST | `/api/protect/sensors` | required | Adopted sensors with their current CO2 value |

@@ -78,3 +78,18 @@ with the relay off is normal and not a fault.
 If it reads 0 W with the fan audibly running, the plug needs power
 monitoring calibration - see the Athom template notes at
 templates.blakadder.com.
+
+## Home screen icon is stale or missing
+
+iOS caches the touch icon per shortcut and will not refetch it. After
+changing `static/apple-touch-icon.png`, delete the home screen shortcut and
+re-add it from Safari - reloading the page will not update it.
+
+The stored icon is already flattened onto the dashboard background and inset
+by 8%. Neither is decorative: iOS composites transparency onto black, and
+the squircle mask clips anything close to the corners.
+
+Requests for `/apple-touch-icon*.png` or `/favicon.ico` arriving at the root
+rather than under `/static` mean the `<link>` tags are absent from the page
+head. iOS only probes the root when nothing is declared, and those probes
+return 404.
