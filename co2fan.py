@@ -7,7 +7,7 @@ Protect 7.1's documented API omits air-quality metrics, so this reads the
 private /proxy/protect/api/bootstrap endpoint. That is undocumented and may
 break on firmware updates; use the Debug view to inspect the live payload.
 """
-import atexit, copy, json, os, signal, sys, threading, time
+import atexit, copy, json, math, os, signal, sys, threading, time
 import requests, urllib3
 from flask import Flask, jsonify, request, render_template
 
@@ -24,13 +24,89 @@ DEFAULTS = {
     "control": {"mode": "auto", "on_at": 1000, "off_at": 800,
                 "poll_seconds": 30, "min_run_minutes": 5,
                 "temp_enabled": False, "temp_on": 26.0,
-                "temp_off": 24.5},
+                "temp_off": 24.5,
+                "stale_minutes": 0},
 }
 CO2_HINTS = ("co2", "carbondioxide")
 EXTRA_HINTS = {"temperature": ("temperature",),
                "pm25": ("pm2p5", "pm25"),
                "humidity": ("humidity",)}
 VALUE_KEYS = ("value", "val", "current", "ppm", "reading")
+
+
+CONTROL_SCHEMA = {
+    "mode": ("enum", ("auto", "manual", "on", "off")),
+    "on_at": ("num", 300.0, 10000.0),
+    "off_at": ("num", 300.0, 10000.0),
+    "poll_seconds": ("int", 5, 3600),
+    "min_run_minutes": ("int", 0, 240),
+    "temp_enabled": ("bool",),
+    "temp_on": ("num", -20.0, 60.0),
+    "temp_off": ("num", -20.0, 60.0),
+    "stale_minutes": ("int", 0, 1440),
+}
+PROTECT_SCHEMA = {
+    "host": ("str", 1, 253), "username": ("str", 0, 128),
+    "password": ("str", 0, 256), "sensor_id": ("str", 0, 64),
+    "verify_tls": ("bool",),
+}
+HUE_SCHEMA = {
+    "bridge": ("str", 1, 253), "key": ("str", 0, 128),
+    "lights": ("list_str", 0, 32),
+}
+SCHEMAS = {"protect": PROTECT_SCHEMA, "hue": HUE_SCHEMA,
+           "control": CONTROL_SCHEMA}
+
+
+def _coerce(name, spec, v):
+    """Convert and range-check one value, or raise ValueError.
+
+    Values are stored coerced, never as supplied: accepting "1000" for a
+    threshold made decide() raise TypeError every poll, disabling
+    automation while the UI still looked healthy.
+    """
+    kind = spec[0]
+    if kind == "enum":
+        if v not in spec[1]:
+            raise ValueError("%s must be one of: %s"
+                             % (name, ", ".join(spec[1])))
+        return v
+    if kind == "bool":
+        return bool(v)
+    if kind in ("num", "int"):
+        if isinstance(v, bool) or isinstance(v, (list, dict, type(None))):
+            raise ValueError("%s must be a number" % name)
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            raise ValueError("%s must be a number" % name)
+        if not math.isfinite(f):
+            raise ValueError("%s must be a finite number" % name)
+        if not (spec[1] <= f <= spec[2]):
+            raise ValueError("%s must be between %g and %g"
+                             % (name, spec[1], spec[2]))
+        return int(f) if kind == "int" else f
+    if kind == "str":
+        if not isinstance(v, str) or not (spec[1] <= len(v) <= spec[2]):
+            raise ValueError("%s is not valid text" % name)
+        return v
+    if kind == "list_str":
+        if not isinstance(v, list) or len(v) > spec[2] or \
+                not all(isinstance(x, str) and x for x in v):
+            raise ValueError("%s must be a list of ids" % name)
+        return v
+    raise ValueError("%s cannot be set" % name)
+
+
+def normalise(section, data):
+    """Coerce a section, rejecting unknown keys."""
+    schema = SCHEMAS[section]
+    out = {}
+    for k, v in data.items():
+        if k not in schema:
+            raise ValueError("unknown setting %s.%s" % (section, k))
+        out[k] = _coerce("%s.%s" % (section, k), schema[k], v)
+    return out
 
 
 def load_cfg():
@@ -51,7 +127,20 @@ def load_cfg():
         # simply manual mode. Fold it in and drop the duplicate control.
         if not ctl.pop("enabled") and ctl.get("mode") == "auto":
             ctl["mode"] = "manual"
+    # Disk config is untrusted too: coerce it, and fall back to the default
+    # for any field that will not validate rather than starting poisoned.
+    for section, schema in SCHEMAS.items():
+        clean = dict(DEFAULTS[section])
+        for k, v in (cfg.get(section) or {}).items():
+            if k not in schema:
+                continue
+            try:
+                clean[k] = _coerce("%s.%s" % (section, k), schema[k], v)
+            except ValueError:
+                pass
+        cfg[section] = clean
     return cfg
+
 
 
 def save_cfg(cfg):
@@ -330,6 +419,25 @@ class Hue:
                  "on": v.get("state", {}).get("on")}
                 for k, v in data.items()]
 
+    @staticmethod
+    def _check_body(r, light_id):
+        """Hue v1 reports rejection inside a 200 body, so status is not
+        enough - trusting it marked failed switches as successful."""
+        try:
+            data = r.json()
+        except ValueError:
+            return
+        if isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict) and "error" in item:
+                    d = (item["error"] or {}).get("description", "rejected")
+                    raise HueError("Bridge rejected the command for %s: %s"
+                                   % (light_id, d))
+        elif isinstance(data, dict) and data.get("errors"):
+            d = data["errors"][0]
+            raise HueError("Bridge rejected the command for %s: %s"
+                           % (light_id, d.get("description", "rejected")))
+
     def set(self, light_id, on):
         if self._v2:
             r = requests.put(self._url("/clip/v2/resource/light/" + light_id),
@@ -343,6 +451,7 @@ class Hue:
         if r.status_code >= 400:
             raise HueError("Bridge returned HTTP %d switching light %s"
                            % (r.status_code, light_id))
+        self._check_body(r, light_id)
 
 
 STATE = {
@@ -435,27 +544,28 @@ def decide(co2, temp, fan_on, c, ran_for, latch):
     return False, why
 
 
-def _actual_fan(h, ids):
-    """What the bridge says the selected outputs are doing.
+def _fan_status(h, ids):
+    """(state, split) for the selected outputs.
 
-    True only if every selected output is on, False if every one is off,
-    None if they disagree or are unknown. A split state must not read as
-    "already correct", or a partial switching failure is never repaired.
+    state is True/False only when every output agrees, else None. split is
+    True when they read successfully but disagree - that must force a
+    re-send, since a desired state matching the believed state would
+    otherwise skip switching and never repair the odd one out.
     """
     if not ids:
-        return None
+        return None, False
     try:
-        state = {l["id"]: l["on"] for l in h.lights()}
+        seen = {l["id"]: l["on"] for l in h.lights()}
     except HueError:
-        return None
-    vals = [state.get(i) for i in ids]
+        return None, False
+    vals = [seen.get(i) for i in ids]
     if any(v is None for v in vals):
-        return None
+        return None, False
     if all(vals):
-        return True
+        return True, False
     if not any(vals):
-        return False
-    return None
+        return False, False
+    return None, True
 
 
 def tick():
@@ -468,7 +578,7 @@ def tick():
     co2 = vals['co2']
     now = time.time()
     ids = CFG["hue"]["lights"]
-    actual = _actual_fan(h, ids)
+    actual, split = _fan_status(h, ids)
     ext_msg = None
     with _state_lock:
         STATE.update(co2=co2, co2_path=path, reading_at=now, error=None,
@@ -501,7 +611,14 @@ def tick():
     ran_for = (now - changed) if changed else None
     want, why = decide(co2, vals.get('temperature'), fan_on, c, ran_for,
                        STATE["latch"])
-    if want is None or want == fan_on:
+    if split:
+        # Outputs disagree: drive them all to the intended state even when
+        # that matches what we already believed.
+        want = want if want is not None else fan_on
+        why = why or "resynchronising outputs"
+    elif want is None or want == fan_on:
+        return
+    if want is None:
         return
     if not ids:
         raise HueError("No Hue lights selected yet")
@@ -511,6 +628,35 @@ def tick():
         STATE["fan"] = want
         STATE["changed_at"] = now
     _log("Fan %s \u2014 %s" % ("on" if want else "off", why))
+
+
+
+def _failsafe():
+    """Ventilate when readings have been stale too long.
+
+    Repeated sensor failures otherwise leave the fan off indefinitely with
+    no valid reading. Opt-in: stale_minutes of 0 disables it entirely.
+    """
+    mins = int(CFG["control"].get("stale_minutes") or 0)
+    if not mins or CFG["control"]["mode"] != "auto":
+        return
+    with _state_lock:
+        last = STATE["reading_at"]
+        already = STATE["fan"]
+    if last is None or time.time() - last < mins * 60:
+        return
+    if already:
+        return
+    ids = CFG["hue"]["lights"]
+    if not ids:
+        return
+    _, h = _clients()
+    for lid in ids:
+        h.set(lid, True)
+    with _state_lock:
+        STATE["fan"] = True
+        STATE["changed_at"] = time.time()
+    _log("FAIL-SAFE: no reading for %d min, ventilating" % mins)
 
 
 def loop():
@@ -528,6 +674,10 @@ def loop():
             fails += 1
             with _state_lock:
                 STATE["error"] = str(e)
+            try:
+                _failsafe()
+            except Exception:
+                pass
         except Exception as e:  # keep the loop alive on anything unexpected
             fails += 1
             with _state_lock:
@@ -612,10 +762,12 @@ def api_config():
     body = request.get_json(force=True) or {}
     cand = copy.deepcopy(CFG)
     for section in ("protect", "hue", "control"):
-        for k, v in (body.get(section) or {}).items():
-            if v == "SET":
-                continue
-            cand[section][k] = v
+        raw = {k: v for k, v in (body.get(section) or {}).items()
+               if v != "SET"}
+        try:
+            cand[section].update(normalise(section, raw))
+        except ValueError as e:
+            return jsonify(error=str(e)), 400
     notice = _guard_credentials(cand, body)
     cand["protect"]["verify_tls"] = bool(
         cand["protect"].get("verify_tls"))
