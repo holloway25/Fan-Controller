@@ -18,6 +18,10 @@
     "min_run_minutes": 10,
     "temp_enabled": false,
     "temp_on": 26.0,
-    "temp_off": 24.5
+    "temp_off": 24.5,
+    "stale_minutes": 0
+  },
+  "ui": {
+    "password_hash": ""
   }
 }

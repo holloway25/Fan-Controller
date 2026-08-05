@@ -15,6 +15,8 @@ All settings are editable in the web UI and stored in `config.json`
 | `temp_enabled` | false | Use temperature as a second trigger |
 | `temp_on` | 26.0 | Degrees C that starts the fan |
 | `temp_off` | 24.5 | Degrees C that releases it |
+| `stale_minutes` | 0 | Minutes without a reading before the fan is
+turned on as a fail-safe. 0 disables it. |
 
 `on_at` must be above `off_at`, and `temp_on` above `temp_off`; the API
 rejects a save otherwise, since equal or inverted values leave the fan
@@ -41,3 +43,19 @@ CO2 outdoors is roughly 420 ppm. Under 800 indoors is good, 1000+ is where
 ventilation is measurably inadequate. A gap of at least 150-200 ppm between
 on and off avoids short-cycling; 300 works well if the fan can shift that
 much within a reasonable run.
+
+## ui
+
+`password_hash` holds a salted PBKDF2-SHA256 hash; the plaintext is never
+stored and the API returns only `SET`. Set it with:
+
+    curl -X POST http://<server>:8096/api/ui/password \
+      -H 'Content-Type: application/json' -d '{"password":"your-password"}'
+
+While it is empty there is no authentication at all - every endpoint is
+open to anyone who can reach the port. Setting it enables HTTP Basic auth
+on every route, API included. Post an empty password to disable it again.
+
+Basic auth over plain HTTP is base64, not encryption. Treat it as defence
+in depth behind a firewall rule restricting inbound access to port 8096,
+not as a replacement for one.

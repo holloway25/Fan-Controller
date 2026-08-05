@@ -7,9 +7,10 @@ Protect 7.1's documented API omits air-quality metrics, so this reads the
 private /proxy/protect/api/bootstrap endpoint. That is undocumented and may
 break on firmware updates; use the Debug view to inspect the live payload.
 """
-import atexit, copy, json, math, os, signal, sys, threading, time
+import atexit, copy, hashlib, hmac, json, math, os, signal, sys
+import threading, time
 import requests, urllib3
-from flask import Flask, jsonify, request, render_template
+from flask import Flask, Response, jsonify, request, render_template
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -21,6 +22,7 @@ DEFAULTS = {
                 "verify_tls": False,
                 "sensor_id": ""},
     "hue": {"bridge": "192.168.1.2", "key": "", "lights": []},
+    "ui": {"password_hash": ""},
     "control": {"mode": "auto", "on_at": 1000, "off_at": 800,
                 "poll_seconds": 30, "min_run_minutes": 5,
                 "temp_enabled": False, "temp_on": 26.0,
@@ -50,11 +52,12 @@ PROTECT_SCHEMA = {
     "password": ("str", 0, 256), "sensor_id": ("str", 0, 64),
     "verify_tls": ("bool",),
 }
+UI_SCHEMA = {"password_hash": ("str", 0, 200)}
 HUE_SCHEMA = {
     "bridge": ("str", 1, 253), "key": ("str", 0, 128),
     "lights": ("list_str", 0, 32),
 }
-SCHEMAS = {"protect": PROTECT_SCHEMA, "hue": HUE_SCHEMA,
+SCHEMAS = {"protect": PROTECT_SCHEMA, "hue": HUE_SCHEMA, "ui": UI_SCHEMA,
            "control": CONTROL_SCHEMA}
 
 
@@ -72,7 +75,10 @@ def _coerce(name, spec, v):
                              % (name, ", ".join(spec[1])))
         return v
     if kind == "bool":
-        return bool(v)
+        # bool("false") is True, so require a real JSON boolean.
+        if not isinstance(v, bool):
+            raise ValueError("%s must be true or false" % name)
+        return v
     if kind in ("num", "int"):
         if isinstance(v, bool) or isinstance(v, (list, dict, type(None))):
             raise ValueError("%s must be a number" % name)
@@ -85,7 +91,11 @@ def _coerce(name, spec, v):
         if not (spec[1] <= f <= spec[2]):
             raise ValueError("%s must be between %g and %g"
                              % (name, spec[1], spec[2]))
-        return int(f) if kind == "int" else f
+        if kind == "int":
+            if f != int(f):
+                raise ValueError("%s must be a whole number" % name)
+            return int(f)
+        return f
     if kind == "str":
         if not isinstance(v, str) or not (spec[1] <= len(v) <= spec[2]):
             raise ValueError("%s is not valid text" % name)
@@ -116,12 +126,17 @@ def load_cfg():
             disk = json.load(open(CFG_PATH))
         except (ValueError, OSError):
             disk = {}
+        # Valid JSON of the wrong shape (a list, a string-valued section)
+        # used to raise AttributeError before normalisation could run.
+        if not isinstance(disk, dict):
+            disk = {}
         for k, v in disk.items():
             if isinstance(v, dict) and k in cfg:
                 cfg[k].update(v)
             else:
                 cfg[k] = v
-    ctl = cfg.get("control", {})
+    ctl = cfg.get("control")
+    ctl = ctl if isinstance(ctl, dict) else {}
     if "enabled" in ctl:
         # Older configs used a separate enable flag; "not enabled" is now
         # simply manual mode. Fold it in and drop the duplicate control.
@@ -131,7 +146,8 @@ def load_cfg():
     # for any field that will not validate rather than starting poisoned.
     for section, schema in SCHEMAS.items():
         clean = dict(DEFAULTS[section])
-        for k, v in (cfg.get(section) or {}).items():
+        got = cfg.get(section)
+        for k, v in (got if isinstance(got, dict) else {}).items():
             if k not in schema:
                 continue
             try:
@@ -145,8 +161,15 @@ def load_cfg():
 
 def save_cfg(cfg):
     tmp = CFG_PATH + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(cfg, f, indent=2)
+    # Created 0600 up front: the temp file holds the UniFi password and Hue
+    # key, and chmod after the rename left a window at the process umask.
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(cfg, f, indent=2)
+    except BaseException:
+        os.unlink(tmp)
+        raise
     os.replace(tmp, CFG_PATH)
     os.chmod(CFG_PATH, 0o600)
 
@@ -463,6 +486,7 @@ STATE = {
 }
 # RLock, not Lock: nested acquisition deadlocked the poll thread.
 _state_lock = threading.RLock()
+START_TIME = time.time()
 _wake = threading.Event()  # set to make the poll loop act at once
 CFG = load_cfg()
 STATE["history"] = load_hist()
@@ -643,7 +667,10 @@ def _failsafe():
     with _state_lock:
         last = STATE["reading_at"]
         already = STATE["fan"]
-    if last is None or time.time() - last < mins * 60:
+    # "Never read anything" is measured from startup, not treated as fresh:
+    # otherwise a service that never got a first reading stayed passive.
+    since = last if last is not None else START_TIME
+    if time.time() - since < mins * 60:
         return
     if already:
         return
@@ -674,14 +701,18 @@ def loop():
             fails += 1
             with _state_lock:
                 STATE["error"] = str(e)
-            try:
-                _failsafe()
-            except Exception:
-                pass
         except Exception as e:  # keep the loop alive on anything unexpected
             fails += 1
             with _state_lock:
                 STATE["error"] = "%s: %s" % (type(e).__name__, e)
+        if fails:
+            # After both branches: a login timeout or malformed payload is
+            # exactly when ventilation matters, and neither raises
+            # ProtectError or HueError.
+            try:
+                _failsafe()
+            except Exception as e:
+                _log("Fail-safe failed: %s: %s" % (type(e).__name__, e))
         # Back off on repeated failures so a rate limit is not made worse.
         delay = base if not fails else min(300, base * 2 ** min(fails, 5))
         # Wake early when settings change so mode switches are instant.
@@ -694,6 +725,7 @@ app = Flask(__name__)
 
 def _safe_cfg():
     c = copy.deepcopy(CFG)
+    c["ui"]["password_hash"] = "SET" if CFG["ui"]["password_hash"] else ""
     c["protect"]["password"] = "SET" if CFG["protect"]["password"] else ""
     c["hue"]["key"] = "SET" if CFG["hue"]["key"] else ""
     return c
@@ -707,6 +739,41 @@ def _no_cache(resp):
     return resp
 
 
+def set_ui_password(plain):
+    """Store a salted PBKDF2 hash. The plaintext is never written."""
+    salt = os.urandom(16)
+    dk = hashlib.pbkdf2_hmac("sha256", plain.encode(), salt, 200000)
+    return "pbkdf2$200000$%s$%s" % (salt.hex(), dk.hex())
+
+
+def check_ui_password(plain, stored):
+    try:
+        _, rounds, salt, want = stored.split("$")
+        dk = hashlib.pbkdf2_hmac("sha256", plain.encode(),
+                                 bytes.fromhex(salt), int(rounds))
+    except (ValueError, AttributeError):
+        return False
+    return hmac.compare_digest(dk.hex(), want)
+
+
+@app.before_request
+def _require_auth():
+    """Basic auth, active only once a password is set.
+
+    Auth is off by default so an unattended upgrade cannot lock anyone out;
+    setting ui_password turns it on for every route at once, including the
+    API, rather than leaving state-changing endpoints exposed.
+    """
+    stored = CFG.get("ui", {}).get("password_hash") or ""
+    if not stored:
+        return None
+    a = request.authorization
+    if a and a.password and check_ui_password(a.password, stored):
+        return None
+    return Response("Authentication required", 401,
+                    {"WWW-Authenticate": 'Basic realm="Fan Controller"'})
+
+
 @app.route("/")
 def index():
     return render_template("index.html")
@@ -716,12 +783,39 @@ def index():
 def api_clienterror():
     """Surface browser-side JS failures in the server log, since a script
     that dies on load leaves no other trace."""
-    b = request.get_json(force=True, silent=True) or {}
+    b = _json_body() or {}
     msg = str(b.get("msg", ""))[:300]
     where = "%s:%s" % (str(b.get("src", ""))[:120], b.get("line", "?"))
     app.logger.error("UI error: %s @ %s", msg, where)
     _log("UI error: %s" % msg[:120])
     return jsonify(ok=True)
+
+
+def _json_body():
+    """Require a real JSON content type on state-changing requests.
+
+    get_json(force=True) parsed any content type, so a cross-origin form
+    post - which needs no preflight - could drive these endpoints.
+    """
+    if not request.is_json:
+        return None
+    return request.get_json(silent=True) or {}
+
+
+@app.route("/api/ui/password", methods=["POST"])
+def api_ui_password():
+    body = _json_body()
+    if body is None:
+        return jsonify(error="Send JSON with Content-Type "
+                             "application/json."), 415
+    pw = body.get("password")
+    if pw is None or (pw != "" and len(pw) < 8):
+        return jsonify(error="Password must be at least 8 characters, or "
+                             "empty to disable authentication."), 400
+    CFG["ui"]["password_hash"] = set_ui_password(pw) if pw else ""
+    save_cfg(CFG)
+    _log("UI password %s" % ("set" if pw else "cleared"))
+    return jsonify(ok=True, enabled=bool(pw))
 
 
 @app.route("/api/state")
@@ -759,7 +853,10 @@ def _guard_credentials(cand, body):
 @app.route("/api/config", methods=["POST"])
 def api_config():
     """Validate against a copy so a rejected save cannot alter live settings."""
-    body = request.get_json(force=True) or {}
+    body = _json_body()
+    if body is None:
+        return jsonify(error="Send JSON with Content-Type "
+                             "application/json."), 415
     cand = copy.deepcopy(CFG)
     for section in ("protect", "hue", "control"):
         raw = {k: v for k, v in (body.get(section) or {}).items()
