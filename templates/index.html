@@ -263,8 +263,8 @@ function drawTrace(hist,on_at,off_at){
     points:hist.map(p=>x(p.t)+","+y(p.v)).join(" "),
     fill:"none",stroke:"#e8edf3","stroke-width":1.6,
     "stroke-linejoin":"round","stroke-linecap":"round"}));
-  const hm=t=>new Date(t*1000).toLocaleTimeString([],
-    {hour:"2-digit",minute:"2-digit"});
+  const hm=t=>{const d=new Date(t*1000),z=n=>String(n).padStart(2,"0");
+    return z(d.getHours())+":"+z(d.getMinutes())};
   const cap={fill:"#97a3b4","font-size":12,
     "font-family":"ui-monospace,monospace"};
   svg.appendChild(txt("CO2 ppm",Object.assign({x:0,y:H-6},cap)));
@@ -351,8 +351,10 @@ function render(s){
       const row=document.createElement("div");
       const when=document.createElement("span");
       const d=new Date(e.at*1000), p=n=>String(n).padStart(2,"0");
+      // Explicit 24-hour formatting; toLocaleTimeString adds am/pm here.
       when.textContent=p(d.getDate())+"/"+p(d.getMonth()+1)+"/"+
-        d.getFullYear()+" "+d.toLocaleTimeString();
+        d.getFullYear()+" "+p(d.getHours())+":"+p(d.getMinutes())+":"+
+        p(d.getSeconds());
       row.appendChild(when);
       row.appendChild(document.createTextNode(e.msg==null?"":String(e.msg)));
       logEl.appendChild(row)});
