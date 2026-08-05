@@ -249,13 +249,12 @@ function fmtAgo(t){if(!t)return"never";
 // sensor is read every poll_seconds, so this needs its own 1s timer or it
 // would jump in 5s steps. Derived from poll_seconds, not a fixed 30, so it
 // stays honest if the interval is changed.
-let SUB={read:null,poll:30,path:null,changed:null};
+let SUB={read:null,poll:30,changed:null};
 function paintSub(){
   if(!SUB.read){$("sub").textContent="Waiting for a reading";return}
   const left=Math.ceil(SUB.read+SUB.poll-Date.now()/1000);
   // A read that is overdue must not show a negative or stuck countdown.
   let t=left>0?"Refresh in "+left+"s":"Refresh due";
-  if(SUB.path)t+=" \u00b7 from "+SUB.path;
   if(SUB.changed)t+=" \u00b7 last switched "+fmtAgo(SUB.changed);
   $("sub").textContent=t;
 }
@@ -405,7 +404,7 @@ function render(s){
   $("dot").className="dot "+(s.error?"bad":(s.co2!=null?"live":""));
   say("topmsg",s.error||"", "err");
   SUB={read:s.reading_at,poll:Number(c.poll_seconds)||30,
-       path:s.co2_path,changed:s.changed_at};
+       changed:s.changed_at};
   paintSub();
   // History is fetched separately and only when it actually changed:
   // it is ~99% of the old /api/state payload but only moves once per poll.
