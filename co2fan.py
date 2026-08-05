@@ -187,7 +187,7 @@ _last_flush = 0.0
 
 EVENTS_PATH = os.path.join(DIR, "events.json")
 EVENTS_MAX = 300      # kept on disk
-EVENTS_SHOWN = 60     # returned to the UI each poll
+EVENTS_SHOWN = 30     # returned to the UI each poll
 
 
 def load_events():

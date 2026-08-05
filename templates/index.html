@@ -81,7 +81,17 @@ border:1px solid rgba(52,211,153,.35)}
 background:#0f1520;border:1px solid var(--line);border-radius:8px;
 padding:8px 11px;cursor:pointer}
 .log{font-family:var(--mono);font-size:13px;color:var(--dim);line-height:1.9}
-.log span{color:var(--faint);margin-right:10px}
+.log div{display:flex;gap:10px;align-items:baseline}
+.log span{flex:0 0 auto;white-space:nowrap;color:var(--faint)}
+@media(max-width:640px){
+header{flex-direction:column;align-items:stretch;gap:10px}
+.seg{width:100%}
+.seg button{flex:1 1 0;padding:11px 4px;text-align:center}
+.now{gap:10px}
+.row{grid-template-columns:1fr;gap:6px}
+.row input,.row select{width:100%}
+.row input[type=checkbox]{width:auto}
+}
 @media(max-width:520px){.ppm{font-size:40px}input,select{width:130px}}
 </style></head><body><div class="wrap">
 
@@ -267,7 +277,9 @@ function drawTrace(hist,on_at,off_at){
     return z(d.getHours())+":"+z(d.getMinutes())};
   const cap={fill:"#97a3b4","font-size":12,
     "font-family":"ui-monospace,monospace"};
-  svg.appendChild(txt("CO2 ppm",Object.assign({x:0,y:H-6},cap)));
+  svg.appendChild(txt("CO2 ppm",{x:L+4,y:TOP+11,fill:"#97a3b4",
+    "font-size":12,opacity:.85,
+    "font-family":"ui-monospace,monospace"}));
   svg.appendChild(txt(hm(t0),Object.assign({x:L,y:H-6},cap)));
   const mins=Math.round(span/60);
   svg.appendChild(txt(mins>=120?Math.round(mins/60)+"h span":mins+"m span",
