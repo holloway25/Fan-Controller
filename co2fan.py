@@ -493,7 +493,8 @@ class Tasmota:
 STATE = {
     "co2": None, "co2_path": None, "fan": None, "reading_at": None,
     "changed_at": None, "error": None, "sensor_name": None,
-    "temperature": None, "humidity": None, "pm25": None, "watts": None,
+    "temperature": None, "humidity": None, "pm25": None,
+    "watts": None, "watts_at": None,
     "latch": {"co2": False, "temp": False},
     "manual_off_pending": False,
     "history": [], "events": [],
@@ -727,6 +728,7 @@ def _failsafe():
 
 
 WATTS_SECONDS = 5
+WATTS_STALE = 15   # a reading older than this is reported as unknown
 
 
 def watts_loop():
@@ -743,7 +745,11 @@ def watts_loop():
             w = plug.power_w()
             with _state_lock:
                 STATE["watts"] = w
+                STATE["watts_at"] = time.time()
         except Exception:
+            # Left for the staleness check rather than cleared here: one
+            # missed request should not blank a valid reading, but a stale
+            # one must never be presented as current.
             pass
         time.sleep(WATTS_SECONDS)
 
@@ -910,6 +916,10 @@ def api_state():
     with _state_lock:
         s = copy.deepcopy(STATE)
     # Trim: 300 events every 5s is needless payload; the rest stay on disk.
+    # An unreachable plug must not leave a positive draw on screen: a
+    # stale reading is reported as unknown, not as current.
+    if not s["watts_at"] or time.time() - s["watts_at"] > WATTS_STALE:
+        s["watts"] = None
     s["events"] = s["events"][:EVENTS_SHOWN]
     s["config"] = _safe_cfg()
     return jsonify(s)

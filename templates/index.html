@@ -341,7 +341,10 @@ function render(s){
   // Relay closed but drawing nothing means the fan is not really running.
   // Grace period: the meter lags a switch by a few seconds, so flagging
   // immediately would false-alarm on every start.
-  const settled=s.changed_at && (Date.now()/1000-s.changed_at)>20;
+  // Absent changed_at means the fan was already running at startup, so it
+  // is certainly settled; requiring the timestamp meant a relay left on
+  // through a restart could never be flagged.
+  const settled=!s.changed_at || (Date.now()/1000-s.changed_at)>20;
   const dead=s.fan===true && settled && s.watts!=null && s.watts<1;
   f.textContent=s.fan==null?"Fan unknown":
     (s.fan?(dead?"Fan on, no draw":"Fan running"):"Fan off");

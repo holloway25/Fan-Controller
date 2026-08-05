@@ -1,7 +1,9 @@
 # Architecture
 
-A single Flask process run under systemd. One background thread polls
-the sensor and switches the fan; the Flask routes serve the UI and settings.
+A single Flask process run under systemd, with two background threads:
+one polls the sensor and switches the fan, the other reads the plug's
+energy meter on a shorter cadence. The Flask routes serve the UI and
+settings.
 
 ```
 UniFi Protect  --HTTPS-->  Fan Controller  --HTTP-->   Tasmota plug
@@ -51,7 +53,7 @@ session expiry.
   loses nothing. Not in git.
 - `events.json` - the activity log, written on each entry and reloaded
   at startup so switching history survives a restart. 300 kept, the
-  most recent 60 returned to the UI each poll. Not in git.
+  most recent 30 returned to the UI each poll. Not in git.
 - In-memory only - latch state and current fan state.
 
 Fan state is re-read from the plug every poll rather than trusted
