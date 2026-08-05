@@ -1,9 +1,11 @@
-# Secrets: UniFi local-account password and Hue application key
+# Secrets: UniFi and plug passwords
 config.json
 
 # Runtime state and vendored dependencies
 history.json
 history.json.tmp
+events.json
+events.json.tmp
 config.json.tmp
 *.log
 libs/

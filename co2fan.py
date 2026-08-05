@@ -1,6 +1,6 @@
-"""CO2-driven Hue fan control.
+"""CO2-driven fan control via a Tasmota smart plug.
 
-Reads CO2 from a UniFi Protect UP-AirQuality sensor and switches Hue
+Reads CO2 from a UniFi Protect UP-AirQuality sensor and switches a
 lights/plugs with hysteresis. Settings are editable in the web UI.
 
 Protect 7.1's documented API omits air-quality metrics, so this reads the
@@ -21,7 +21,7 @@ DEFAULTS = {
     "protect": {"host": "192.168.1.1", "username": "", "password": "",
                 "verify_tls": False,
                 "sensor_id": ""},
-    "hue": {"bridge": "192.168.1.2", "key": "", "lights": []},
+    "plug": {"host": "192.168.1.10", "user": "admin", "password": ""},
     "ui": {"password_hash": ""},
     "control": {"mode": "auto", "on_at": 1000, "off_at": 800,
                 "poll_seconds": 30, "min_run_minutes": 5,
@@ -53,11 +53,11 @@ PROTECT_SCHEMA = {
     "verify_tls": ("bool",),
 }
 UI_SCHEMA = {"password_hash": ("str", 0, 200)}
-HUE_SCHEMA = {
-    "bridge": ("str", 1, 253), "key": ("str", 0, 128),
-    "lights": ("list_str", 0, 32),
+PLUG_SCHEMA = {
+    "host": ("str", 1, 253), "user": ("str", 0, 64),
+    "password": ("str", 0, 128),
 }
-SCHEMAS = {"protect": PROTECT_SCHEMA, "hue": HUE_SCHEMA, "ui": UI_SCHEMA,
+SCHEMAS = {"protect": PROTECT_SCHEMA, "plug": PLUG_SCHEMA, "ui": UI_SCHEMA,
            "control": CONTROL_SCHEMA}
 
 
@@ -185,6 +185,32 @@ HIST_FLUSH_SECONDS = 300  # batch disk writes rather than one per poll
 _last_flush = 0.0
 
 
+EVENTS_PATH = os.path.join(DIR, "events.json")
+EVENTS_MAX = 300      # kept on disk
+EVENTS_SHOWN = 60     # returned to the UI each poll
+
+
+def load_events():
+    try:
+        e = json.load(open(EVENTS_PATH))
+    except (ValueError, OSError):
+        return []
+    if not isinstance(e, list):
+        return []
+    return [x for x in e
+            if isinstance(x, dict) and "at" in x and "msg" in x][:EVENTS_MAX]
+
+
+def save_events(events):
+    """Written on each entry; entries are infrequent and small."""
+    try:
+        tmp = EVENTS_PATH + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(events, f, separators=(",", ":"))
+        os.replace(tmp, EVENTS_PATH)
+    except OSError:
+        pass
+
 def prune_hist(hist, now=None):
     """Keep HIST_HOURS of samples by timestamp, not by count.
 
@@ -277,7 +303,7 @@ class ProtectError(Exception):
     pass
 
 
-class HueError(Exception):
+class PlugError(Exception):
     pass
 
 
@@ -387,104 +413,81 @@ class Protect:
         return hit
 
 
-class Hue:
-    """Hue bridge client. Prefers CLIP v2, falls back to the v1 API."""
+class Tasmota:
+    """Athom/Tasmota plug over the HTTP command API.
 
-    def __init__(self, ip, key=""):
-        self.ip, self.key = ip, key
-        self._v2 = None
+    Credentials go in the query string because /cm accepts no other form;
+    the URL is never logged. Single relay, so unlike the previous Hue
+    client there is no multi-output split state to reconcile.
+    """
 
-    def _url(self, p):
-        return "https://%s%s" % (self.ip, p)
+    def __init__(self, host, user="", password=""):
+        self.host = host
+        self.user = user or "admin"
+        self.password = password or ""
 
-    def pair(self, devicetype="co2fan#dashboard"):
-        """Create an application key. The link button must be pressed first."""
-        r = requests.post(self._url("/api"), json={"devicetype": devicetype},
-                          verify=False, timeout=15)
-        data = r.json()
-        if isinstance(data, list) and data:
-            if "success" in data[0]:
-                self.key = data[0]["success"]["username"]
-                return self.key
-            err = data[0].get("error", {})
-            if err.get("type") == 101:
-                raise HueError("Press the round button on the Hue bridge, then "
-                               "try again within 30 seconds.")
-            raise HueError(err.get("description", "Pairing failed"))
-        raise HueError("Unexpected reply from the bridge")
-
-    def lights(self):
-        """[{id, name, on}] across whichever API version the bridge answers."""
-        if not self.key:
-            raise HueError("Not paired with the bridge yet")
-        if self._v2 is not False:
-            try:
-                r = requests.get(self._url("/clip/v2/resource/light"),
-                                 headers={"hue-application-key": self.key},
-                                 verify=False, timeout=15)
-                if r.status_code == 200:
-                    self._v2 = True
-                    return [{"id": d["id"],
-                             "name": d.get("metadata", {}).get("name", d["id"]),
-                             "on": d.get("on", {}).get("on")}
-                            for d in r.json().get("data", [])]
-            except requests.RequestException:
-                pass
-        self._v2 = False
-        return self._lights_v1()
-
-    def _lights_v1(self):
-        r = requests.get(self._url("/api/%s/lights" % self.key),
-                         verify=False, timeout=15)
-        if r.status_code != 200:
-            raise HueError("Bridge returned HTTP %d listing lights"
-                           % r.status_code)
-        data = r.json()
-        if isinstance(data, list):
-            raise HueError("Bridge rejected the stored key. Pair again.")
-        return [{"id": k, "name": v.get("name", k),
-                 "on": v.get("state", {}).get("on")}
-                for k, v in data.items()]
-
-    @staticmethod
-    def _check_body(r, light_id):
-        """Hue v1 reports rejection inside a 200 body, so status is not
-        enough - trusting it marked failed switches as successful."""
+    def _cmd(self, cmnd):
+        params = {"cmnd": cmnd}
+        if self.password:
+            params["user"] = self.user
+            params["password"] = self.password
+        try:
+            r = requests.get("http://%s/cm" % self.host, params=params,
+                             timeout=12)
+        except requests.RequestException as e:
+            raise PlugError("Cannot reach the plug at %s: %s"
+                            % (self.host, str(e)[:120]))
+        if r.status_code >= 400:
+            raise PlugError("Plug returned HTTP %d" % r.status_code)
+        if not r.content:
+            raise PlugError("Plug returned an empty reply. Enable the HTTP "
+                            "command API on the device (SetOption128 0).")
         try:
             data = r.json()
         except ValueError:
-            return
-        if isinstance(data, list):
-            for item in data:
-                if isinstance(item, dict) and "error" in item:
-                    d = (item["error"] or {}).get("description", "rejected")
-                    raise HueError("Bridge rejected the command for %s: %s"
-                                   % (light_id, d))
-        elif isinstance(data, dict) and data.get("errors"):
-            d = data["errors"][0]
-            raise HueError("Bridge rejected the command for %s: %s"
-                           % (light_id, d.get("description", "rejected")))
+            raise PlugError("Plug returned a non-JSON reply")
+        if "WARNING" in data:
+            raise PlugError("Plug rejected the credentials: %s"
+                            % data["WARNING"])
+        return data
 
-    def set(self, light_id, on):
-        if self._v2:
-            r = requests.put(self._url("/clip/v2/resource/light/" + light_id),
-                             headers={"hue-application-key": self.key},
-                             json={"on": {"on": bool(on)}},
-                             verify=False, timeout=15)
-        else:
-            r = requests.put(
-                self._url("/api/%s/lights/%s/state" % (self.key, light_id)),
-                json={"on": bool(on)}, verify=False, timeout=15)
-        if r.status_code >= 400:
-            raise HueError("Bridge returned HTTP %d switching light %s"
-                           % (r.status_code, light_id))
-        self._check_body(r, light_id)
+    @staticmethod
+    def _power(data):
+        for k in ("POWER", "POWER1"):
+            if k in data:
+                return str(data[k]).upper() == "ON"
+        return None
+
+    def state(self):
+        """True/False, or None if the reply carries no power field."""
+        return self._power(self._cmd("Power"))
+
+    def set(self, on):
+        """Switch, and confirm from the same reply so a rejected command
+        cannot be recorded as a success."""
+        got = self._power(self._cmd("Power %s" % ("ON" if on else "OFF")))
+        if got is None:
+            raise PlugError("Plug reported no power state after switching")
+        if got != bool(on):
+            raise PlugError("Plug reported %s after being told %s"
+                            % ("ON" if got else "OFF",
+                               "ON" if on else "OFF"))
+        return got
+
+    def power_w(self):
+        """Present draw in watts, or None. Confirms the fan is actually
+        running rather than trusting that the relay closed."""
+        d = self._cmd("Status 8")
+        try:
+            return float(d["StatusSNS"]["ENERGY"]["Power"])
+        except (KeyError, TypeError, ValueError):
+            return None
 
 
 STATE = {
     "co2": None, "co2_path": None, "fan": None, "reading_at": None,
     "changed_at": None, "error": None, "sensor_name": None,
-    "temperature": None, "humidity": None, "pm25": None,
+    "temperature": None, "humidity": None, "pm25": None, "watts": None,
     "latch": {"co2": False, "temp": False},
     "manual_off_pending": False,
     "history": [], "events": [],
@@ -495,36 +498,40 @@ START_TIME = time.time()
 _wake = threading.Event()  # set to make the poll loop act at once
 CFG = load_cfg()
 STATE["history"] = load_hist()
+STATE["events"] = load_events()
 
 
 def _log(msg):
     with _state_lock:
         STATE["events"].insert(0, {"at": time.time(), "msg": msg})
-        del STATE["events"][40:]
+        del STATE["events"][EVENTS_MAX:]
+        snapshot = list(STATE["events"])
+    # Written outside the lock; entries survive a restart.
+    save_events(snapshot)
 
 
-_CLIENTS = {"key": None, "protect": None, "hue": None}
+_CLIENTS = {"key": None, "protect": None, "plug": None}
 _clients_lock = threading.Lock()
 
 
 def _clients():
     """Reuse one authenticated session per config.
 
-    Building a new Protect object per poll meant a fresh /api/auth/login
-    every 30s, which UniFi rate-limits with HTTP 429. Clients are rebuilt
-    only when the relevant settings actually change.
+    A new Protect object per poll meant a fresh /api/auth/login every 30s,
+    which UniFi rate-limits with HTTP 429.
     """
-    p, h = CFG["protect"], CFG["hue"]
+    p, g = CFG["protect"], CFG["plug"]
     key = (p["host"], p["username"], p["password"],
-           bool(p.get("verify_tls")), h["bridge"], h["key"])
+           bool(p.get("verify_tls")), g["host"], g["user"], g["password"])
     with _clients_lock:
         if _CLIENTS["key"] != key:
             _CLIENTS.update(key=key,
                             protect=Protect(p["host"], p["username"],
                                             p["password"],
                                             p.get("verify_tls")),
-                            hue=Hue(h["bridge"], h["key"]))
-        return _CLIENTS["protect"], _CLIENTS["hue"]
+                            plug=Tasmota(g["host"], g["user"],
+                                         g["password"]))
+        return _CLIENTS["protect"], _CLIENTS["plug"]
 
 
 def decide(co2, temp, fan_on, c, ran_for, latch):
@@ -571,28 +578,16 @@ def decide(co2, temp, fan_on, c, ran_for, latch):
     return False, why
 
 
-def _fan_status(h, ids):
-    """(state, split) for the selected outputs.
+def _fan_status(plug):
+    """What the plug says it is doing, or None if unreadable.
 
-    state is True/False only when every output agrees, else None. split is
-    True when they read successfully but disagree - that must force a
-    re-send, since a desired state matching the believed state would
-    otherwise skip switching and never repair the odd one out.
+    Single relay, so there is no multi-output split to reconcile as there
+    was with the Hue client.
     """
-    if not ids:
-        return None, False
     try:
-        seen = {l["id"]: l["on"] for l in h.lights()}
-    except HueError:
-        return None, False
-    vals = [seen.get(i) for i in ids]
-    if any(v is None for v in vals):
-        return None, False
-    if all(vals):
-        return True, False
-    if not any(vals):
-        return False, False
-    return None, True
+        return plug.state()
+    except PlugError:
+        return None
 
 
 def tick():
@@ -604,10 +599,14 @@ def tick():
     vals, path = p.readings(sid)
     co2 = vals['co2']
     now = time.time()
-    ids = CFG["hue"]["lights"]
-    actual, split = _fan_status(h, ids)
+    actual = _fan_status(h)
+    try:
+        watts = h.power_w()
+    except PlugError:
+        watts = None
     ext_msg = None
     with _state_lock:
+        STATE["watts"] = watts
         STATE.update(co2=co2, co2_path=path, reading_at=now, error=None,
                      temperature=vals.get('temperature'),
                      humidity=vals.get('humidity'),
@@ -640,9 +639,8 @@ def tick():
         with _state_lock:
             pending = STATE.get("manual_off_pending")
             STATE["manual_off_pending"] = False
-        if pending and fan_on and ids:
-            for lid in ids:
-                h.set(lid, False)
+        if pending and fan_on:
+            h.set(False)
             with _state_lock:
                 STATE["fan"] = False
                 STATE["changed_at"] = now
@@ -650,19 +648,9 @@ def tick():
         return
     want, why = decide(co2, vals.get('temperature'), fan_on, c, ran_for,
                        STATE["latch"])
-    if split:
-        # Outputs disagree: drive them all to the intended state even when
-        # that matches what we already believed.
-        want = want if want is not None else fan_on
-        why = why or "resynchronising outputs"
-    elif want is None or want == fan_on:
+    if want is None or want == fan_on:
         return
-    if want is None:
-        return
-    if not ids:
-        raise HueError("No Hue lights selected yet")
-    for lid in ids:
-        h.set(lid, want)
+    h.set(want)
     with _state_lock:
         STATE["fan"] = want
         STATE["changed_at"] = now
@@ -689,12 +677,8 @@ def _failsafe():
         return
     if already:
         return
-    ids = CFG["hue"]["lights"]
-    if not ids:
-        return
     _, h = _clients()
-    for lid in ids:
-        h.set(lid, True)
+    h.set(True)
     with _state_lock:
         STATE["fan"] = True
         STATE["changed_at"] = time.time()
@@ -712,7 +696,7 @@ def loop():
         try:
             tick()
             fails = 0
-        except (ProtectError, HueError) as e:
+        except (ProtectError, PlugError) as e:
             fails += 1
             with _state_lock:
                 STATE["error"] = str(e)
@@ -723,7 +707,7 @@ def loop():
         if fails:
             # After both branches: a login timeout or malformed payload is
             # exactly when ventilation matters, and neither raises
-            # ProtectError or HueError.
+            # ProtectError or PlugError.
             try:
                 _failsafe()
             except Exception as e:
@@ -742,7 +726,7 @@ def _safe_cfg():
     c = copy.deepcopy(CFG)
     c["ui"]["password_hash"] = "SET" if CFG["ui"]["password_hash"] else ""
     c["protect"]["password"] = "SET" if CFG["protect"]["password"] else ""
-    c["hue"]["key"] = "SET" if CFG["hue"]["key"] else ""
+    c["plug"]["password"] = "SET" if CFG["plug"]["password"] else ""
     return c
 
 
@@ -776,7 +760,7 @@ def check_ui_password(plain, stored):
 # Readable without a password; everything else needs one once set.
 # /api/debug/sensor is deliberately not public: it returns the raw
 # Protect payload, which is diagnostic data, not dashboard data.
-PUBLIC_GET = {"/", "/api/state", "/api/hue/lights"}
+PUBLIC_GET = {"/", "/api/state"}
 PUBLIC_POST = {"/api/clienterror"}
 
 
@@ -861,6 +845,8 @@ def signin():
 def api_state():
     with _state_lock:
         s = copy.deepcopy(STATE)
+    # Trim: 300 events every 5s is needless payload; the rest stay on disk.
+    s["events"] = s["events"][:EVENTS_SHOWN]
     s["config"] = _safe_cfg()
     return jsonify(s)
 
@@ -880,12 +866,12 @@ def _guard_credentials(cand, body):
         cand["protect"]["password"] = ""
         notes.append("Console address changed, so the UniFi password was "
                      "cleared. Enter it again.")
-    bh = body.get("hue") or {}
-    if (cand["hue"]["bridge"] != CFG["hue"]["bridge"]
-            and bh.get("key") in (None, "", "SET")):
-        cand["hue"]["key"] = ""
-        notes.append("Bridge address changed, so the Hue key was cleared. "
-                     "Pair again.")
+    bg = body.get("plug") or {}
+    if (cand["plug"]["host"] != CFG["plug"]["host"]
+            and bg.get("password") in (None, "", "SET")):
+        cand["plug"]["password"] = ""
+        notes.append("Plug address changed, so its password was cleared. "
+                     "Enter it again.")
     return " ".join(notes) or None
 
 
@@ -897,7 +883,7 @@ def api_config():
         return jsonify(error="Send JSON with Content-Type "
                              "application/json."), 415
     cand = copy.deepcopy(CFG)
-    for section in ("protect", "hue", "control"):
+    for section in ("protect", "plug", "control"):
         raw = {k: v for k, v in (body.get(section) or {}).items()
                if v != "SET"}
         try:
@@ -958,24 +944,15 @@ def api_sensors():
         return jsonify(error=str(e)), 400
 
 
-@app.route("/api/hue/pair", methods=["POST"])
-def api_pair():
-    _, h = _clients()
+@app.route("/api/plug/test", methods=["POST"])
+def api_plug_test():
+    """Confirm the plug answers, and report draw as well as relay state."""
+    _, g = _clients()
     try:
-        CFG["hue"]["key"] = h.pair()
-        save_cfg(CFG)
-        _log("Paired with Hue bridge")
-        return jsonify(ok=True, lights=h.lights())
-    except HueError as e:
-        return jsonify(error=str(e)), 400
-
-
-@app.route("/api/hue/lights")
-def api_lights():
-    _, h = _clients()
-    try:
-        return jsonify(lights=h.lights())
-    except HueError as e:
+        state = g.state()
+        watts = g.power_w()
+        return jsonify(ok=True, on=state, watts=watts)
+    except PlugError as e:
         return jsonify(error=str(e)), 400
 
 

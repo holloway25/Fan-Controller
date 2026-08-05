@@ -103,12 +103,20 @@ padding:8px 11px;cursor:pointer}
     <div class="pill" id="tc">--°C</div>
     <div class="pill" id="rh">--%</div>
     <div class="pill" id="pm">-- pm2.5</div>
+    <div class="pill" id="w">-- W</div>
   </div>
   <svg class="trace" id="trace" viewBox="0 0 700 240"></svg>
   <svg class="trace" id="trace2" viewBox="0 0 700 205"></svg>
   <div class="sub" id="sub">Waiting for a reading</div>
   <div class="msg" id="topmsg"></div>
 </div>
+
+<details class="card" id="c-activity" open>
+  <summary>Activity</summary>
+  <div class="body">
+  <div class="log" id="log">Nothing yet.</div>
+  </div>
+</details>
 
 <details class="card" id="c-thresholds">
   <summary>Thresholds</summary>
@@ -164,28 +172,23 @@ padding:8px 11px;cursor:pointer}
   </div>
 </details>
 
-<details class="card" id="c-hue">
-  <summary>Hue</summary>
+<details class="card" id="c-plug">
+  <summary>Fan plug</summary>
   <div class="body">
-  <div class="row"><label>Bridge address</label>
-    <input type="text" id="h_bridge"></div>
-  <div class="row"><label>Pairing
-    <span class="hint">Press the round button on the bridge, then pair within 30 seconds.</span></label>
-    <button id="pair">Pair bridge</button></div>
-  <div id="lights" class="lights"></div>
-  <div class="actions"><button id="reload">Reload lights</button>
-    <button id="save3">Save selection</button></div>
+  <div class="row"><label>Plug address
+    <span class="hint">Tasmota device running the fan.</span></label>
+    <input type="text" id="g_host"></div>
+  <div class="row"><label>Username
+    <span class="hint">Tasmota web user, usually admin.</span></label>
+    <input type="text" id="g_user" autocomplete="off"></div>
+  <div class="row"><label>Password
+    <span class="hint">Blank if no web password is set on the plug.</span></label>
+    <input type="password" id="g_pass" autocomplete="new-password"></div>
+  <div class="actions"><button id="plugtest">Test plug</button>
+    <button id="save3">Save</button></div>
   <div class="msg" id="hmsg"></div>
   </div>
 </details>
-
-<details class="card" id="c-activity" open>
-  <summary>Activity</summary>
-  <div class="body">
-  <div class="log" id="log">Nothing yet.</div>
-  </div>
-</details>
-
 </div>
 </div>
 <script>
@@ -336,6 +339,7 @@ function render(s){
   $("tc").textContent=s.temperature==null?"--\u00b0C":s.temperature.toFixed(1)+"\u00b0C";
   $("rh").textContent=s.humidity==null?"--%":s.humidity.toFixed(1)+"%";
   $("pm").textContent=s.pm25==null?"-- pm2.5":s.pm25.toFixed(1)+" pm2.5";
+  $("w").textContent=s.watts==null?"-- W":s.watts.toFixed(1)+" W";
   document.querySelectorAll("#mode button").forEach(b=>
     b.classList.toggle("sel",b.dataset.mode===c.mode));
   // Built as DOM nodes with textContent: event text can originate from
@@ -360,13 +364,15 @@ function render(s){
   $("p_verify").checked=!!s.config.protect.verify_tls;
   $("p_user").value=s.config.protect.username;
   if(s.config.protect.password==="SET"&&!$("p_pass").value)$("p_pass").placeholder="unchanged";
-  $("h_bridge").value=s.config.hue.bridge;
+  $("g_host").value=s.config.plug.host;
+  $("g_user").value=s.config.plug.user;
+  if(s.config.plug.password==="SET"&&!$("g_pass").value)$("g_pass").placeholder="unchanged";
 }
 
 // Checkboxes and selects fire "change", not "input". Listening for both
 // stops the 5s refresh from overwriting a control the user just touched.
 ["on_at","off_at","min_run_minutes","poll_seconds","p_host",
- "p_user","p_pass","h_bridge","p_sensor","temp_enabled","temp_on","temp_off","p_verify","stale_minutes"].forEach(id=>{
+ "p_user","p_pass","g_host","g_user","g_pass","p_sensor","temp_enabled","temp_on","temp_off","p_verify","stale_minutes"].forEach(id=>{
   $(id).addEventListener("input",dirty);
   $(id).addEventListener("change",dirty);});
 // Light checkboxes are created after load, so delegate.
@@ -384,15 +390,14 @@ async function saveAll(msgEl){
     protect:{host:$("p_host").value.trim(),
       username:$("p_user").value.trim(),
       verify_tls:$("p_verify").checked},
-    hue:{bridge:$("h_bridge").value.trim()}};
+    plug:{host:$("g_host").value.trim(),
+      user:$("g_user").value.trim()}};
+  if($("g_pass").value)body.plug.password=$("g_pass").value;
   if($("p_pass").value)body.protect.password=$("p_pass").value;
   // Only send a selection when the picker is actually populated, so a
   // save from a freshly loaded page cannot wipe a stored choice.
   const sid=$("p_sensor").value;
   if(sid||!(CFG&&CFG.protect.sensor_id))body.protect.sensor_id=sid;
-  const boxes=document.querySelectorAll(".lights input");
-  if(boxes.length)body.hue.lights=
-    [...boxes].filter(i=>i.checked).map(i=>i.value);
   const j=await post("/api/config",body);
   touched=false;
   // A cleared secret is reported so the change is never silent.
@@ -434,34 +439,19 @@ $("find").addEventListener("click",async()=>{
   catch(e){say("pmsg",e.message,"err")}
 });
 
-function showLights(list){
-  const sel=CFG?CFG.hue.lights:[];
-  $("lights").innerHTML=list.map(l=>
-    '<label><input type="checkbox" value="'+l.id+'"'+
-    (sel.includes(l.id)?" checked":"")+">"+
-    l.name.replace(/[<>]/g,"")+"</label>").join("");
-}
-
-$("pair").addEventListener("click",async()=>{
-  say("hmsg","Pairing...","ok");
-  try{await saveAll("hmsg");
-      const j=await post("/api/hue/pair");
-      showLights(j.lights);
-      say("hmsg","Paired. Tick the light or plug driving the fan, then save.","ok");
+$("plugtest").addEventListener("click",async()=>{
+  say("hmsg","Testing...","ok");
+  try{
+    await saveAll("hmsg");
+    const j=await post("/api/plug/test");
+    const w=(j.watts==null)?"no reading":(j.watts.toFixed(1)+" W");
+    say("hmsg","Plug responded. Relay is "+(j.on?"ON":"off")+
+        ", drawing "+w+".","ok");
   }catch(e){say("hmsg",e.message,"err")}
-});
-
-$("reload").addEventListener("click",async()=>{
-  try{const r=await fetch("/api/hue/lights"); const j=await r.json();
-      if(!r.ok)throw new Error(j.error);
-      showLights(j.lights); say("hmsg","","")}
-  catch(e){say("hmsg",e.message,"err")}
 });
 
 let hydrated=false;
 async function hydrate(){
-  try{const r=await fetch("/api/hue/lights"); const j=await r.json();
-      if(j.lights)showLights(j.lights)}catch(e){}
   if(CFG&&CFG.protect.username){
     try{await loadSensors(null)}catch(e){say("pmsg",e.message,"err")}}
 }

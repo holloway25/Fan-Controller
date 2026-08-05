@@ -49,7 +49,10 @@ session expiry.
   the window does not change with the poll interval. Written at most every
   5 minutes rather than every poll, and flushed on SIGTERM so a restart
   loses nothing. Not in git.
-- In-memory only - latch state, event log, current fan state.
+- `events.json` - the activity log, written on each entry and reloaded
+  at startup so switching history survives a restart. 300 kept, the
+  most recent 60 returned to the UI each poll. Not in git.
+- In-memory only - latch state and current fan state.
 
 Fan state is re-read from the Hue bridge every poll rather than trusted
 from memory, so switching the light in the Hue app or Google Home is
