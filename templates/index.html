@@ -145,6 +145,9 @@ padding:8px 11px;cursor:pointer}
   <div class="body">
   <div class="row"><label>UniFi console</label>
     <input type="text" id="p_host"></div>
+  <div class="row"><label>Verify certificate
+    <span class="hint">Only works when the console address is a hostname the certificate covers, not an IP.</span></label>
+    <input type="checkbox" id="p_verify" style="width:auto"></div>
   <div class="row"><label>Local username
     <span class="hint">A local UniFi account without two-factor. Not a UI Cloud login.</span></label>
     <input type="text" id="p_user" autocomplete="off"></div>
@@ -346,6 +349,7 @@ function render(s){
     .forEach(k=>$(k).value=c[k]);
   $("temp_enabled").checked=!!c.temp_enabled;
   $("p_host").value=s.config.protect.host;
+  $("p_verify").checked=!!s.config.protect.verify_tls;
   $("p_user").value=s.config.protect.username;
   if(s.config.protect.password==="SET"&&!$("p_pass").value)$("p_pass").placeholder="unchanged";
   $("h_bridge").value=s.config.hue.bridge;
@@ -354,7 +358,7 @@ function render(s){
 // Checkboxes and selects fire "change", not "input". Listening for both
 // stops the 5s refresh from overwriting a control the user just touched.
 ["on_at","off_at","min_run_minutes","poll_seconds","p_host",
- "p_user","p_pass","h_bridge","p_sensor","temp_enabled","temp_on","temp_off"].forEach(id=>{
+ "p_user","p_pass","h_bridge","p_sensor","temp_enabled","temp_on","temp_off","p_verify"].forEach(id=>{
   $(id).addEventListener("input",dirty);
   $(id).addEventListener("change",dirty);});
 // Light checkboxes are created after load, so delegate.
@@ -369,7 +373,8 @@ async function saveAll(msgEl){
       temp_enabled:$("temp_enabled").checked,
       temp_on:+$("temp_on").value, temp_off:+$("temp_off").value},
     protect:{host:$("p_host").value.trim(),
-      username:$("p_user").value.trim()},
+      username:$("p_user").value.trim(),
+      verify_tls:$("p_verify").checked},
     hue:{bridge:$("h_bridge").value.trim()}};
   if($("p_pass").value)body.protect.password=$("p_pass").value;
   // Only send a selection when the picker is actually populated, so a

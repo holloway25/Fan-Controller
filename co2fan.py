@@ -18,6 +18,7 @@ CFG_PATH = os.path.join(DIR, "config.json")
 
 DEFAULTS = {
     "protect": {"host": "192.168.1.1", "username": "", "password": "",
+                "verify_tls": False,
                 "sensor_id": ""},
     "hue": {"bridge": "192.168.1.2", "key": "", "lights": []},
     "control": {"mode": "auto", "on_at": 1000, "off_at": 800,
@@ -131,8 +132,10 @@ class HueError(Exception):
 class Protect:
     """Local-account session against UniFi OS, reading Protect's bootstrap."""
 
-    def __init__(self, host, username, password):
+    def __init__(self, host, username, password, verify=False):
         self.host, self.username, self.password = host, username, password
+        # verify=True requires a hostname the cert covers, not an IP.
+        self.verify = bool(verify)
         self._s = None
         self._csrf = None
         self._lock = threading.Lock()
@@ -143,10 +146,18 @@ class Protect:
 
     def login(self):
         s = requests.Session()
-        s.verify = False
-        r = s.post(self.base + "/api/auth/login",
-                   json={"username": self.username, "password": self.password,
-                         "rememberMe": True}, timeout=15)
+        s.verify = self.verify
+        try:
+            r = s.post(self.base + "/api/auth/login",
+                       json={"username": self.username,
+                             "password": self.password,
+                             "rememberMe": True}, timeout=15)
+        except requests.exceptions.SSLError as e:
+            raise ProtectError(
+                "TLS verification failed for %s. The certificate must cover "
+                "this exact name and be current - an IP address will not "
+                "validate. Untick Verify certificate to use an IP. (%s)"
+                % (self.host, str(e)[:120]))
         if r.status_code == 499:
             raise ProtectError("That account has two-factor enabled. Create a "
                                "separate local user without 2FA.")
@@ -170,6 +181,12 @@ class Protect:
                 h["X-CSRF-Token"] = self._csrf
             try:
                 r = self._s.get(self.base + path, headers=h, timeout=20)
+            except requests.exceptions.SSLError as e:
+                self._s = None
+                raise ProtectError(
+                    "TLS verification failed for %s. Check the certificate "
+                    "covers this name and has not expired, or turn off "
+                    "Verify certificate. (%s)" % (self.host, e))
             except requests.RequestException as e:
                 self._s = None
                 raise ProtectError("Cannot reach the UniFi console: %s" % e)
@@ -324,12 +341,14 @@ def _clients():
     only when the relevant settings actually change.
     """
     p, h = CFG["protect"], CFG["hue"]
-    key = (p["host"], p["username"], p["password"], h["bridge"], h["key"])
+    key = (p["host"], p["username"], p["password"],
+           bool(p.get("verify_tls")), h["bridge"], h["key"])
     with _clients_lock:
         if _CLIENTS["key"] != key:
             _CLIENTS.update(key=key,
                             protect=Protect(p["host"], p["username"],
-                                            p["password"]),
+                                            p["password"],
+                                            p.get("verify_tls")),
                             hue=Hue(h["bridge"], h["key"]))
         return _CLIENTS["protect"], _CLIENTS["hue"]
 
@@ -537,6 +556,8 @@ def api_config():
             if v == "SET":
                 continue
             cand[section][k] = v
+    cand["protect"]["verify_tls"] = bool(
+        cand["protect"].get("verify_tls"))
     c = cand["control"]
     try:
         on_at, off_at = float(c["on_at"]), float(c["off_at"])
