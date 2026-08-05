@@ -120,8 +120,8 @@ header{flex-direction:column;align-items:stretch;gap:10px}
     <div class="pill" id="rh">--%</div>
     <div class="pill" id="pm">-- pm2.5</div>
   </div>
-  <svg class="trace" id="trace" viewBox="0 0 700 240"></svg>
-  <svg class="trace" id="trace2" viewBox="0 0 700 205"></svg>
+  <svg class="trace" id="trace" viewBox="0 0 700 216"></svg>
+  <svg class="trace" id="trace2" viewBox="0 0 700 231"></svg>
   <div class="sub" id="sub">Waiting for a reading</div>
   <div class="msg" id="topmsg"></div>
 </div>
@@ -252,7 +252,9 @@ function drawTrace(hist,on_at,off_at){
   const NS="http://www.w3.org/2000/svg";
   // Derive geometry from the viewBox so the card can be resized.
   const vb=svg.viewBox.baseVal,W=vb.width||700,H=vb.height||140;
-  const L=46,TOP=10,BOT=H-30;
+  // Time axis lives under the mini charts now, so only a small bottom
+  // margin is reserved here rather than a full label strip.
+  const L=46,TOP=10,BOT=H-6;
   const mk=(n,a)=>{const e=document.createElementNS(NS,n);
     for(const k in a)e.setAttribute(k,a[k]);return e};
   const txt=(s,a)=>{const e=mk("text",a);e.textContent=s;return e};
@@ -278,19 +280,9 @@ function drawTrace(hist,on_at,off_at){
     points:hist.map(p=>x(p.t)+","+y(p.v)).join(" "),
     fill:"none",stroke:"#e8edf3","stroke-width":1.6,
     "stroke-linejoin":"round","stroke-linecap":"round"}));
-  const hm=t=>{const d=new Date(t*1000),z=n=>String(n).padStart(2,"0");
-    return z(d.getHours())+":"+z(d.getMinutes())};
-  const cap={fill:"#97a3b4","font-size":12,
-    "font-family":"ui-monospace,monospace"};
   svg.appendChild(txt("CO2 ppm",{x:L+4,y:TOP+11,fill:"#97a3b4",
     "font-size":12,opacity:.85,
     "font-family":"ui-monospace,monospace"}));
-  svg.appendChild(txt(hm(t0),Object.assign({x:L,y:H-6},cap)));
-  const mins=Math.round(span/60);
-  svg.appendChild(txt(mins>=120?Math.round(mins/60)+"h span":mins+"m span",
-    Object.assign({x:(L+W)/2,y:H-6,"text-anchor":"middle"},cap)));
-  svg.appendChild(txt(hm(t1),Object.assign({x:W,y:H-6,
-    "text-anchor":"end"},cap)));
 }
 
 function drawMini(hist,c){
@@ -312,7 +304,10 @@ function drawMini(hist,c){
   const defs=[["tc","#f5a623","Temperature \u00b0C"],
               ["rh","#34d399","Humidity %"],
               ["pm","#4a9eff","PM2.5 \u00b5g/m\u00b3"]];
-  const GAP=10,BH=(H-GAP*(defs.length-1))/defs.length;
+  // AXIS reserves the strip the shared time labels sit in, so row heights
+  // stay what they were when the axis lived under the CO2 chart.
+  const AXIS=26,GAP=10;
+  const BH=(H-AXIS-GAP*(defs.length-1))/defs.length;
   const rows=defs.map((d,i)=>d.concat([i*(BH+GAP),i*(BH+GAP)+BH]));
   rows.forEach(([key,col,name,top,bot])=>{
     const pts=hist.filter(p=>p[key]!=null);
@@ -363,6 +358,17 @@ function drawMini(hist,c){
     svg.appendChild(txt(lo.toFixed(1)+"\u2013"+hi.toFixed(1),
       {x:rx,y:top+11,fill:"#97a3b4","font-size":11,"text-anchor":anc,
        "font-family":MONO}))});
+  // Shared time axis for both charts: they plot the same window, so one
+  // set of labels at the very bottom serves the CO2 trace above too.
+  const hm=t=>{const d=new Date(t*1000),z=n=>String(n).padStart(2,"0");
+    return z(d.getHours())+":"+z(d.getMinutes())};
+  const cap={fill:"#97a3b4","font-size":12,"font-family":MONO};
+  const mins=Math.round(span/60);
+  svg.appendChild(txt(hm(t0),Object.assign({x:L,y:H-6},cap)));
+  svg.appendChild(txt(mins>=120?Math.round(mins/60)+"h span":mins+"m span",
+    Object.assign({x:(L+W)/2,y:H-6,"text-anchor":"middle"},cap)));
+  svg.appendChild(txt(hm(t1),Object.assign({x:W,y:H-6,
+    "text-anchor":"end"},cap)));
 }
 
 function render(s){
