@@ -350,7 +350,9 @@ function render(s){
     s.events.forEach(e=>{
       const row=document.createElement("div");
       const when=document.createElement("span");
-      when.textContent=new Date(e.at*1000).toLocaleTimeString();
+      const d=new Date(e.at*1000), p=n=>String(n).padStart(2,"0");
+      when.textContent=p(d.getDate())+"/"+p(d.getMonth()+1)+"/"+
+        d.getFullYear()+" "+d.toLocaleTimeString();
       row.appendChild(when);
       row.appendChild(document.createTextNode(e.msg==null?"":String(e.msg)));
       logEl.appendChild(row)});
