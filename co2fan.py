@@ -852,6 +852,10 @@ def _require_auth():
     if not stored:
         return None
     path, method = request.path, request.method
+    # Icons must load without credentials, same as / and /api/state, so a
+    # wall display is not left with a broken tab icon once auth is on.
+    if method in ("GET", "HEAD") and path.startswith("/static/"):
+        return None
     if method in ("GET", "HEAD") and path in PUBLIC_GET:
         return None
     if method == "POST" and path in PUBLIC_POST:
