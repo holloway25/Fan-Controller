@@ -546,6 +546,30 @@ def api_state():
     return jsonify(s)
 
 
+def _guard_credentials(cand, body):
+    """Clear a stored secret when the host it belongs to changes.
+
+    Otherwise anyone reaching the API could repoint the service at a server
+    they control and have it authenticate there with the real credentials,
+    turning a config write into credential theft. Supplying a new secret in
+    the same request is a deliberate reconfiguration and is honoured.
+    """
+    notes = []
+    bp = body.get("protect") or {}
+    if (cand["protect"]["host"] != CFG["protect"]["host"]
+            and bp.get("password") in (None, "", "SET")):
+        cand["protect"]["password"] = ""
+        notes.append("Console address changed, so the UniFi password was "
+                     "cleared. Enter it again.")
+    bh = body.get("hue") or {}
+    if (cand["hue"]["bridge"] != CFG["hue"]["bridge"]
+            and bh.get("key") in (None, "", "SET")):
+        cand["hue"]["key"] = ""
+        notes.append("Bridge address changed, so the Hue key was cleared. "
+                     "Pair again.")
+    return " ".join(notes) or None
+
+
 @app.route("/api/config", methods=["POST"])
 def api_config():
     """Validate against a copy so a rejected save cannot alter live settings."""
@@ -556,6 +580,7 @@ def api_config():
             if v == "SET":
                 continue
             cand[section][k] = v
+    notice = _guard_credentials(cand, body)
     cand["protect"]["verify_tls"] = bool(
         cand["protect"].get("verify_tls"))
     c = cand["control"]
@@ -586,7 +611,7 @@ def api_config():
     save_cfg(CFG)
     _log("Settings saved")
     _wake.set()
-    return jsonify(ok=True, config=_safe_cfg())
+    return jsonify(ok=True, config=_safe_cfg(), notice=notice)
 
 
 @app.route("/api/protect/sensors", methods=["POST"])

@@ -384,9 +384,10 @@ async function saveAll(msgEl){
   const boxes=document.querySelectorAll(".lights input");
   if(boxes.length)body.hue.lights=
     [...boxes].filter(i=>i.checked).map(i=>i.value);
-  await post("/api/config",body);
+  const j=await post("/api/config",body);
   touched=false;
-  say(msgEl,"Saved.","ok");
+  // A cleared secret is reported so the change is never silent.
+  say(msgEl, j.notice || "Saved.", j.notice ? "err" : "ok");
 }
 
 [["save","savemsg"],["save2","pmsg"],["save3","hmsg"]].forEach(([b,m])=>
