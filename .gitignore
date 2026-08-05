@@ -1,0 +1,11 @@
+# Secrets: UniFi local-account password and Hue application key
+config.json
+
+# Runtime state and vendored dependencies
+history.json
+history.json.tmp
+config.json.tmp
+*.log
+libs/
+__pycache__/
+*.pyc

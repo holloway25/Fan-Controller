@@ -1,0 +1,460 @@
+<!doctype html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Office Fan Controller</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#0e1218;--panel:#161c26;--panel2:#1c2530;--line:#27313f;
+--txt:#e8edf3;--dim:#aab6c6;--faint:#97a3b4;--ok:#34d399;--warn:#f87171;
+--air:#4a9eff;--fan:#a78bfa;
+--mono:'JetBrains Mono',ui-monospace,Menlo,monospace;
+--sans:'Inter',system-ui,-apple-system,sans-serif;}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--txt);font-family:var(--sans);
+-webkit-font-smoothing:antialiased;padding:16px;min-height:100vh;
+background-image:radial-gradient(circle at 15% 0%,#16202c 0%,transparent 45%)}
+.wrap{max-width:1020px;margin:0 auto;display:flex;flex-direction:column;gap:14px}
+.grid{display:flex;flex-direction:column;gap:14px}
+details.card{padding:0}
+details.card>summary{list-style:none;cursor:pointer;padding:15px 18px;
+display:flex;align-items:center;gap:8px;font-size:12px;letter-spacing:.09em;
+text-transform:uppercase;color:var(--faint);font-weight:600}
+details.card>summary::-webkit-details-marker{display:none}
+details.card>summary::after{content:"+";margin-left:auto;font-size:17px;
+color:var(--dim);font-weight:400;line-height:1}
+details.card[open]>summary::after{content:"\2212"}
+details.card>summary:hover{color:var(--txt)}
+details.card>.body{padding:0 18px 16px}
+header{display:flex;align-items:baseline;justify-content:space-between;gap:12px}
+h1{font-size:23px;font-weight:700;letter-spacing:-.01em;display:flex;
+align-items:center;gap:9px}
+h1 .dot{width:8px;height:8px;border-radius:50%;background:var(--dim)}
+h1 .dot.live{background:var(--ok);box-shadow:0 0 10px var(--ok)}
+h1 .dot.bad{background:var(--warn);box-shadow:0 0 10px var(--warn)}
+.card{background:linear-gradient(180deg,var(--panel),var(--panel2));
+border:1px solid var(--line);border-radius:14px;padding:16px 18px}
+.ctitle{font-size:12px;letter-spacing:.09em;text-transform:uppercase;
+color:var(--faint);font-weight:600;margin-bottom:14px}
+.now{display:flex;align-items:flex-end;gap:16px;flex-wrap:wrap}
+.ppm{font-family:var(--mono);font-size:52px;font-weight:600;line-height:1;
+letter-spacing:-.02em}
+.ppm small{font-size:16px;color:var(--dim);font-weight:500;margin-left:6px}
+.pill{font-family:var(--mono);font-size:13.5px;font-weight:500;padding:5px 11px;
+border-radius:999px;border:1px solid var(--line);color:var(--dim)}
+.pill.on{background:rgba(167,139,250,.14);border-color:var(--fan);color:var(--fan)}
+.pill.off{color:var(--faint)}
+.sub{font-family:var(--mono);font-size:12.5px;color:var(--faint);margin-top:12px}
+svg.trace{width:100%;height:auto;margin-top:14px;display:block}
+.row{display:grid;grid-template-columns:1fr auto;align-items:center;gap:12px;
+padding:11px 0;border-bottom:1px solid rgba(39,49,63,.6)}
+.row:last-of-type{border-bottom:0}
+.row label{font-size:15px;color:var(--txt)}
+.row .hint{display:block;font-size:12.5px;color:var(--faint);margin-top:3px;
+line-height:1.45}
+input[type=number],input[type=text],input[type=password],select{
+font-family:var(--mono);font-size:14px;background:#0f1520;color:var(--txt);
+border:1px solid var(--line);border-radius:8px;padding:8px 10px;width:150px}
+input:focus,select:focus,button:focus-visible{outline:2px solid var(--air);
+outline-offset:1px}
+select{width:220px}
+button{font-family:var(--sans);font-size:14px;font-weight:500;cursor:pointer;
+background:#22303f;color:var(--txt);border:1px solid var(--line);
+border-radius:8px;padding:9px 15px}
+button:hover{background:#2a3a4c}
+button.primary{background:var(--air);border-color:var(--air);color:#08121e;
+font-weight:600}
+button.primary:hover{filter:brightness(1.1)}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;
+overflow:hidden}
+.seg button{border:0;border-radius:0;padding:8px 14px;background:transparent;
+color:var(--dim)}
+.seg button.sel{background:var(--air);color:#08121e;font-weight:600}
+.actions{display:flex;gap:10px;align-items:center;margin-top:16px;flex-wrap:wrap}
+.msg{font-family:var(--mono);font-size:13px;padding:10px 12px;border-radius:8px;
+margin-top:12px;display:none;line-height:1.5}
+.msg.err{display:block;background:rgba(248,113,113,.12);color:var(--warn);
+border:1px solid rgba(248,113,113,.35)}
+.msg.ok{display:block;background:rgba(52,211,153,.12);color:var(--ok);
+border:1px solid rgba(52,211,153,.35)}
+.lights{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+.lights label{font-size:13.5px;display:flex;align-items:center;gap:7px;
+background:#0f1520;border:1px solid var(--line);border-radius:8px;
+padding:8px 11px;cursor:pointer}
+.log{font-family:var(--mono);font-size:13px;color:var(--dim);line-height:1.9}
+.log span{color:var(--faint);margin-right:10px}
+@media(max-width:520px){.ppm{font-size:40px}input,select{width:130px}}
+</style></head><body><div class="wrap">
+
+<header>
+  <h1><span class="dot" id="dot"></span>Office Fan Controller</h1>
+  <div class="seg" id="mode">
+    <button data-mode="auto" title="Switch on the thresholds below">Auto</button>
+    <button data-mode="manual" title="Never switch the fan; keep recording">Manual</button>
+    <button data-mode="on">Force on</button>
+    <button data-mode="off">Force off</button>
+  </div>
+</header>
+
+<div class="grid">
+<div class="card" id="c-live">
+  <div class="ctitle">Right now</div>
+  <div class="now">
+    <div class="ppm" id="ppm">--<small>ppm</small></div>
+    <div class="pill off" id="fan">Fan unknown</div>
+    <div class="pill" id="tc">--°C</div>
+    <div class="pill" id="rh">--%</div>
+    <div class="pill" id="pm">-- pm2.5</div>
+  </div>
+  <svg class="trace" id="trace" viewBox="0 0 700 240"></svg>
+  <svg class="trace" id="trace2" viewBox="0 0 700 205"></svg>
+  <div class="sub" id="sub">Waiting for a reading</div>
+  <div class="msg" id="topmsg"></div>
+</div>
+
+<details class="card" id="c-thresholds">
+  <summary>Thresholds</summary>
+  <div class="body">
+  <div class="row"><label>Turn the fan on above
+    <span class="hint">Parts per million.</span></label>
+    <input type="number" id="on_at" min="400" max="5000" step="25"></div>
+  <div class="row"><label>Turn the fan off below
+    <span class="hint">Keep a gap of at least 150 ppm below the on level so the fan does not short-cycle.</span></label>
+    <input type="number" id="off_at" min="400" max="5000" step="25"></div>
+  <div class="row"><label>Minimum run time
+    <span class="hint">Once started, keep the fan on this long even if CO2 drops. Minutes.</span></label>
+    <input type="number" id="min_run_minutes" min="0" max="120" step="1"></div>
+  <div class="row"><label>Check every
+    <span class="hint">Seconds between readings.</span></label>
+    <input type="number" id="poll_seconds" min="5" max="600" step="5"></div>
+  <div class="row"><label>Also run on temperature
+    <span class="hint">Sheds heat with the fan before the AC needs to start.</span></label>
+    <input type="checkbox" id="temp_enabled" style="width:auto"></div>
+  <div class="row"><label>Turn the fan on above
+    <span class="hint">Degrees C. Keep this well under your AC setpoint.</span></label>
+    <input type="number" id="temp_on" min="10" max="40" step="0.5"></div>
+  <div class="row"><label>Turn the fan off below
+    <span class="hint">Degrees C.</span></label>
+    <input type="number" id="temp_off" min="10" max="40" step="0.5"></div>
+  <div class="actions"><button class="primary" id="save">Save settings</button></div>
+  <div class="msg" id="savemsg"></div>
+  </div>
+</details>
+
+<details class="card" id="c-sensor">
+  <summary>Air quality sensor</summary>
+  <div class="body">
+  <div class="row"><label>UniFi console</label>
+    <input type="text" id="p_host"></div>
+  <div class="row"><label>Local username
+    <span class="hint">A local UniFi account without two-factor. Not a UI Cloud login.</span></label>
+    <input type="text" id="p_user" autocomplete="off"></div>
+  <div class="row"><label>Password</label>
+    <input type="password" id="p_pass" autocomplete="new-password"></div>
+  <div class="row"><label>Sensor</label>
+    <select id="p_sensor"><option value="">Not selected</option></select></div>
+  <div class="actions"><button id="find">Find sensors</button>
+    <button id="save2">Save</button>
+    <a href="/api/debug/sensor" target="_blank" style="color:var(--faint);font-size:12px">Debug payload</a></div>
+  <div class="msg" id="pmsg"></div>
+  </div>
+</details>
+
+<details class="card" id="c-hue">
+  <summary>Hue</summary>
+  <div class="body">
+  <div class="row"><label>Bridge address</label>
+    <input type="text" id="h_bridge"></div>
+  <div class="row"><label>Pairing
+    <span class="hint">Press the round button on the bridge, then pair within 30 seconds.</span></label>
+    <button id="pair">Pair bridge</button></div>
+  <div id="lights" class="lights"></div>
+  <div class="actions"><button id="reload">Reload lights</button>
+    <button id="save3">Save selection</button></div>
+  <div class="msg" id="hmsg"></div>
+  </div>
+</details>
+
+<details class="card" id="c-activity" open>
+  <summary>Activity</summary>
+  <div class="body">
+  <div class="log" id="log">Nothing yet.</div>
+  </div>
+</details>
+
+</div>
+</div>
+<script>
+// Report script failures to the server; a load-time error is otherwise
+// invisible because the page simply stops updating.
+function _report(msg,src,line){
+  try{fetch("/api/clienterror",{method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({msg:String(msg),src:String(src||""),line:line||0})})}
+  catch(e){}
+}
+window.addEventListener("error",e=>_report(
+  e.message||e.error,e.filename,e.lineno));
+window.addEventListener("unhandledrejection",e=>_report(
+  "unhandled promise: "+(e.reason&&e.reason.message||e.reason),"",0));
+const $=id=>document.getElementById(id);
+let CFG=null, touched=false;
+const dirty=()=>{touched=true};
+
+function say(el,text,kind){const n=$(el);n.textContent=text||"";
+  n.className="msg"+(text?" "+kind:"")}
+
+async function post(url,body){
+  const r=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify(body||{})});
+  const j=await r.json().catch(()=>({error:"Bad reply from server"}));
+  if(!r.ok) throw new Error(j.error||("HTTP "+r.status));
+  return j;
+}
+
+function fmtAgo(t){if(!t)return"never";
+  const s=Math.round(Date.now()/1000-t);
+  if(s<60)return s+"s ago"; if(s<3600)return Math.round(s/60)+"m ago";
+  return Math.round(s/3600)+"h ago"}
+
+function drawTrace(hist,on_at,off_at){
+  const svg=$("trace");
+  while(svg.firstChild)svg.removeChild(svg.firstChild);
+  if(!hist||hist.length<2)return;
+  const NS="http://www.w3.org/2000/svg";
+  // Derive geometry from the viewBox so the card can be resized.
+  const vb=svg.viewBox.baseVal,W=vb.width||700,H=vb.height||140;
+  const L=46,TOP=10,BOT=H-30;
+  const mk=(n,a)=>{const e=document.createElementNS(NS,n);
+    for(const k in a)e.setAttribute(k,a[k]);return e};
+  const txt=(s,a)=>{const e=mk("text",a);e.textContent=s;return e};
+  const vs=hist.map(p=>p.v);
+  const lo=Math.min(...vs,off_at)-40, hi=Math.max(...vs,on_at)+40;
+  const t0=hist[0].t, t1=hist[hist.length-1].t;
+  const span=Math.max(1,t1-t0);
+  const y=v=>TOP+(1-(v-lo)/(hi-lo))*(BOT-TOP);
+  const x=t=>L+((t-t0)/span)*(W-L);
+  svg.appendChild(mk("rect",{x:L,width:W-L,y:y(on_at),
+    height:Math.max(0,y(off_at)-y(on_at)),fill:"rgba(167,139,250,.10)"}));
+  [[on_at,"#a78bfa","fan on"],[off_at,"#4a9eff","fan off"]]
+    .forEach(([v,c,tag])=>{
+    svg.appendChild(mk("line",{x1:L,x2:W,y1:y(v),y2:y(v),stroke:c,
+      "stroke-width":1,"stroke-dasharray":"4 4",opacity:.85}));
+    svg.appendChild(txt(Math.round(v),{x:L-7,y:y(v)+5,fill:c,
+      "font-size":13,"text-anchor":"end",
+       "font-family":"ui-monospace,monospace"}));
+    svg.appendChild(txt(tag,{x:W-2,y:y(v)-5,fill:c,"font-size":11,
+      "text-anchor":"end",opacity:.9,
+      "font-family":"ui-monospace,monospace"}))});
+  svg.appendChild(mk("polyline",{
+    points:hist.map(p=>x(p.t)+","+y(p.v)).join(" "),
+    fill:"none",stroke:"#e8edf3","stroke-width":1.6,
+    "stroke-linejoin":"round","stroke-linecap":"round"}));
+  const hm=t=>new Date(t*1000).toLocaleTimeString([],
+    {hour:"2-digit",minute:"2-digit"});
+  const cap={fill:"#97a3b4","font-size":12,
+    "font-family":"ui-monospace,monospace"};
+  svg.appendChild(txt("CO2 ppm",Object.assign({x:0,y:H-6},cap)));
+  svg.appendChild(txt(hm(t0),Object.assign({x:L,y:H-6},cap)));
+  const mins=Math.round(span/60);
+  svg.appendChild(txt(mins>=120?Math.round(mins/60)+"h span":mins+"m span",
+    Object.assign({x:(L+W)/2,y:H-6,"text-anchor":"middle"},cap)));
+  svg.appendChild(txt(hm(t1),Object.assign({x:W,y:H-6,
+    "text-anchor":"end"},cap)));
+}
+
+function drawMini(hist){
+  const svg=$("trace2");
+  while(svg.firstChild)svg.removeChild(svg.firstChild);
+  if(!hist||hist.length<2)return;
+  const NS="http://www.w3.org/2000/svg";
+  const vb=svg.viewBox.baseVal,W=vb.width||700,H=vb.height||140;
+  const L=46;
+  const mk=(n,a)=>{const e=document.createElementNS(NS,n);
+    for(const k in a)e.setAttribute(k,a[k]);return e};
+  const txt=(s,a)=>{const e=mk("text",a);e.textContent=s;return e};
+  const t0=hist[0].t,t1=hist[hist.length-1].t,span=Math.max(1,t1-t0);
+  const x=t=>L+((t-t0)/span)*(W-L);
+  const MONO="ui-monospace,monospace";
+  // Each metric keeps its own scale; degrees, percent and ug/m3 do not
+  // share an axis. Units live in the name, not the gutter value, so the
+  // gutter text cannot outgrow its 46px column.
+  const defs=[["tc","#f5a623","Temperature \u00b0C"],
+              ["rh","#34d399","Humidity %"],
+              ["pm","#4a9eff","PM2.5 \u00b5g/m\u00b3"]];
+  const GAP=10,BH=(H-GAP*(defs.length-1))/defs.length;
+  const rows=defs.map((d,i)=>d.concat([i*(BH+GAP),i*(BH+GAP)+BH]));
+  rows.forEach(([key,col,name,top,bot])=>{
+    const pts=hist.filter(p=>p[key]!=null);
+    svg.appendChild(txt(name,{x:L+4,y:top+11,fill:col,"font-size":12,
+      opacity:.85,"font-family":MONO}));
+    if(pts.length<2){
+      svg.appendChild(txt("no data yet",{x:W,y:top+11,fill:"#97a3b4",
+        "font-size":11,"text-anchor":"end","font-family":MONO}));
+      return}
+    const vs=pts.map(p=>p[key]);
+    let lo=Math.min(...vs),hi=Math.max(...vs);
+    if(hi-lo<0.5){lo-=0.5;hi+=0.5}
+    const y=v=>top+17+(1-(v-lo)/(hi-lo))*(bot-top-17);
+    svg.appendChild(mk("polyline",{
+      points:pts.map(p=>x(p.t)+","+y(p[key])).join(" "),
+      fill:"none",stroke:col,"stroke-width":1.4,
+      "stroke-linejoin":"round","stroke-linecap":"round"}));
+    svg.appendChild(txt(vs[vs.length-1].toFixed(1),
+      {x:L-7,y:(top+bot)/2+7,fill:col,"font-size":13,"text-anchor":"end",
+       "font-family":MONO}));
+    svg.appendChild(txt(lo.toFixed(1)+"\u2013"+hi.toFixed(1),
+      {x:W,y:top+11,fill:"#97a3b4","font-size":11,"text-anchor":"end",
+       "font-family":MONO}))});
+}
+
+function render(s){
+  const c=s.config.control;
+  $("ppm").innerHTML=(s.co2==null?"--":Math.round(s.co2))+"<small>ppm</small>";
+  const f=$("fan");
+  f.textContent=s.fan==null?"Fan unknown":(s.fan?"Fan running":"Fan off");
+  f.className="pill "+(s.fan?"on":"off");
+  $("dot").className="dot "+(s.error?"bad":(s.co2!=null?"live":""));
+  say("topmsg",s.error||"", "err");
+  let sub="Waiting for a reading";
+  if(s.reading_at){sub="Read "+fmtAgo(s.reading_at);
+    if(s.co2_path)sub+=" from "+s.co2_path;
+    if(s.changed_at)sub+=" \u00b7 last switched "+fmtAgo(s.changed_at)}
+  $("sub").textContent=sub;
+  drawTrace(s.history,c.on_at,c.off_at);
+  drawMini(s.history);
+  $("tc").textContent=s.temperature==null?"--\u00b0C":s.temperature.toFixed(1)+"\u00b0C";
+  $("rh").textContent=s.humidity==null?"--%":s.humidity.toFixed(1)+"%";
+  $("pm").textContent=s.pm25==null?"-- pm2.5":s.pm25.toFixed(1)+" pm2.5";
+  document.querySelectorAll("#mode button").forEach(b=>
+    b.classList.toggle("sel",b.dataset.mode===c.mode));
+  $("log").innerHTML=(s.events&&s.events.length)
+    ? s.events.map(e=>"<div><span>"+new Date(e.at*1000)
+        .toLocaleTimeString()+"</span>"+e.msg+"</div>").join("")
+    : "Nothing yet.";
+  if(touched)return;
+  CFG=s.config;
+  ["on_at","off_at","min_run_minutes","poll_seconds","temp_on","temp_off"]
+    .forEach(k=>$(k).value=c[k]);
+  $("temp_enabled").checked=!!c.temp_enabled;
+  $("p_host").value=s.config.protect.host;
+  $("p_user").value=s.config.protect.username;
+  if(s.config.protect.password==="SET"&&!$("p_pass").value)$("p_pass").placeholder="unchanged";
+  $("h_bridge").value=s.config.hue.bridge;
+}
+
+// Checkboxes and selects fire "change", not "input". Listening for both
+// stops the 5s refresh from overwriting a control the user just touched.
+["on_at","off_at","min_run_minutes","poll_seconds","p_host",
+ "p_user","p_pass","h_bridge","p_sensor","temp_enabled","temp_on","temp_off"].forEach(id=>{
+  $(id).addEventListener("input",dirty);
+  $(id).addEventListener("change",dirty);});
+// Light checkboxes are created after load, so delegate.
+document.addEventListener("change",e=>{
+  if(e.target&&e.target.closest&&e.target.closest(".lights"))dirty();});
+
+async function saveAll(msgEl){
+  const body={control:{
+      on_at:+$("on_at").value, off_at:+$("off_at").value,
+      min_run_minutes:+$("min_run_minutes").value,
+      poll_seconds:+$("poll_seconds").value,
+      temp_enabled:$("temp_enabled").checked,
+      temp_on:+$("temp_on").value, temp_off:+$("temp_off").value},
+    protect:{host:$("p_host").value.trim(),
+      username:$("p_user").value.trim()},
+    hue:{bridge:$("h_bridge").value.trim()}};
+  if($("p_pass").value)body.protect.password=$("p_pass").value;
+  // Only send a selection when the picker is actually populated, so a
+  // save from a freshly loaded page cannot wipe a stored choice.
+  const sid=$("p_sensor").value;
+  if(sid||!(CFG&&CFG.protect.sensor_id))body.protect.sensor_id=sid;
+  const boxes=document.querySelectorAll(".lights input");
+  if(boxes.length)body.hue.lights=
+    [...boxes].filter(i=>i.checked).map(i=>i.value);
+  await post("/api/config",body);
+  touched=false;
+  say(msgEl,"Saved.","ok");
+}
+
+[["save","savemsg"],["save2","pmsg"],["save3","hmsg"]].forEach(([b,m])=>
+  $(b).addEventListener("click",async()=>{
+    try{await saveAll(m)}catch(e){say(m,e.message,"err")}}));
+
+document.querySelectorAll("#mode button").forEach(b=>
+  b.addEventListener("click",async()=>{
+    try{await post("/api/config",{control:{mode:b.dataset.mode}});
+        say("topmsg","","")}
+    catch(e){say("topmsg",e.message,"err")}
+    tickUI()}));
+
+async function loadSensors(msgEl){
+  const j=await post("/api/protect/sensors");
+  const sel=$("p_sensor"), cur=CFG?CFG.protect.sensor_id:"";
+  sel.innerHTML='<option value="">Not selected</option>';
+  j.sensors.forEach(s=>{
+    const o=document.createElement("option");
+    o.value=s.id;
+    o.textContent=s.name+(s.co2!=null
+      ? "  \u2014 "+Math.round(s.co2)+" ppm" : "  \u2014 no CO2 field");
+    if(s.id===cur)o.selected=true;
+    sel.appendChild(o)});
+  if(msgEl){
+    const n=j.sensors.filter(s=>s.co2!=null).length;
+    say(msgEl,j.sensors.length+" sensor(s) found, "+n+" reporting CO2."+
+      (n?" Pick one and save.":" Open the debug view to see the payload."),
+      n?"ok":"err")}
+}
+
+$("find").addEventListener("click",async()=>{
+  say("pmsg","Connecting...","ok");
+  try{await saveAll("pmsg"); await loadSensors("pmsg")}
+  catch(e){say("pmsg",e.message,"err")}
+});
+
+function showLights(list){
+  const sel=CFG?CFG.hue.lights:[];
+  $("lights").innerHTML=list.map(l=>
+    '<label><input type="checkbox" value="'+l.id+'"'+
+    (sel.includes(l.id)?" checked":"")+">"+
+    l.name.replace(/[<>]/g,"")+"</label>").join("");
+}
+
+$("pair").addEventListener("click",async()=>{
+  say("hmsg","Pairing...","ok");
+  try{await saveAll("hmsg");
+      const j=await post("/api/hue/pair");
+      showLights(j.lights);
+      say("hmsg","Paired. Tick the light or plug driving the fan, then save.","ok");
+  }catch(e){say("hmsg",e.message,"err")}
+});
+
+$("reload").addEventListener("click",async()=>{
+  try{const r=await fetch("/api/hue/lights"); const j=await r.json();
+      if(!r.ok)throw new Error(j.error);
+      showLights(j.lights); say("hmsg","","")}
+  catch(e){say("hmsg",e.message,"err")}
+});
+
+let hydrated=false;
+async function hydrate(){
+  try{const r=await fetch("/api/hue/lights"); const j=await r.json();
+      if(j.lights)showLights(j.lights)}catch(e){}
+  if(CFG&&CFG.protect.username){
+    try{await loadSensors(null)}catch(e){say("pmsg",e.message,"err")}}
+}
+
+// Remember which sections were left open, per browser.
+document.querySelectorAll("details.card").forEach(d=>{
+  const k="co2fan.open."+d.id;
+  try{const v=localStorage.getItem(k); if(v!==null)d.open=(v==="1")}catch(e){}
+  d.addEventListener("toggle",()=>{
+    try{localStorage.setItem(k,d.open?"1":"0")}catch(e){}});
+});
+
+async function tickUI(){
+  try{const r=await fetch("/api/state"); render(await r.json());
+      if(!hydrated&&CFG){hydrated=true; hydrate()}}
+  catch(e){$("dot").className="dot bad"}
+}
+tickUI();
+setInterval(tickUI,5000);
+</script></body></html>
