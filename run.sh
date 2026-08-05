@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
-# Start co2fan unless it is already running. Safe to call repeatedly (cron).
-cd "$HOME/co2fan" || exit 1
+# Start the controller unless it is already running. Safe to call repeatedly.
+# Works from any directory, and prefers a venv over vendored libs.
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$DIR" || exit 1
 pgrep -f "[c]o2fan.py" >/dev/null 2>&1 && exit 0
-setsid --fork env PYTHONPATH="$HOME/co2fan/libs" python3 co2fan.py \
-  >> co2fan.log 2>&1 < /dev/null
+if [ -x "$DIR/venv/bin/python" ]; then
+  PY="$DIR/venv/bin/python"
+else
+  PY="python3"
+  export PYTHONPATH="$DIR/libs"
+fi
+setsid --fork "$PY" co2fan.py >> co2fan.log 2>&1 < /dev/null
