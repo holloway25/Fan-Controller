@@ -45,8 +45,10 @@ session expiry.
 ## State
 
 - `config.json` - settings, written atomically, mode 0600. Not in git.
-- `history.json` - 24h of readings at 30s, so a restart does not blank
-  the charts. Not in git.
+- `history.json` - readings from the last 24 hours, pruned by timestamp so
+  the window does not change with the poll interval. Written at most every
+  5 minutes rather than every poll, and flushed on SIGTERM so a restart
+  loses nothing. Not in git.
 - In-memory only - latch state, event log, current fan state.
 
 Fan state is re-read from the Hue bridge every poll rather than trusted

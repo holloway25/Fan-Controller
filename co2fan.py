@@ -7,7 +7,7 @@ Protect 7.1's documented API omits air-quality metrics, so this reads the
 private /proxy/protect/api/bootstrap endpoint. That is undocumented and may
 break on firmware updates; use the Debug view to inspect the live payload.
 """
-import json, os, threading, time, copy
+import atexit, copy, json, os, signal, sys, threading, time
 import requests, urllib3
 from flask import Flask, jsonify, request, render_template
 
@@ -63,15 +63,31 @@ def save_cfg(cfg):
 
 
 HIST_PATH = os.path.join(DIR, "history.json")
-HIST_MAX = 2880  # 24h at 30s polling
+HIST_HOURS = 24           # retention window, independent of poll interval
+HIST_CAP = 20000          # memory bound if poll_seconds is very small
+HIST_FLUSH_SECONDS = 300  # batch disk writes rather than one per poll
+_last_flush = 0.0
+
+
+def prune_hist(hist, now=None):
+    """Keep HIST_HOURS of samples by timestamp, not by count.
+
+    A fixed sample cap only equals 24h at one specific poll interval, so
+    changing poll_seconds silently changed the retention window. HIST_CAP
+    remains as a memory bound, not as the retention policy.
+    """
+    cutoff = (now or time.time()) - HIST_HOURS * 3600
+    kept = [p for p in hist
+            if isinstance(p, dict) and (p.get("t") or 0) >= cutoff]
+    return kept[-HIST_CAP:]
 
 
 def load_hist():
     try:
         h = json.load(open(HIST_PATH))
-        return h[-HIST_MAX:] if isinstance(h, list) else []
     except (ValueError, OSError):
         return []
+    return prune_hist(h) if isinstance(h, list) else []
 
 
 def save_hist(hist):
@@ -84,6 +100,26 @@ def save_hist(hist):
     except OSError:
         pass
 
+
+
+def maybe_save_hist(hist, force=False):
+    """Batch writes: one full rewrite per poll was 2,880 a day at 30s."""
+    global _last_flush
+    now = time.time()
+    if not force and now - _last_flush < HIST_FLUSH_SECONDS:
+        return False
+    save_hist(hist)
+    _last_flush = now
+    return True
+
+
+def flush_hist(signum=None, frame=None):
+    """Persist on shutdown so batching never costs a restart's samples."""
+    with _state_lock:
+        snapshot = list(STATE["history"])
+    maybe_save_hist(snapshot, force=True)
+    if signum is not None:
+        sys.exit(0)
 
 def _num(v):
     if isinstance(v, bool):
@@ -443,7 +479,7 @@ def tick():
                                  "tc": vals.get('temperature'),
                                  "rh": vals.get('humidity'),
                                  "pm": vals.get('pm25')})
-        del STATE["history"][:-HIST_MAX]
+        STATE["history"][:] = prune_hist(STATE["history"], now)
         hsnap = list(STATE["history"])
         prev = STATE["fan"]
         if actual is not None and actual != prev:
@@ -459,7 +495,7 @@ def tick():
                            % ("on" if actual else "off"))
         fan_on = STATE["fan"]
         changed = STATE["changed_at"]
-    save_hist(hsnap)
+    maybe_save_hist(hsnap)
     if ext_msg:
         _log(ext_msg)
     ran_for = (now - changed) if changed else None
@@ -662,5 +698,8 @@ def api_debug():
 
 
 if __name__ == "__main__":
+    atexit.register(flush_hist)
+    for _sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(_sig, flush_hist)
     threading.Thread(target=loop, daemon=True).start()
     app.run(host="0.0.0.0", port=8096, threaded=True)
