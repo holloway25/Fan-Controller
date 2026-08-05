@@ -293,7 +293,7 @@ function drawTrace(hist,on_at,off_at){
     "text-anchor":"end"},cap)));
 }
 
-function drawMini(hist){
+function drawMini(hist,c){
   const svg=$("trace2");
   while(svg.firstChild)svg.removeChild(svg.firstChild);
   if(!hist||hist.length<2)return;
@@ -316,16 +316,36 @@ function drawMini(hist){
   const rows=defs.map((d,i)=>d.concat([i*(BH+GAP),i*(BH+GAP)+BH]));
   rows.forEach(([key,col,name,top,bot])=>{
     const pts=hist.filter(p=>p[key]!=null);
-    svg.appendChild(txt(name,{x:L+4,y:top+11,fill:col,"font-size":12,
-      opacity:.85,"font-family":MONO}));
+    // Thresholds exist only for temperature, and only while it drives
+    // the fan. Disabled triggers must not imply the fan reacts to them.
+    const thr=(key==="tc"&&c&&c.temp_enabled&&c.temp_on!=null
+      &&c.temp_off!=null)?[c.temp_on,c.temp_off]:null;
+    const nameEl=txt(name,{x:L+4,y:top+11,fill:col,"font-size":12,
+      opacity:.85,"font-family":MONO});
+    svg.appendChild(nameEl);
     if(pts.length<2){
       svg.appendChild(txt("no data yet",{x:W,y:top+11,fill:"#97a3b4",
         "font-size":11,"text-anchor":"end","font-family":MONO}));
       return}
     const vs=pts.map(p=>p[key]);
     let lo=Math.min(...vs),hi=Math.max(...vs);
+    // Keep the lines on screen even if the room never reaches them.
+    if(thr){lo=Math.min(lo,...thr);hi=Math.max(hi,...thr)}
     if(hi-lo<0.5){lo-=0.5;hi+=0.5}
     const y=v=>top+17+(1-(v-lo)/(hi-lo))*(bot-top-17);
+    if(thr){
+      const yon=y(thr[0]),yoff=y(thr[1]);
+      svg.appendChild(mk("rect",{x:L,width:W-L,y:yon,
+        height:Math.max(0,yoff-yon),fill:"rgba(167,139,250,.10)"}));
+      // Tag above the on line and below the off line. On a 45px row the
+      // two are often ~7px apart, so same-side tags would overlap.
+      [[thr[0],"#a78bfa","fan on",-4],[thr[1],"#4a9eff","fan off",11]]
+        .forEach(([v,lcol,tag,dy])=>{
+        svg.appendChild(mk("line",{x1:L,x2:W,y1:y(v),y2:y(v),stroke:lcol,
+          "stroke-width":1,"stroke-dasharray":"4 4",opacity:.85}));
+        svg.appendChild(txt(tag,{x:W-2,y:y(v)+dy,fill:lcol,"font-size":11,
+          "text-anchor":"end",opacity:.9,"font-family":MONO}))});
+    }
     svg.appendChild(mk("polyline",{
       points:pts.map(p=>x(p.t)+","+y(p[key])).join(" "),
       fill:"none",stroke:col,"stroke-width":1.4,
@@ -333,8 +353,15 @@ function drawMini(hist){
     svg.appendChild(txt(vs[vs.length-1].toFixed(1),
       {x:L-7,y:(top+bot)/2+7,fill:col,"font-size":13,"text-anchor":"end",
        "font-family":MONO}));
+    // The fan tags own the right edge on this row, so the range follows
+    // the row name instead. Measured rather than estimated, so a longer
+    // label can never overlap it.
+    let rx=W,anc="end";
+    if(thr){let nw=100;
+      try{nw=nameEl.getComputedTextLength()}catch(e){}
+      rx=L+4+nw+12;anc="start"}
     svg.appendChild(txt(lo.toFixed(1)+"\u2013"+hi.toFixed(1),
-      {x:W,y:top+11,fill:"#97a3b4","font-size":11,"text-anchor":"end",
+      {x:rx,y:top+11,fill:"#97a3b4","font-size":11,"text-anchor":anc,
        "font-family":MONO}))});
 }
 
@@ -369,11 +396,11 @@ function render(s){
       // Store the revision the response carried, not the one we saw, or a
       // change landing mid-flight would be missed until the next one.
       HIST_REV=h.history_rev; HIST_BUSY=false;
-      drawTrace(HIST,c.on_at,c.off_at); drawMini(HIST);
+      drawTrace(HIST,c.on_at,c.off_at); drawMini(HIST,c);
     }).catch(()=>{HIST_BUSY=false});
   }
   drawTrace(HIST,c.on_at,c.off_at);
-  drawMini(HIST);
+  drawMini(HIST,c);
   $("tc").textContent=s.temperature==null?"--\u00b0C":s.temperature.toFixed(1)+"\u00b0C";
   $("rh").textContent=s.humidity==null?"--%":s.humidity.toFixed(1)+"%";
   $("pm").textContent=s.pm25==null?"-- pm2.5":s.pm25.toFixed(1)+" pm2.5";
