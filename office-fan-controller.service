@@ -1,0 +1,17 @@
+[Unit]
+Description=Office Fan Controller (CO2-driven Hue fan control)
+Documentation=https://github.com/holloway25/Fan-Controller
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=fan-admin
+Group=fan-admin
+WorkingDirectory=/home/fan-admin/office-fan-controller
+ExecStart=/home/fan-admin/office-fan-controller/venv/bin/python co2fan.py
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
