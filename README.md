@@ -17,7 +17,7 @@ Tasmota smart plug with hysteresis. Web UI on port 8096.
 3. Open **Fan plug**, enter the plug's address and web password,
    then **Test plug**. It reports relay state and current draw.
    The plug's HTTP command API must be enabled.
-4. Set thresholds and tick **Run the control loop**.
+4. Set thresholds, then select **Auto** to hand control to them.
 
 ## How it switches
 

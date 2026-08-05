@@ -131,10 +131,10 @@ def load_cfg():
         if not isinstance(disk, dict):
             disk = {}
         for k, v in disk.items():
-            if isinstance(v, dict) and k in cfg:
+            # Unknown top-level entries are discarded rather than carried
+            # forward, matching the per-section rejection of unknown keys.
+            if k in cfg and isinstance(v, dict):
                 cfg[k].update(v)
-            else:
-                cfg[k] = v
     ctl = cfg.get("control")
     ctl = ctl if isinstance(ctl, dict) else {}
     if ctl.get("mode") == "off":
@@ -909,7 +909,10 @@ def _describe_changes(cand):
     A generic "Settings saved" on every click buried the fan events that
     matter, and fired even when a save changed nothing at all.
     """
-    changed = [(sec, k) for sec in cand for k, v in cand[sec].items()
+    # Only known sections: an unknown scalar at the top level would
+    # otherwise raise AttributeError and fail every save with a 500.
+    changed = [(sec, k) for sec in SCHEMAS
+               for k, v in cand.get(sec, {}).items()
                if CFG.get(sec, {}).get(k) != v]
     if not changed:
         return None

@@ -36,8 +36,8 @@ clear, to prevent short-cycling. Two exceptions:
 
 - The first reading after startup does not restart the timer, so an
   already-running fan is not granted a fresh lease on every restart.
-- Leaving Force on or Force off clears the lease, so returning to Auto
-  takes effect at once rather than serving out a timer started manually.
+- Leaving Force on clears the lease, so returning to Auto takes effect at
+  once rather than serving out a timer started manually.
 
 ## Responsiveness
 
