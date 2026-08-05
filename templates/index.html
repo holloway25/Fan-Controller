@@ -245,6 +245,22 @@ function fmtAgo(t){if(!t)return"never";
   if(s<60)return s+"s ago"; if(s<3600)return Math.round(s/60)+"m ago";
   return Math.round(s/3600)+"h ago"}
 
+// A countdown rather than a timestamp. The UI polls every 5s but the
+// sensor is read every poll_seconds, so this needs its own 1s timer or it
+// would jump in 5s steps. Derived from poll_seconds, not a fixed 30, so it
+// stays honest if the interval is changed.
+let SUB={read:null,poll:30,path:null,changed:null};
+function paintSub(){
+  if(!SUB.read){$("sub").textContent="Waiting for a reading";return}
+  const left=Math.ceil(SUB.read+SUB.poll-Date.now()/1000);
+  // A read that is overdue must not show a negative or stuck countdown.
+  let t=left>0?"Refresh in "+left+"s":"Refresh due";
+  if(SUB.path)t+=" \u00b7 from "+SUB.path;
+  if(SUB.changed)t+=" \u00b7 last switched "+fmtAgo(SUB.changed);
+  $("sub").textContent=t;
+}
+setInterval(paintSub,1000);
+
 function drawTrace(hist,on_at,off_at){
   const svg=$("trace");
   while(svg.firstChild)svg.removeChild(svg.firstChild);
@@ -388,11 +404,9 @@ function render(s){
   f.className="pill "+(dead?"bad":(s.fan?"on":"off"));
   $("dot").className="dot "+(s.error?"bad":(s.co2!=null?"live":""));
   say("topmsg",s.error||"", "err");
-  let sub="Waiting for a reading";
-  if(s.reading_at){sub="Read "+fmtAgo(s.reading_at);
-    if(s.co2_path)sub+=" from "+s.co2_path;
-    if(s.changed_at)sub+=" \u00b7 last switched "+fmtAgo(s.changed_at)}
-  $("sub").textContent=sub;
+  SUB={read:s.reading_at,poll:Number(c.poll_seconds)||30,
+       path:s.co2_path,changed:s.changed_at};
+  paintSub();
   // History is fetched separately and only when it actually changed:
   // it is ~99% of the old /api/state payload but only moves once per poll.
   if(s.history_rev!==HIST_REV&&!HIST_BUSY){
