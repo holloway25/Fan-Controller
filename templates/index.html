@@ -42,6 +42,7 @@ letter-spacing:-.02em}
 .pill{font-family:var(--mono);font-size:13.5px;font-weight:500;padding:5px 11px;
 border-radius:999px;border:1px solid var(--line);color:var(--dim)}
 .pill.on{background:rgba(167,139,250,.14);border-color:var(--fan);color:var(--fan)}
+.pill.bad{background:rgba(248,113,113,.14);border-color:var(--warn);color:var(--warn)}
 .pill.off{color:var(--faint)}
 .sub{font-family:var(--mono);font-size:12.5px;color:var(--faint);margin-top:12px}
 svg.trace{width:100%;height:auto;margin-top:14px;display:block}
@@ -337,8 +338,14 @@ function render(s){
   const c=s.config.control;
   $("ppm").innerHTML=(s.co2==null?"--":Math.round(s.co2))+"<small>ppm</small>";
   const f=$("fan");
-  f.textContent=s.fan==null?"Fan unknown":(s.fan?"Fan running":"Fan off");
-  f.className="pill "+(s.fan?"on":"off");
+  // Relay closed but drawing nothing means the fan is not really running.
+  // Grace period: the meter lags a switch by a few seconds, so flagging
+  // immediately would false-alarm on every start.
+  const settled=s.changed_at && (Date.now()/1000-s.changed_at)>20;
+  const dead=s.fan===true && settled && s.watts!=null && s.watts<1;
+  f.textContent=s.fan==null?"Fan unknown":
+    (s.fan?(dead?"Fan on, no draw":"Fan running"):"Fan off");
+  f.className="pill "+(dead?"bad":(s.fan?"on":"off"));
   $("dot").className="dot "+(s.error?"bad":(s.co2!=null?"live":""));
   say("topmsg",s.error||"", "err");
   let sub="Waiting for a reading";
