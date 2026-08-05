@@ -498,7 +498,7 @@ STATE = {
     "watts": None, "watts_at": None,
     "latch": {"co2": False, "temp": False},
     "manual_off_pending": False,
-    "history": [], "events": [],
+    "history": [], "events": [], "history_rev": 0,
 }
 # RLock, not Lock: nested acquisition deadlocked the poll thread.
 _state_lock = threading.RLock()
@@ -506,6 +506,7 @@ START_TIME = time.time()
 _wake = threading.Event()  # set to make the poll loop act at once
 CFG = load_cfg()
 STATE["history"] = load_hist()
+STATE["history_rev"] = 1
 STATE["events"] = load_events()
 
 
@@ -663,6 +664,7 @@ def tick():
                                  "rh": vals.get('humidity'),
                                  "pm": vals.get('pm25')})
         STATE["history"][:] = prune_hist(STATE["history"], now)
+        STATE["history_rev"] += 1
         hsnap = list(STATE["history"])
         prev = STATE["fan"]
         if actual is not None and actual != prev:
@@ -837,7 +839,7 @@ def check_ui_password(plain, stored):
 # Readable without a password; everything else needs one once set.
 # /api/debug/sensor is deliberately not public: it returns the raw
 # Protect payload, which is diagnostic data, not dashboard data.
-PUBLIC_GET = {"/", "/api/state"}
+PUBLIC_GET = {"/", "/api/state", "/api/history"}
 PUBLIC_POST = {"/api/clienterror"}
 
 
@@ -925,7 +927,13 @@ def signin():
 @app.route("/api/state")
 def api_state():
     with _state_lock:
-        s = copy.deepcopy(STATE)
+        # Exclude history from the copy rather than dropping it afterwards:
+        # deep-copying ~2500 points twelve times a minute is pure waste. It
+        # is ~99% of the payload and changes once per poll, not once per UI
+        # refresh, so it moves to /api/history and history_rev says when to
+        # refetch.
+        s = copy.deepcopy({k: v for k, v in STATE.items()
+                           if k != "history"})
     # Trim: 300 events every 5s is needless payload; the rest stay on disk.
     # An unreachable plug must not leave a positive draw on screen: a
     # stale reading is reported as unknown, not as current.
@@ -934,6 +942,19 @@ def api_state():
     s["events"] = s["events"][:EVENTS_SHOWN]
     s["config"] = _safe_cfg()
     return jsonify(s)
+
+
+@app.route("/api/history")
+def api_history():
+    """The 24h trace, split out of /api/state.
+
+    Returned with its own revision so a client that fetches while the poll
+    thread appends stores the revision it actually received, rather than
+    the one it saw a moment earlier and then missing the next change.
+    """
+    with _state_lock:
+        return jsonify({"history": list(STATE["history"]),
+                        "history_rev": STATE["history_rev"]})
 
 
 MODE_LABELS = {"auto": "Auto", "manual": "Manual", "on": "Force on"}

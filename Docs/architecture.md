@@ -61,8 +61,9 @@ placed in front, the count must change to match or the logged address
 silently reverts to the nearest proxy.
 
 Icons live under /static and are served by Flask directly. nginx also
-compresses application/json, without which /api/state ships well over
-100KB uncompressed on every 5 second poll.
+compresses application/json, which matters most for /api/history - the
+trace is the one large payload left, and it is fetched only when the
+revision changes rather than on every 5 second poll.
 
 ## State
 

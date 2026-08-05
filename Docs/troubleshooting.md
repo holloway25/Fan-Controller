@@ -92,3 +92,12 @@ Requests for `/apple-touch-icon*.png` or `/favicon.ico` arriving at the root
 rather than under `/static` mean the `<link>` tags are absent from the page
 head. iOS only probes the root when nothing is declared, and those probes
 return 404.
+
+## Chart is empty or stops updating
+
+The trace is fetched from `/api/history`, not `/api/state`. The UI refetches
+it only when `history_rev` in `/api/state` differs from the copy it holds,
+so an empty chart with live readings means that fetch failed rather than
+the poll. Check the browser network tab for `/api/history`, and confirm
+`history_rev` is incrementing once per poll interval - if it is frozen, the
+poll thread is not appending and the readings on screen are stale too.

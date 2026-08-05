@@ -360,8 +360,20 @@ function render(s){
     if(s.co2_path)sub+=" from "+s.co2_path;
     if(s.changed_at)sub+=" \u00b7 last switched "+fmtAgo(s.changed_at)}
   $("sub").textContent=sub;
-  drawTrace(s.history,c.on_at,c.off_at);
-  drawMini(s.history);
+  // History is fetched separately and only when it actually changed:
+  // it is ~99% of the old /api/state payload but only moves once per poll.
+  if(s.history_rev!==HIST_REV&&!HIST_BUSY){
+    HIST_BUSY=true;
+    fetch("/api/history").then(r=>r.json()).then(h=>{
+      HIST=h.history||[];
+      // Store the revision the response carried, not the one we saw, or a
+      // change landing mid-flight would be missed until the next one.
+      HIST_REV=h.history_rev; HIST_BUSY=false;
+      drawTrace(HIST,c.on_at,c.off_at); drawMini(HIST);
+    }).catch(()=>{HIST_BUSY=false});
+  }
+  drawTrace(HIST,c.on_at,c.off_at);
+  drawMini(HIST);
   $("tc").textContent=s.temperature==null?"--\u00b0C":s.temperature.toFixed(1)+"\u00b0C";
   $("rh").textContent=s.humidity==null?"--%":s.humidity.toFixed(1)+"%";
   $("pm").textContent=s.pm25==null?"-- pm2.5":s.pm25.toFixed(1)+" pm2.5";
@@ -480,6 +492,7 @@ $("plugtest").addEventListener("click",async()=>{
   }catch(e){say("hmsg",e.message,"err")}
 });
 
+let HIST=[], HIST_REV=null, HIST_BUSY=false;
 let hydrated=false;
 async function hydrate(){
   if(CFG&&CFG.protect.username){
