@@ -756,16 +756,29 @@ def check_ui_password(plain, stored):
     return hmac.compare_digest(dk.hex(), want)
 
 
+
+
+# Readable without a password; everything else needs one once set.
+# /api/debug/sensor is deliberately not public: it returns the raw
+# Protect payload, which is diagnostic data, not dashboard data.
+PUBLIC_GET = {"/", "/api/state", "/api/hue/lights"}
+PUBLIC_POST = {"/api/clienterror"}
+
+
 @app.before_request
 def _require_auth():
-    """Basic auth, active only once a password is set.
+    """Basic auth on anything that changes state or exposes internals.
 
-    Auth is off by default so an unattended upgrade cannot lock anyone out;
-    setting ui_password turns it on for every route at once, including the
-    API, rather than leaving state-changing endpoints exposed.
+    Inactive until ui.password_hash is set, so an upgrade cannot lock
+    anyone out. Viewing stays open so a wall display needs no password.
     """
     stored = CFG.get("ui", {}).get("password_hash") or ""
     if not stored:
+        return None
+    path, method = request.path, request.method
+    if method in ("GET", "HEAD") and path in PUBLIC_GET:
+        return None
+    if method == "POST" and path in PUBLIC_POST:
         return None
     a = request.authorization
     if a and a.password and check_ui_password(a.password, stored):
@@ -816,6 +829,17 @@ def api_ui_password():
     save_cfg(CFG)
     _log("UI password %s" % ("set" if pw else "cleared"))
     return jsonify(ok=True, enabled=bool(pw))
+
+
+@app.route("/signin")
+def signin():
+    """Protected page whose only job is to make the browser prompt.
+
+    A 401 from fetch() does not reliably raise the Basic auth dialog,
+    so a navigation is needed to obtain and cache credentials."""
+    return Response("<p style='font:16px sans-serif;padding:2em'>"
+                    "Signed in. <a href='/'>Back to the controller</a>"
+                    "</p>", 200, {"Content-Type": "text/html"})
 
 
 @app.route("/api/state")

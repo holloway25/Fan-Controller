@@ -52,9 +52,17 @@ stored and the API returns only `SET`. Set it with:
     curl -X POST http://<server>:8096/api/ui/password \
       -H 'Content-Type: application/json' -d '{"password":"your-password"}'
 
-While it is empty there is no authentication at all - every endpoint is
-open to anyone who can reach the port. Setting it enables HTTP Basic auth
-on every route, API included. Post an empty password to disable it again.
+While it is empty there is no authentication at all. Setting it protects
+everything that changes state or exposes internals, while leaving the
+dashboard readable without credentials, so a wall display needs no login.
+
+Open without a password: `GET /`, `GET /api/state`, `GET /api/hue/lights`
+and `POST /api/clienterror`. Everything else requires it, including
+`/api/debug/sensor`, which returns the raw Protect payload.
+
+Browsers do not reliably raise the Basic auth dialog for a fetch, so the
+UI opens `/signin` when a save is refused. Authenticate there once and the
+browser caches the credentials. Post an empty password to disable auth.
 
 Basic auth over plain HTTP is base64, not encryption. Treat it as defence
 in depth behind a firewall rule restricting inbound access to port 8096,
