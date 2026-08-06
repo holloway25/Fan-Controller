@@ -91,6 +91,7 @@ padding:8px 11px;cursor:pointer}
 .log div{display:flex;gap:10px;align-items:baseline}
 .log span{flex:0 0 auto;white-space:nowrap;color:var(--faint)}
 .log div.fault,.log div.fault span{color:var(--warn)}
+.log div.ok,.log div.ok span{color:var(--ok)}
 @media(max-width:640px){
 header{flex-direction:column;align-items:stretch;gap:10px}
 .seg{width:100%}
@@ -117,7 +118,7 @@ header{flex-direction:column;align-items:stretch;gap:10px}
   <div class="now">
     <div class="pill off" id="fan">Fan unknown</div>
     <div class="pill" id="w">-- W</div>
-    <div class="pill" id="minrun" style="display:none"></div>
+    <div class="pill" id="minrun">Min run</div>
   </div>
   <div class="now env">
     <div class="pill" id="tc">--&deg;C</div>
@@ -275,7 +276,7 @@ const fmtW=v=>String(Math.round(v*10)/10);
 // sensor is read every poll_seconds, so this needs its own 1s timer or it
 // would jump in 5s steps. Derived from poll_seconds, not a fixed 30, so it
 // stays honest if the interval is changed.
-let SUB={read:null,poll:30,changed:null,hold:null};
+let SUB={read:null,poll:30,changed:null,hold:null,mins:""};
 // Seconds as m/s: a bare 365 reads as a timestamp at a glance.
 const fmtDur=n=>n>=60?(Math.floor(n/60)+"m "+(n%60)+"s"):(n+"s");
 function paintHold(){
@@ -283,8 +284,11 @@ function paintHold(){
   // it runs because it should, not because it must.
   const mp=$("minrun");
   const n=SUB.hold?Math.ceil(SUB.hold-Date.now()/1000):0;
-  if(n>0){mp.textContent="Min run "+fmtDur(n);mp.style.display=""}
-  else mp.style.display="none";
+  // Always present so the lease is discoverable before it is holding
+  // anything: green while it counts down, neutral showing its length
+  // otherwise.
+  mp.textContent=n>0?("Min run "+fmtDur(n)):("Min run "+SUB.mins);
+  mp.className="pill"+(n>0?" on":"");
 }
 function paintSub(){
   paintHold();
@@ -466,7 +470,7 @@ function render(s){
   // what holds the fan, not the lease.
   const idle=s.fan===true&&c.mode==="auto"&&!s.latch.co2&&!s.latch.temp;
   SUB={read:s.reading_at,poll:Number(c.poll_seconds)||30,
-       changed:s.changed_at,
+       changed:s.changed_at, mins:(+c.min_run_minutes||0)+"m",
        hold:(idle&&mr>0&&s.changed_at)?s.changed_at+mr:null};
   paintSub();
   // History is fetched separately and only when it actually changed:
@@ -484,12 +488,13 @@ function render(s){
   drawTrace(HIST,c.on_at,c.off_at);
   drawMini(HIST,c);
   $("tc").textContent=s.temperature==null?"--\u00b0C":s.temperature.toFixed(1)+"\u00b0C";
-  // Highlight the rule actually demanding the fan. Auto only: in Force on
-  // the latches can still be set from an earlier run, but the mode is what
-  // is holding the fan, so colouring them would name the wrong reason.
+  // Green means monitored and behaving, amber means it is the rule
+  // currently demanding the fan. Humidity and PM2.5 stay neutral: they
+  // are shown, not acted on. Temperature is only monitored when enabled.
   const auto=c.mode==="auto";
-  $("ppm").className="pill"+(auto&&s.latch.co2?" trig":"");
-  $("tc").className="pill"+(auto&&s.latch.temp?" trig":"");
+  $("ppm").className="pill"+(auto&&s.latch.co2?" trig":" on");
+  $("tc").className="pill"+(c.temp_enabled?
+    (auto&&s.latch.temp?" trig":" on"):"");
   $("rh").textContent=s.humidity==null?"--%":s.humidity.toFixed(1)+"%";
   $("pm").textContent=s.pm25==null?"-- pm2.5":s.pm25.toFixed(1)+" pm2.5";
   $("w").textContent=s.watts==null?"-- W":fmtW(s.watts)+" W";
@@ -520,11 +525,15 @@ function render(s){
       when.textContent=p(d.getDate())+"/"+p(d.getMonth()+1)+"/"+
         d.getFullYear()+" "+p(d.getHours())+":"+p(d.getMinutes())+":"+
         p(d.getSeconds());
-      // Faults are the only entries meaning the fan stopped itself, so
-      // they carry colour. A clear is a resolution, not a fault, and
-      // stays plain.
-      if(typeof e.msg==="string"&&e.msg.indexOf("Draw fault -")===0)
+      // Every fault-related entry is red, including "Fan off - draw
+      // fault", which a prefix match on the raised message missed. Fan
+      // state changes are green once they are not a fault.
+      const m=typeof e.msg==="string"?e.msg:"";
+      // Anchored, not a bare substring: "Changed: watts_fault_seconds"
+      // contains the word but is a settings edit, not a fault.
+      if(/^Draw fault/i.test(m)||/draw fault$/i.test(m))
         row.className="fault";
+      else if(/^Fan /.test(m))row.className="ok";
       row.appendChild(when);
       row.appendChild(document.createTextNode(e.msg==null?"":String(e.msg)));
       logEl.appendChild(row)});
