@@ -116,6 +116,7 @@ header{flex-direction:column;align-items:stretch;gap:10px}
   <div class="now">
     <div class="ppm" id="ppm">--<small>ppm</small></div>
     <div class="pill off" id="fan">Fan unknown</div>
+    <div class="pill" id="minrun" style="display:none"></div>
     <div class="pill" id="w">-- W</div>
     <div class="pill" id="tc">--°C</div>
     <div class="pill" id="rh">--%</div>
@@ -271,8 +272,19 @@ const fmtW=v=>String(Math.round(v*10)/10);
 // sensor is read every poll_seconds, so this needs its own 1s timer or it
 // would jump in 5s steps. Derived from poll_seconds, not a fixed 30, so it
 // stays honest if the interval is changed.
-let SUB={read:null,poll:30,changed:null};
+let SUB={read:null,poll:30,changed:null,hold:null};
+// Seconds as m/s: a bare 365 reads as a timestamp at a glance.
+const fmtDur=n=>n>=60?(Math.floor(n/60)+"m "+(n%60)+"s"):(n+"s");
+function paintHold(){
+  // Only meaningful while nothing is demanding the fan: with a latch set
+  // it runs because it should, not because it must.
+  const mp=$("minrun");
+  const n=SUB.hold?Math.ceil(SUB.hold-Date.now()/1000):0;
+  if(n>0){mp.textContent="Min run "+fmtDur(n);mp.style.display=""}
+  else mp.style.display="none";
+}
 function paintSub(){
+  paintHold();
   if(!SUB.read){$("sub").textContent="Waiting for a reading";return}
   const left=Math.ceil(SUB.read+SUB.poll-Date.now()/1000);
   // A read that is overdue must not show a negative or stuck countdown.
@@ -433,8 +445,16 @@ function render(s){
   const fmsg=s.fault?(s.fault.msg+(s.fault.stopped?"":
     " — stop unconfirmed, retrying")):"";
   say("topmsg",fmsg||s.error||"", "err");
+  // Held on by the minimum-run lease rather than by demand: fan running,
+  // neither rule latched, and the lease not yet expired. decide() returns
+  // None in exactly this case, which is otherwise invisible.
+  const mr=(+c.min_run_minutes||0)*60;
+  // Auto only: in Force on the latches are also clear, but the mode is
+  // what holds the fan, not the lease.
+  const idle=s.fan===true&&c.mode==="auto"&&!s.latch.co2&&!s.latch.temp;
   SUB={read:s.reading_at,poll:Number(c.poll_seconds)||30,
-       changed:s.changed_at};
+       changed:s.changed_at,
+       hold:(idle&&mr>0&&s.changed_at)?s.changed_at+mr:null};
   paintSub();
   // History is fetched separately and only when it actually changed:
   // it is ~99% of the old /api/state payload but only moves once per poll.

@@ -39,6 +39,12 @@ clear, to prevent short-cycling. Two exceptions:
 - Leaving Force on clears the lease, so returning to Auto takes effect at
   once rather than serving out a timer started manually.
 
+The dashboard shows a "Min run" countdown whenever this is the only reason
+the fan is running: fan on, in Auto, with neither rule latched. Without it
+a fan running below the off level looks like a fault rather than the
+anti-short-cycling working. It is deliberately not shown in Force on,
+where the mode holds the fan rather than the lease.
+
 ## Responsiveness
 
 The poll loop waits on an event rather than sleeping, and saving settings
