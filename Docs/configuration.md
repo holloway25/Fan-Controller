@@ -35,12 +35,16 @@ reports explicitly. `sensor_id` is chosen in the UI via Find sensors.
 (usually `admin`) and `password` its web admin password; leave the
 password blank if none is set.
 
-`watts_min` (15.0) and `watts_max` (22.0) are the draw the fan is expected
-to pull while running. The dashboard shows the wattage green inside that
-band and red outside it, including when there is no reading at all, since
-a plug that stopped answering is the case worth catching. They are display
-only and change nothing about switching. `watts_min` must be below
-`watts_max` or the save is rejected.
+`watts_rated` (16.0) is the draw the fan pulls while running, and
+`watts_tolerance` (10.0) the percentage either side that still counts as
+healthy. The dashboard shows the wattage green inside that band and red
+outside it, including when there is no reading at all, since a plug that
+stopped answering is the case worth catching. Both are display only and
+change nothing about switching.
+
+Measure the rated figure rather than copying the nameplate. Motors often
+draw more than their rating, and a band centred on the wrong number is
+permanently red and quickly ignored.
 
 Tasmota accepts credentials only as query parameters on `/cm`, so they
 travel in the URL. This service never logs request URLs, but it is a

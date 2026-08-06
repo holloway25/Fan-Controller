@@ -199,12 +199,12 @@ header{flex-direction:column;align-items:stretch;gap:10px}
   <div class="row"><label>Password
     <span class="hint">Blank if no web password is set on the plug.</span></label>
     <input type="password" id="g_pass" autocomplete="new-password"></div>
-  <div class="row"><label>Expected draw, lower
-    <span class="hint">Watts. While the fan runs, a draw below this turns the reading red: the relay closed but the fan is not pulling what it should.</span></label>
-    <input type="number" id="watts_min" min="0" max="5000" step="0.5"></div>
-  <div class="row"><label>Expected draw, upper
-    <span class="hint">Watts. Above this is flagged red too. Display only, neither bound affects switching.</span></label>
-    <input type="number" id="watts_max" min="0" max="5000" step="0.5"></div>
+  <div class="row"><label>Fan rated draw
+    <span class="hint">Watts the fan pulls when running normally. Measure it rather than trusting the label - motors often differ.</span></label>
+    <input type="number" id="watts_rated" min="0" max="5000" step="0.5"></div>
+  <div class="row"><label>Tolerance
+    <span class="hint" id="wband">Percent either side. Outside this band the reading shows red while the fan is on.</span></label>
+    <input type="number" id="watts_tolerance" min="0" max="100" step="1"></div>
   <div class="actions"><button id="plugtest">Test plug</button>
     <button id="save3">Save</button></div>
   <div class="msg" id="hmsg"></div>
@@ -437,7 +437,8 @@ function render(s){
   let wcls="pill";
   if(s.fan===true&&settled){
     const pg=s.config.plug;
-    const ok=s.watts!=null&&s.watts>=pg.watts_min&&s.watts<=pg.watts_max;
+    const tol=pg.watts_rated*(pg.watts_tolerance/100);
+    const ok=s.watts!=null&&Math.abs(s.watts-pg.watts_rated)<=tol;
     wcls="pill "+(ok?"on":"bad");
   }
   $("w").className=wcls;
@@ -472,15 +473,21 @@ function render(s){
   if(s.config.protect.password==="SET"&&!$("p_pass").value)$("p_pass").placeholder="unchanged";
   $("g_host").value=s.config.plug.host;
   $("g_user").value=s.config.plug.user;
-  $("watts_min").value=s.config.plug.watts_min;
-  $("watts_max").value=s.config.plug.watts_max;
+  $("watts_rated").value=s.config.plug.watts_rated;
+  $("watts_tolerance").value=s.config.plug.watts_tolerance;
+  // Spell the band out: a rated value and a percent are two numbers the
+  // reader would otherwise have to multiply to know what turns red.
+  {const r=+s.config.plug.watts_rated,t=+s.config.plug.watts_tolerance;
+   const d=r*(t/100);
+   $("wband").textContent="Percent either side. Currently "+(r-d).toFixed(1)
+     +"-"+(r+d).toFixed(1)+" W; outside this shows red while the fan is on.";}
   if(s.config.plug.password==="SET"&&!$("g_pass").value)$("g_pass").placeholder="unchanged";
 }
 
 // Checkboxes and selects fire "change", not "input". Listening for both
 // stops the 5s refresh from overwriting a control the user just touched.
 ["on_at","off_at","min_run_minutes","poll_seconds","p_host",
- "p_user","p_pass","g_host","g_user","g_pass","p_sensor","temp_enabled","temp_on","temp_off","p_verify","stale_minutes","watts_min","watts_max"].forEach(id=>{
+ "p_user","p_pass","g_host","g_user","g_pass","p_sensor","temp_enabled","temp_on","temp_off","p_verify","stale_minutes","watts_rated","watts_tolerance"].forEach(id=>{
   $(id).addEventListener("input",dirty);
   $(id).addEventListener("change",dirty);});
 // Light checkboxes are created after load, so delegate.
@@ -500,8 +507,8 @@ async function saveAll(msgEl){
       verify_tls:$("p_verify").checked},
     plug:{host:$("g_host").value.trim(),
       user:$("g_user").value.trim(),
-      watts_min:+$("watts_min").value,
-      watts_max:+$("watts_max").value}};
+      watts_rated:+$("watts_rated").value,
+      watts_tolerance:+$("watts_tolerance").value}};
   if($("g_pass").value)body.plug.password=$("g_pass").value;
   if($("p_pass").value)body.protect.password=$("p_pass").value;
   // Only send a selection when the picker is actually populated, so a
