@@ -545,6 +545,9 @@ function render(s){
       // log and the selector agree on what each mode looks like.
       else if(/^Mode: /.test(m))row.className=
         m==="Mode: Manual"?"m-manual":(m==="Mode: Auto"?"m-auto":"m-on");
+      // Manual hands the fan to the plug and bypasses every rule, so its
+      // events read as manual too rather than as ordinary bookkeeping.
+      else if(/^Manual mode/.test(m))row.className="m-manual";
       row.appendChild(when);
       row.appendChild(document.createTextNode(e.msg==null?"":String(e.msg)));
       logEl.appendChild(row)});
