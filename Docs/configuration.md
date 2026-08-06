@@ -15,13 +15,11 @@ All settings are editable in the web UI and stored in `config.json`
 | `temp_enabled` | false | Use temperature as a second trigger |
 | `temp_on` | 26.0 | Degrees C that starts the fan |
 | `temp_off` | 24.5 | Degrees C that releases it |
-| `watts_min` | 15.0 | Expected draw, lower bound. Display only, no control effect |
-| `watts_max` | 22.0 | Expected draw, upper bound |
 | `stale_minutes` | 0 | Minutes without a reading before the fan is turned on as a fail-safe; 0 disables it |
 
-`on_at` must be above `off_at`, `temp_on` above `temp_off`, and `watts_min`
-below `watts_max`; the API rejects a save otherwise, since equal or inverted
-values leave the fan running permanently.
+`on_at` must be above `off_at` and `temp_on` above `temp_off`; the API
+rejects a save otherwise, since equal or inverted values leave the fan
+running permanently.
 
 ## protect
 
@@ -36,6 +34,13 @@ reports explicitly. `sensor_id` is chosen in the UI via Find sensors.
 `host` is the Tasmota device running the fan. `user` is its web username
 (usually `admin`) and `password` its web admin password; leave the
 password blank if none is set.
+
+`watts_min` (15.0) and `watts_max` (22.0) are the draw the fan is expected
+to pull while running. The dashboard shows the wattage green inside that
+band and red outside it, including when there is no reading at all, since
+a plug that stopped answering is the case worth catching. They are display
+only and change nothing about switching. `watts_min` must be below
+`watts_max` or the save is rejected.
 
 Tasmota accepts credentials only as query parameters on `/cm`, so they
 travel in the URL. This service never logs request URLs, but it is a

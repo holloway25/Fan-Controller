@@ -22,13 +22,13 @@ DEFAULTS = {
     "protect": {"host": "192.168.1.1", "username": "", "password": "",
                 "verify_tls": False,
                 "sensor_id": ""},
-    "plug": {"host": "192.168.1.10", "user": "admin", "password": ""},
+    "plug": {"host": "192.168.1.10", "user": "admin", "password": "",
+             "watts_min": 15.0, "watts_max": 22.0},
     "ui": {"password_hash": ""},
     "control": {"mode": "auto", "on_at": 1000, "off_at": 800,
                 "poll_seconds": 30, "min_run_minutes": 5,
                 "temp_enabled": False, "temp_on": 26.0,
                 "temp_off": 24.5,
-                "watts_min": 15.0, "watts_max": 22.0,
                 "stale_minutes": 0},
 }
 CO2_HINTS = ("co2", "carbondioxide")
@@ -47,8 +47,6 @@ CONTROL_SCHEMA = {
     "temp_enabled": ("bool",),
     "temp_on": ("num", -20.0, 60.0),
     "temp_off": ("num", -20.0, 60.0),
-    "watts_min": ("num", 0.0, 5000.0),
-    "watts_max": ("num", 0.0, 5000.0),
     "stale_minutes": ("int", 0, 1440),
 }
 PROTECT_SCHEMA = {
@@ -60,6 +58,8 @@ UI_SCHEMA = {"password_hash": ("str", 0, 200)}
 PLUG_SCHEMA = {
     "host": ("str", 1, 253), "user": ("str", 0, 64),
     "password": ("str", 0, 128),
+    "watts_min": ("num", 0.0, 5000.0),
+    "watts_max": ("num", 0.0, 5000.0),
 }
 SCHEMAS = {"protect": PROTECT_SCHEMA, "plug": PLUG_SCHEMA, "ui": UI_SCHEMA,
            "control": CONTROL_SCHEMA}
@@ -1043,8 +1043,9 @@ def api_config():
         if t_on <= t_off:
             return jsonify(error="Cool-to temperature must be below the "
                                  "turn-on temperature."), 400
+    pg = cand["plug"]
     try:
-        w_lo, w_hi = float(c["watts_min"]), float(c["watts_max"])
+        w_lo, w_hi = float(pg["watts_min"]), float(pg["watts_max"])
     except (TypeError, ValueError):
         return jsonify(error="Draw limits must be numbers."), 400
     if w_lo >= w_hi:
