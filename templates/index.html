@@ -39,12 +39,10 @@ h1 .dot.bad{background:var(--warn);box-shadow:0 0 10px var(--warn)}
 border:1px solid var(--line);border-radius:14px;padding:16px 18px}
 .ctitle{font-size:12px;letter-spacing:.09em;text-transform:uppercase;
 color:var(--faint);font-weight:600;margin-bottom:14px}
-.now{display:flex;align-items:flex-end;gap:16px;flex-wrap:wrap}
+/* One spacing value for both rows, horizontal and vertical. */
+.now{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 /* Second row: environment readings, subordinate to the fan state above. */
-.now.env{margin-top:10px;align-items:center}
-.ppm{font-family:var(--mono);font-size:52px;font-weight:600;line-height:1;
-letter-spacing:-.02em}
-.ppm small{font-size:16px;color:var(--dim);font-weight:500;margin-left:6px}
+.now.env{margin-top:10px}
 .pill{font-family:var(--mono);font-size:13.5px;font-weight:500;padding:5px 11px;
 border-radius:999px;border:1px solid var(--line);color:var(--dim)}
 .pill.on{background:rgba(52,211,153,.14);border-color:var(--ok);color:var(--ok)}
@@ -95,12 +93,11 @@ padding:8px 11px;cursor:pointer}
 header{flex-direction:column;align-items:stretch;gap:10px}
 .seg{width:100%}
 .seg button{flex:1 1 0;padding:11px 4px;text-align:center}
-.now{gap:10px}
 .row{grid-template-columns:1fr;gap:6px}
 .row input,.row select{width:100%}
 .row input[type=checkbox]{width:auto}
 }
-@media(max-width:520px){.ppm{font-size:40px}input,select{width:130px}}
+@media(max-width:520px){input,select{width:130px}}
 </style></head><body><div class="wrap">
 
 <header>
@@ -122,7 +119,7 @@ header{flex-direction:column;align-items:stretch;gap:10px}
   </div>
   <div class="now env">
     <div class="pill" id="tc">--&deg;C</div>
-    <div class="ppm" id="ppm">--<small>ppm</small></div>
+    <div class="pill" id="ppm">-- ppm</div>
     <div class="pill" id="rh">--%</div>
     <div class="pill" id="pm">-- pm2.5</div>
   </div>
@@ -426,7 +423,7 @@ function drawMini(hist,c){
 
 function render(s){
   const c=s.config.control;
-  $("ppm").innerHTML=(s.co2==null?"--":Math.round(s.co2))+"<small>ppm</small>";
+  $("ppm").textContent=(s.co2==null?"--":Math.round(s.co2))+" ppm";
   const f=$("fan");
   // Relay closed but drawing nothing means the fan is not really running.
   // Grace period: the meter lags a switch by a few seconds, so flagging
