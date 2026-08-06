@@ -542,6 +542,10 @@ function render(s){
       // contains the word but is a settings edit, not a fault.
       if(/^Draw fault/i.test(m)||/draw fault$/i.test(m))
         row.className="fault";
+      // A forced switch-on is Force on demanding the fan, not the rules
+      // acting, so it takes the mode colour rather than reading as an
+      // ordinary automatic switch.
+      else if(/^Fan .*forced on$/.test(m))row.className="m-on";
       else if(/^Fan /.test(m))row.className="ok";
       // Mode entries take the same colour as the mode button, so the
       // log and the selector agree on what each mode looks like.

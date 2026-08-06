@@ -36,7 +36,9 @@ is the point automation stopped being in charge.
 
 The activity log uses the same colours, so scanning it reads like the
 controls: fan switches green, faults red, mode changes in their mode
-colour, settings edits neutral.
+colour, settings edits neutral. A switch-on caused by Force on takes the
+mode colour rather than the green of an automatic one: the same event
+should not read two ways on adjacent lines.
 
 The fault match is anchored to the start or end of the message rather
 than searching for the word. `Changed: watts_fault_seconds` names a
