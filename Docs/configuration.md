@@ -56,6 +56,23 @@ and the fan runs, a draw outside the band for `watts_fault_seconds` (60)
 stops the fan and latches a fault. Off, the wattage is still shown and
 coloured but nothing is acted on.
 
+Out of band means anything that is not a fresh reading inside the band:
+below `watts_min` (0 W included, which is why the minimum is at least 1),
+above `watts_max`, or no reading at all because the plug is unreachable or
+its last value is older than 15 seconds.
+
+The time must be continuous. A single reading back inside the band resets
+the timer to zero, so a fan flicking briefly out of range never
+accumulates toward a fault across an hour. That is the intent: a sustained
+wrong draw indicates the device itself - a stalled motor, a seized
+bearing, a failed capacitor - and is worth stopping. A momentary
+excursion is usually measurement noise, and stopping ventilation over it
+would be the worse failure.
+
+The consequence is that an intermittent fault which keeps recovering will
+not trip it. Shortening the timer toward its 5 second minimum makes it
+sensitive enough that flapping can, at the cost of tripping on transients.
+
 Off by default deliberately: a band that does not match the fan would
 otherwise stop ventilation altogether, which is worse than no detection.
 
