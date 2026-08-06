@@ -10,7 +10,7 @@
 <style>
 :root{--bg:#0e1218;--panel:#161c26;--panel2:#1c2530;--line:#27313f;
 --txt:#e8edf3;--dim:#aab6c6;--faint:#97a3b4;--ok:#34d399;--warn:#f87171;
---air:#4a9eff;--fan:#a78bfa;
+--air:#4a9eff;--fan:#a78bfa;--trig:#f5a623;
 --mono:'JetBrains Mono',ui-monospace,Menlo,monospace;
 --sans:'Inter',system-ui,-apple-system,sans-serif;}
 *{box-sizing:border-box;margin:0;padding:0}
@@ -48,6 +48,8 @@ border-radius:999px;border:1px solid var(--line);color:var(--dim)}
 .pill.on{background:rgba(52,211,153,.14);border-color:var(--ok);color:var(--ok)}
 .pill.bad{background:rgba(248,113,113,.14);border-color:var(--warn);color:var(--warn)}
 .pill.off{color:var(--faint)}
+/* The rule currently demanding the fan. Matches the temperature trace. */
+.pill.trig{background:rgba(245,166,35,.14);border-color:var(--trig);color:var(--trig)}
 .sub{font-family:var(--mono);font-size:12.5px;color:var(--faint);margin-top:12px}
 svg.trace{width:100%;height:auto;margin-top:14px;display:block}
 .row{display:grid;grid-template-columns:1fr auto;align-items:center;gap:12px;
@@ -482,6 +484,12 @@ function render(s){
   drawTrace(HIST,c.on_at,c.off_at);
   drawMini(HIST,c);
   $("tc").textContent=s.temperature==null?"--\u00b0C":s.temperature.toFixed(1)+"\u00b0C";
+  // Highlight the rule actually demanding the fan. Auto only: in Force on
+  // the latches can still be set from an earlier run, but the mode is what
+  // is holding the fan, so colouring them would name the wrong reason.
+  const auto=c.mode==="auto";
+  $("ppm").className="pill"+(auto&&s.latch.co2?" trig":"");
+  $("tc").className="pill"+(auto&&s.latch.temp?" trig":"");
   $("rh").textContent=s.humidity==null?"--%":s.humidity.toFixed(1)+"%";
   $("pm").textContent=s.pm25==null?"-- pm2.5":s.pm25.toFixed(1)+" pm2.5";
   $("w").textContent=s.watts==null?"-- W":fmtW(s.watts)+" W";
