@@ -71,12 +71,18 @@ tell.
 ## Fan reports on but draws no power
 
 The relay closed and nothing is running: a tripped fan, a loose plug, or a
-seized motor. The CSE7766 only meters while the relay is closed, so 0 W
+seized motor. The meter only reads while the relay is closed, so 0 W
 with the relay off is normal and not a fault.
 
-If it reads 0 W with the fan audibly running, the plug needs power
-monitoring calibration - see the Athom template notes at
-templates.blakadder.com.
+The plug meters with an HLW8032, which Tasmota reads through its CSE7766
+driver. Athom ship it pre-calibrated and rate active power to about 0.2%,
+so a wrong reading is rarely calibration.
+
+The known failure is at the bottom of the range: the HLW8032 reports
+invalid measurements below roughly 5 W. Tasmota SetOption39 sets how many
+invalid readings it tolerates before declaring no load, defaulting to 128.
+A small load reading 0 W is that, not a dead fan. A fan drawing tens of
+watts is well clear of it, so 0 W there is genuinely nothing running.
 
 ## Home screen icon is stale or missing
 

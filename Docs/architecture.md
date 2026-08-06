@@ -88,7 +88,7 @@ plug is a direct HTTP call with explicit `Power ON` / `Power OFF` rather
 than a toggle, and every switch is confirmed from the device's own reply,
 so a rejected command cannot be recorded as a success.
 
-It also meters. Draw from the CSE7766 is polled on its own 5 second
+It also meters. Draw from the HLW8032 is polled on its own 5 second
 cadence rather than with the sensor, since the Protect bootstrap is the
 expensive call and tying watts to `poll_seconds` left it up to 30 seconds
 stale while the UI refreshed every 5. This
