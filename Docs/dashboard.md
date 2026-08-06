@@ -25,9 +25,20 @@ One meaning per colour, used the same way everywhere it appears.
 | Blue | Auto mode |
 | Neutral | Shown but not acted on |
 
-So temperature is green only when its trigger is enabled, and humidity
-and PM2.5 are always neutral: they are recorded and charted but nothing
+Green needs three things at once: Auto actually in control, the input
+enabled, and a live reading. So a reading greys out in Manual and Force
+on, where nothing is acting on it, and greys out when its sensor stops
+reporting - green must never claim a sensor is fine while nothing is
+arriving from it.
+
+Humidity and PM2.5 are always neutral: recorded and charted, but nothing
 switches on them. A glance at the pills answers which inputs are live.
+
+The wattage pill is the one exception to green meaning monitored. It
+colours by band whenever the fan is running and settled, whether or not
+`watts_enabled` is ticked, because an out-of-band draw is worth seeing
+even when nothing will act on it. Neutral there means the fan is off, not
+that the draw is unwatched.
 
 Amber covers Force on as well as a latched rule, because Force on is
 demand too - yours rather than a sensor. Red covers Manual alongside
