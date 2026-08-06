@@ -23,7 +23,8 @@ DEFAULTS = {
                 "verify_tls": False,
                 "sensor_id": ""},
     "plug": {"host": "192.168.1.10", "user": "admin", "password": "",
-             "watts_min": 15.0, "watts_max": 25.0},
+             "watts_enabled": False, "watts_min": 15.0,
+             "watts_max": 25.0, "watts_fault_seconds": 60},
     "ui": {"password_hash": ""},
     "control": {"mode": "auto", "on_at": 1000, "off_at": 800,
                 "poll_seconds": 30, "min_run_minutes": 5,
@@ -58,8 +59,10 @@ UI_SCHEMA = {"password_hash": ("str", 0, 200)}
 PLUG_SCHEMA = {
     "host": ("str", 1, 253), "user": ("str", 0, 64),
     "password": ("str", 0, 128),
+    "watts_enabled": ("bool",),
     "watts_min": ("num", 1.0, 5000.0),
     "watts_max": ("num", 1.0, 5000.0),
+    "watts_fault_seconds": ("int", 5, 3600),
 }
 SCHEMAS = {"protect": PROTECT_SCHEMA, "plug": PLUG_SCHEMA, "ui": UI_SCHEMA,
            "control": CONTROL_SCHEMA}
@@ -187,6 +190,9 @@ HIST_HOURS = 24           # retention window, independent of poll interval
 HIST_CAP = 20000          # memory bound if poll_seconds is very small
 HIST_FLUSH_SECONDS = 300  # batch disk writes rather than one per poll
 _last_flush = 0.0
+# When the draw first left its band. None while healthy, so a single good
+# reading resets the clock rather than accumulating toward a fault.
+_oob_since = None
 
 
 EVENTS_PATH = os.path.join(DIR, "events.json")
@@ -501,7 +507,7 @@ STATE = {
     "watts": None, "watts_at": None,
     "latch": {"co2": False, "temp": False},
     "manual_off_pending": False,
-    "history": [], "events": [], "history_rev": 0,
+    "history": [], "events": [], "history_rev": 0, "fault": None,
 }
 # RLock, not Lock: nested acquisition deadlocked the poll thread.
 _state_lock = threading.RLock()
@@ -563,7 +569,7 @@ def _clients():
         return _CLIENTS["protect"], _CLIENTS["plug"]
 
 
-def decide(co2, temp, fan_on, c, ran_for, latch):
+def decide(co2, temp, fan_on, c, ran_for, latch, fault=None):
     """Per-rule latching hysteresis. Mutates `latch` in place.
 
     Each input latches on above its own on-level and releases below its
@@ -573,6 +579,11 @@ def decide(co2, temp, fan_on, c, ran_for, latch):
     """
     if c["mode"] == "on":
         return True, "forced on"
+    # Force on is checked first on purpose: it overrides a fault so a
+    # repaired fan can be tested. Past here, a fault blocks automatic
+    # starts, including the stale-reading failsafe.
+    if fault:
+        return False, "draw fault"
     if c["mode"] == "manual":
         latch["co2"] = latch["temp"] = False
         return None, None
@@ -690,7 +701,7 @@ def tick():
     if c["mode"] == "manual":
         return
     want, why = decide(co2, vals.get('temperature'), fan_on, c, ran_for,
-                       STATE["latch"])
+                       STATE["latch"], STATE["fault"])
     if want is None or want == fan_on:
         return
     h.set(want)
@@ -735,8 +746,59 @@ def _failsafe():
 
 WATTS_SECONDS = 5
 WATTS_STALE = 15   # a reading older than this is reported as unknown
+SETTLE_SECONDS = 20  # spin-up grace before draw is judged
 
 
+
+def _draw_check(plug):
+    """Fault the fan if it runs outside its expected draw for long enough.
+
+    Force on deliberately takes precedence: it is how you test a fan after
+    fixing it, so this must not fight it. A fault therefore only ever
+    stops an automatic run.
+    """
+    global _oob_since
+    pg = CFG["plug"]
+    if not pg.get("watts_enabled") or CFG["control"]["mode"] == "on":
+        _oob_since = None
+        return
+    with _state_lock:
+        fan, w = STATE["fan"], STATE["watts"]
+        changed, faulted = STATE["changed_at"], STATE["fault"]
+    now = time.time()
+    # A motor drawing nothing on spin-up is not a fault, and neither is a
+    # fan that is meant to be off.
+    settled = changed is None or (now - changed) > SETTLE_SECONDS
+    if faulted or fan is not True or not settled:
+        _oob_since = None
+        return
+    lo, hi = float(pg["watts_min"]), float(pg["watts_max"])
+    # No reading counts as out of band: an unanswering plug is exactly the
+    # case this exists to catch. WATTS_STALE nulls it after 15s, well
+    # inside any sane fault window, so a blip cannot reach the limit.
+    if w is not None and lo <= w <= hi:
+        _oob_since = None
+        return
+    if _oob_since is None:
+        _oob_since = now
+        return
+    if now - _oob_since < float(pg["watts_fault_seconds"]):
+        return
+    reading = "no reading" if w is None else ("%g W" % w)
+    msg = ("Draw fault - %s outside %g-%g W for %ds, fan stopped"
+           % (reading, lo, hi, int(now - _oob_since)))
+    try:
+        plug.set(False)
+    except PlugError:
+        # Could not stop it. Still record the fault so the dashboard says
+        # so and automatic runs stay blocked.
+        pass
+    with _state_lock:
+        STATE["fault"] = {"at": now, "msg": msg}
+        STATE["fan"] = False
+        STATE["changed_at"] = now
+    _oob_since = None
+    _log(msg)
 def watts_loop():
     """Poll the plug's meter on its own short cadence.
 
@@ -752,6 +814,7 @@ def watts_loop():
             with _state_lock:
                 STATE["watts"] = w
                 STATE["watts_at"] = time.time()
+            _draw_check(plug)
         except Exception:
             # Left for the staleness check rather than cleared here: one
             # missed request should not blank a valid reading, but a stale
@@ -947,6 +1010,24 @@ def api_state():
     return jsonify(s)
 
 
+
+@app.route("/api/fault/clear", methods=["POST"])
+def api_fault_clear():
+    """Acknowledge a draw fault and allow automatic runs again.
+
+    Deliberately manual. Retrying on a timer would switch a seized motor
+    on every few minutes forever, which is the thing the fault exists to
+    stop.
+    """
+    global _oob_since
+    with _state_lock:
+        had = STATE["fault"]
+        STATE["fault"] = None
+    _oob_since = None
+    if had:
+        _log("Draw fault cleared")
+    _wake.set()
+    return jsonify(ok=True, cleared=bool(had))
 @app.route("/api/history")
 def api_history():
     """The 24h trace, split out of /api/state.
