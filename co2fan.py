@@ -840,8 +840,12 @@ def _draw_check(plug):
         fan, w = STATE["fan"], STATE["watts"]
         w_at, changed = STATE["watts_at"], STATE["changed_at"]
     # A motor spinning up draws nothing yet, and a fan meant to be off is
-    # not a fault.
-    if fan is not True or changed is None or now - changed <= SETTLE_SECONDS:
+    # not a fault. changed_at is deliberately left unset when startup
+    # finds the fan already running, so fall back to START_TIME: treating
+    # None as never-settled disabled draw protection for as long as that
+    # run lasted, which on a high-CO2 day is hours.
+    since = changed if changed is not None else START_TIME
+    if fan is not True or now - since <= SETTLE_SECONDS:
         _oob_since = None
         return
     # Freshness is judged here, not taken from the cached value: when the
