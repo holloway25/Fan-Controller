@@ -44,7 +44,8 @@ idle, and a green countdown while this is the only reason the fan is
 running - fan on, in Auto, with neither rule latched. Without it a fan
 running below the off level looks like a fault rather than the
 anti-short-cycling working. The countdown is deliberately not shown in
-Force on, where the mode holds the fan rather than the lease.
+Force on, where the mode holds the fan rather than the lease. See
+`dashboard.md` for the colours.
 
 ## Responsiveness
 

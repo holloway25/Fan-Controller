@@ -54,6 +54,8 @@ few lines against the documented API.
 - [Docs/control-logic.md](Docs/control-logic.md) - modes, latching,
   minimum run time
 - [Docs/configuration.md](Docs/configuration.md) - every setting
+- [Docs/dashboard.md](Docs/dashboard.md) - what the screen shows, and what
+  each colour means
 - [Docs/api.md](Docs/api.md) - HTTP endpoints
 - [Docs/troubleshooting.md](Docs/troubleshooting.md) - known failure modes
 - [deploy/nginx.conf.example](deploy/nginx.conf.example) - reference nginx

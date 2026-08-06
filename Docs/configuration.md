@@ -39,6 +39,7 @@ password blank if none is set.
 expected to pull while running. The dashboard shows the wattage green
 inside that band and red outside it, including when there is no reading
 at all, since a plug that stopped answering is the case worth catching.
+`dashboard.md` covers what each colour means.
 
 Two bounds rather than a rating and a tolerance, because a two-speed fan
 has no single correct draw: the TT Mixflow 125 pulls 23 W on low and 37 W
