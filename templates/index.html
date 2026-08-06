@@ -157,6 +157,12 @@ header{flex-direction:column;align-items:stretch;gap:10px}
   <div class="row"><label>Turn the fan off below
     <span class="hint">Degrees C.</span></label>
     <input type="number" id="temp_off" min="10" max="40" step="0.5"></div>
+  <div class="row"><label>Expected draw, lower
+    <span class="hint">Watts. Below this while running is flagged red: the fan is not pulling what it should.</span></label>
+    <input type="number" id="watts_min" min="0" max="5000" step="0.5"></div>
+  <div class="row"><label>Expected draw, upper
+    <span class="hint">Watts. Above this is flagged red too.</span></label>
+    <input type="number" id="watts_max" min="0" max="5000" step="0.5"></div>
   <div class="row"><label>Ventilate if readings stop
     <span class="hint">Minutes without a valid reading before the fan is turned on as a fail-safe. 0 disables it.</span></label>
     <input type="number" id="stale_minutes" min="0" max="1440" step="5"></div>
@@ -424,6 +430,16 @@ function render(s){
   $("rh").textContent=s.humidity==null?"--%":s.humidity.toFixed(1)+"%";
   $("pm").textContent=s.pm25==null?"-- pm2.5":s.pm25.toFixed(1)+" pm2.5";
   $("w").textContent=s.watts==null?"-- W":s.watts.toFixed(1)+" W";
+  // Draw is only meaningful while the fan is meant to be running, and only
+  // once settled: a motor spinning up would otherwise flash red every start.
+  // No reading at all counts as bad, since a dead plug is exactly the case
+  // this is here to catch.
+  let wcls="pill";
+  if(s.fan===true&&settled){
+    const ok=s.watts!=null&&s.watts>=c.watts_min&&s.watts<=c.watts_max;
+    wcls="pill "+(ok?"on":"bad");
+  }
+  $("w").className=wcls;
   document.querySelectorAll("#mode button").forEach(b=>
     b.classList.toggle("sel",b.dataset.mode===c.mode));
   // Built as DOM nodes with textContent: event text can originate from
@@ -445,7 +461,8 @@ function render(s){
   }else{logEl.textContent="Nothing yet."}
   if(touched)return;
   CFG=s.config;
-  ["on_at","off_at","min_run_minutes","poll_seconds","temp_on","temp_off","stale_minutes"]
+  ["on_at","off_at","min_run_minutes","poll_seconds","temp_on","temp_off",
+   "watts_min","watts_max","stale_minutes"]
     .forEach(k=>$(k).value=c[k]);
   $("temp_enabled").checked=!!c.temp_enabled;
   $("p_host").value=s.config.protect.host;
@@ -460,7 +477,7 @@ function render(s){
 // Checkboxes and selects fire "change", not "input". Listening for both
 // stops the 5s refresh from overwriting a control the user just touched.
 ["on_at","off_at","min_run_minutes","poll_seconds","p_host",
- "p_user","p_pass","g_host","g_user","g_pass","p_sensor","temp_enabled","temp_on","temp_off","p_verify","stale_minutes"].forEach(id=>{
+ "p_user","p_pass","g_host","g_user","g_pass","p_sensor","temp_enabled","temp_on","temp_off","p_verify","stale_minutes","watts_min","watts_max"].forEach(id=>{
   $(id).addEventListener("input",dirty);
   $(id).addEventListener("change",dirty);});
 // Light checkboxes are created after load, so delegate.
@@ -474,6 +491,7 @@ async function saveAll(msgEl){
       poll_seconds:+$("poll_seconds").value,
       temp_enabled:$("temp_enabled").checked,
       temp_on:+$("temp_on").value, temp_off:+$("temp_off").value,
+      watts_min:+$("watts_min").value, watts_max:+$("watts_max").value,
       stale_minutes:+$("stale_minutes").value},
     protect:{host:$("p_host").value.trim(),
       username:$("p_user").value.trim(),

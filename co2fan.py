@@ -28,6 +28,7 @@ DEFAULTS = {
                 "poll_seconds": 30, "min_run_minutes": 5,
                 "temp_enabled": False, "temp_on": 26.0,
                 "temp_off": 24.5,
+                "watts_min": 15.0, "watts_max": 22.0,
                 "stale_minutes": 0},
 }
 CO2_HINTS = ("co2", "carbondioxide")
@@ -46,6 +47,8 @@ CONTROL_SCHEMA = {
     "temp_enabled": ("bool",),
     "temp_on": ("num", -20.0, 60.0),
     "temp_off": ("num", -20.0, 60.0),
+    "watts_min": ("num", 0.0, 5000.0),
+    "watts_max": ("num", 0.0, 5000.0),
     "stale_minutes": ("int", 0, 1440),
 }
 PROTECT_SCHEMA = {
@@ -1040,6 +1043,13 @@ def api_config():
         if t_on <= t_off:
             return jsonify(error="Cool-to temperature must be below the "
                                  "turn-on temperature."), 400
+    try:
+        w_lo, w_hi = float(c["watts_min"]), float(c["watts_max"])
+    except (TypeError, ValueError):
+        return jsonify(error="Draw limits must be numbers."), 400
+    if w_lo >= w_hi:
+        return jsonify(error="Expected draw lower limit must be below the "
+                             "upper limit."), 400
     summary = _describe_changes(cand)
     was = CFG["control"].get("mode")
     for section in cand:

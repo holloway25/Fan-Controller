@@ -15,11 +15,13 @@ All settings are editable in the web UI and stored in `config.json`
 | `temp_enabled` | false | Use temperature as a second trigger |
 | `temp_on` | 26.0 | Degrees C that starts the fan |
 | `temp_off` | 24.5 | Degrees C that releases it |
+| `watts_min` | 15.0 | Expected draw, lower bound. Display only, no control effect |
+| `watts_max` | 22.0 | Expected draw, upper bound |
 | `stale_minutes` | 0 | Minutes without a reading before the fan is turned on as a fail-safe; 0 disables it |
 
-`on_at` must be above `off_at`, and `temp_on` above `temp_off`; the API
-rejects a save otherwise, since equal or inverted values leave the fan
-running permanently.
+`on_at` must be above `off_at`, `temp_on` above `temp_off`, and `watts_min`
+below `watts_max`; the API rejects a save otherwise, since equal or inverted
+values leave the fan running permanently.
 
 ## protect
 
