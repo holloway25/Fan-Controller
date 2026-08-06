@@ -107,3 +107,17 @@ so an empty chart with live readings means that fetch failed rather than
 the poll. Check the browser network tab for `/api/history`, and confirm
 `history_rev` is incrementing once per poll interval - if it is frozen, the
 poll thread is not appending and the readings on screen are stale too.
+
+## Fan stopped with a draw fault
+
+Power monitoring was enabled and the draw sat outside `watts_min` to
+`watts_max` for `watts_fault_seconds` while the fan ran, so it was stopped
+and the fault latched. Automatic runs stay blocked until it is cleared -
+including the stale-reading failsafe.
+
+Check the band matches the fan before assuming the fan is at fault. A
+two-speed unit on high, or a replacement fan, will sit outside a band set
+for something else and read as broken while working perfectly.
+
+Force on overrides the fault, so use it to test after a repair. Clear the
+fault from the Fan plug card once the draw is right.

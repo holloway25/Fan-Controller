@@ -12,6 +12,7 @@ All responses are JSON except `/` and `/signin`.
 | GET | `/static/*` | open | Icons: browser tab and iOS home screen |
 | GET | `/signin` | required | Empty page whose only job is to raise the browser auth prompt |
 | POST | `/api/config` | required | Partial settings update; validates, then commits |
+| POST | `/api/fault/clear` | required | Acknowledge a draw fault and allow automatic runs again |
 | POST | `/api/protect/sensors` | required | Adopted sensors with their current CO2 value |
 | POST | `/api/plug/test` | required | Check the plug answers; returns relay state and watts |
 | POST | `/api/ui/password` | required | Set or clear the UI password |

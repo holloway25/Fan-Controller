@@ -35,20 +35,37 @@ reports explicitly. `sensor_id` is chosen in the UI via Find sensors.
 (usually `admin`) and `password` its web admin password; leave the
 password blank if none is set.
 
-`watts_rated` (16.0) is the draw the fan pulls while running, and
-`watts_tolerance` (10.0) the percentage either side that still counts as
-healthy. The dashboard shows the wattage green inside that band and red
-outside it, including when there is no reading at all, since a plug that
-stopped answering is the case worth catching. Both are display only and
-change nothing about switching.
+`watts_min` (15.0) and `watts_max` (25.0) bound the draw the fan is
+expected to pull while running. The dashboard shows the wattage green
+inside that band and red outside it, including when there is no reading
+at all, since a plug that stopped answering is the case worth catching.
 
-`watts_rated` must be at least 1 and `watts_tolerance` below 100, so that no
-valid setting can place zero draw inside the healthy band. Otherwise the
-fan indicator could read "Fan on, no draw" while the wattage sat green.
+Two bounds rather than a rating and a tolerance, because a two-speed fan
+has no single correct draw: the TT Mixflow 125 pulls 23 W on low and 37 W
+on high, and both are healthy.
 
-Measure the rated figure rather than copying the nameplate. Motors often
-draw more than their rating, and a band centred on the wrong number is
-permanently red and quickly ignored.
+`watts_min` must be below `watts_max`, and both at least 1, so that no
+valid setting places zero draw inside the healthy band. Otherwise the fan
+indicator could read "Fan on, no draw" while the wattage sat green.
+
+Measure the band rather than copying the nameplate. Motors often draw more
+than their rating - the Bravo 125 here is rated 16 W and pulls 19-20 W.
+
+`watts_enabled` (false) turns power monitoring into control. While it is on
+and the fan runs, a draw outside the band for `watts_fault_seconds` (60)
+stops the fan and latches a fault. Off, the wattage is still shown and
+coloured but nothing is acted on.
+
+Off by default deliberately: a band that does not match the fan would
+otherwise stop ventilation altogether, which is worse than no detection.
+
+Force on overrides a fault - it is how a repaired fan gets tested, so the
+detector stands down in that mode rather than fighting it. A fault does
+block the `stale_minutes` failsafe: that turns the fan on when readings
+stop, and a fan believed broken should not be started blind.
+
+Clearing is manual, from the dashboard or `POST /api/fault/clear`. A timed
+retry would switch a seized motor on every few minutes forever.
 
 Tasmota accepts credentials only as query parameters on `/cm`, so they
 travel in the URL. This service never logs request URLs, but it is a

@@ -88,6 +88,7 @@ padding:8px 11px;cursor:pointer}
 .log{font-family:var(--mono);font-size:13px;color:var(--dim);line-height:1.9}
 .log div{display:flex;gap:10px;align-items:baseline}
 .log span{flex:0 0 auto;white-space:nowrap;color:var(--faint)}
+.log div.fault,.log div.fault span{color:var(--warn)}
 @media(max-width:640px){
 header{flex-direction:column;align-items:stretch;gap:10px}
 .seg{width:100%}
@@ -419,9 +420,13 @@ function render(s){
   // through a restart could never be flagged.
   const settled=!s.changed_at || (Date.now()/1000-s.changed_at)>20;
   const dead=s.fan===true && settled && s.watts!=null && s.watts<NO_DRAW_W;
+  // A fault outranks the normal labels either way: off because it was
+  // stopped, or on because Force on is overriding it. Both are red.
+  const flt=!!s.fault;
   f.textContent=s.fan==null?"Fan unknown":
-    (s.fan?(dead?"Fan on, no draw":"Fan running"):"Fan off");
-  f.className="pill "+(dead?"bad":(s.fan?"on":"off"));
+    (s.fan?(flt?"Fan on - Fault":(dead?"Fan on, no draw":"Fan running"))
+          :(flt?"Fan off - Fault":"Fan off"));
+  f.className="pill "+((dead||flt)?"bad":(s.fan?"on":"off"));
   $("dot").className="dot "+(s.error?"bad":(s.co2!=null?"live":""));
   say("topmsg",(s.fault&&s.fault.msg)||s.error||"", "err");
   SUB={read:s.reading_at,poll:Number(c.poll_seconds)||30,
@@ -472,6 +477,11 @@ function render(s){
       when.textContent=p(d.getDate())+"/"+p(d.getMonth()+1)+"/"+
         d.getFullYear()+" "+p(d.getHours())+":"+p(d.getMinutes())+":"+
         p(d.getSeconds());
+      // Faults are the only entries meaning the fan stopped itself, so
+      // they carry colour. A clear is a resolution, not a fault, and
+      // stays plain.
+      if(typeof e.msg==="string"&&e.msg.indexOf("Draw fault -")===0)
+        row.className="fault";
       row.appendChild(when);
       row.appendChild(document.createTextNode(e.msg==null?"":String(e.msg)));
       logEl.appendChild(row)});
