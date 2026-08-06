@@ -330,6 +330,16 @@ function drawTrace(hist,on_at,off_at){
     points:hist.map(p=>x(p.t)+","+y(p.v)).join(" "),
     fill:"none",stroke:"#e8edf3","stroke-width":1.6,
     "stroke-linejoin":"round","stroke-linecap":"round"}));
+  // Current reading in the gutter, as the mini rows show theirs. Nudged
+  // clear of the threshold labels, which share the gutter - CO2 sits on a
+  // threshold exactly when you are most likely to be watching it.
+  const last=vs[vs.length-1];
+  let ly=y(last)+5;
+  [y(on_at)+5,y(off_at)+5].forEach(ty=>{
+    if(Math.abs(ly-ty)<14)ly=ly<ty?ty-14:ty+14});
+  svg.appendChild(txt(Math.round(last),{x:L-7,y:ly,fill:"#e8edf3",
+    "font-size":13,"font-weight":600,"text-anchor":"end",
+    "font-family":"ui-monospace,monospace"}));
   svg.appendChild(txt("CO2 ppm",{x:L+4,y:TOP+11,fill:"#97a3b4",
     "font-size":12,opacity:.85,
     "font-family":"ui-monospace,monospace"}));
