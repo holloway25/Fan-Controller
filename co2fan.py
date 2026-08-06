@@ -23,7 +23,7 @@ DEFAULTS = {
                 "verify_tls": False,
                 "sensor_id": ""},
     "plug": {"host": "192.168.1.10", "user": "admin", "password": "",
-             "watts_rated": 16.0, "watts_tolerance": 10.0},
+             "watts_min": 15.0, "watts_max": 25.0},
     "ui": {"password_hash": ""},
     "control": {"mode": "auto", "on_at": 1000, "off_at": 800,
                 "poll_seconds": 30, "min_run_minutes": 5,
@@ -58,8 +58,8 @@ UI_SCHEMA = {"password_hash": ("str", 0, 200)}
 PLUG_SCHEMA = {
     "host": ("str", 1, 253), "user": ("str", 0, 64),
     "password": ("str", 0, 128),
-    "watts_rated": ("num", 1.0, 5000.0),
-    "watts_tolerance": ("num", 0.0, 99.0),
+    "watts_min": ("num", 1.0, 5000.0),
+    "watts_max": ("num", 1.0, 5000.0),
 }
 SCHEMAS = {"protect": PROTECT_SCHEMA, "plug": PLUG_SCHEMA, "ui": UI_SCHEMA,
            "control": CONTROL_SCHEMA}
@@ -1043,6 +1043,13 @@ def api_config():
         if t_on <= t_off:
             return jsonify(error="Cool-to temperature must be below the "
                                  "turn-on temperature."), 400
+    pg = cand["plug"]
+    try:
+        w_lo, w_hi = float(pg["watts_min"]), float(pg["watts_max"])
+    except (TypeError, ValueError):
+        return jsonify(error="Draw limits must be numbers."), 400
+    if w_lo >= w_hi:
+        return jsonify(error="Expected draw low must be below high."), 400
     summary = _describe_changes(cand)
     was = CFG["control"].get("mode")
     for section in cand:
