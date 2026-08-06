@@ -428,7 +428,11 @@ function render(s){
           :(flt?"Fan off - Fault":"Fan off"));
   f.className="pill "+((dead||flt)?"bad":(s.fan?"on":"off"));
   $("dot").className="dot "+(s.error?"bad":(s.co2!=null?"live":""));
-  say("topmsg",(s.fault&&s.fault.msg)||s.error||"", "err");
+  // An unconfirmed stop is the worse case: faulted but possibly still
+  // running, and the plug is not answering to say either way.
+  const fmsg=s.fault?(s.fault.msg+(s.fault.stopped?"":
+    " — stop unconfirmed, retrying")):"";
+  say("topmsg",fmsg||s.error||"", "err");
   SUB={read:s.reading_at,poll:Number(c.poll_seconds)||30,
        changed:s.changed_at};
   paintSub();

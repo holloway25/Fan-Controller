@@ -75,6 +75,10 @@ revision changes rather than on every 5 second poll.
 - `events.json` - the activity log, written on each entry and reloaded
   at startup so switching history survives a restart. 300 kept, the
   most recent 30 returned to the UI each poll. Not in git.
+- `fault.json` - a latched draw fault, written atomically when raised and
+  removed when acknowledged. Persisted rather than held in memory because
+  a restart would otherwise skip the acknowledgement it is waiting for and
+  re-arm a fan already judged faulty. Not in git.
 - In-memory only - latch state and current fan state.
 
 Fan state is re-read from the plug every poll rather than trusted

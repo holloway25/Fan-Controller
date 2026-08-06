@@ -192,6 +192,36 @@ HIST_FLUSH_SECONDS = 300  # batch disk writes rather than one per poll
 _last_flush = 0.0
 # When the draw first left its band. None while healthy, so a single good
 # reading resets the clock rather than accumulating toward a fault.
+
+FAULT_PATH = os.path.join(DIR, "fault.json")
+
+
+def load_fault():
+    """A fault outlives a restart: only acknowledgement clears it.
+
+    Held in memory alone, restarting the service - or the host losing
+    power - would silently re-arm a fan already judged faulty.
+    """
+    try:
+        d = json.load(open(FAULT_PATH))
+        return d if isinstance(d, dict) and d.get("msg") else None
+    except (ValueError, OSError):
+        return None
+
+
+def save_fault(f):
+    """Written atomically: a torn file must not read as no fault."""
+    try:
+        if f is None:
+            if os.path.exists(FAULT_PATH):
+                os.remove(FAULT_PATH)
+            return
+        tmp = FAULT_PATH + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump(f, fh)
+        os.replace(tmp, FAULT_PATH)
+    except OSError:
+        pass
 _oob_since = None
 
 
@@ -515,6 +545,9 @@ START_TIME = time.time()
 _wake = threading.Event()  # set to make the poll loop act at once
 CFG = load_cfg()
 STATE["history"] = load_hist()
+# Reloaded, not reset: a fault must survive a restart or the acknowledgement
+# it is waiting for can be skipped by a power cycle.
+STATE["fault"] = load_fault()
 STATE["history_rev"] = 1
 STATE["events"] = load_events()
 
@@ -721,6 +754,12 @@ def _failsafe():
     mins = int(CFG["control"].get("stale_minutes") or 0)
     if not mins or CFG["control"]["mode"] != "auto":
         return
+    # A fault means the fan is not doing anything useful, so ventilating
+    # with it is a fiction. Blocking here as well as in decide() matters:
+    # this path switches the plug directly and never consults decide().
+    with _state_lock:
+        if STATE["fault"]:
+            return
     with _state_lock:
         last = STATE["reading_at"]
     # "Never read anything" is measured from startup, not treated as fresh:
@@ -750,32 +789,68 @@ SETTLE_SECONDS = 20  # spin-up grace before draw is judged
 
 
 
+def _enforce_stop(plug):
+    """Keep a faulted fan off until the fault is acknowledged.
+
+    Runs every cycle while a fault stands, not once when it is raised:
+    the stale-reading failsafe or an external switch can turn the fan
+    back on, and a stop command that failed must be retried rather than
+    assumed. The fault records whether the plug actually confirmed it.
+    """
+    if plug is None:
+        return
+    try:
+        if plug.state() is not False:
+            plug.set(False)
+    except PlugError:
+        return                      # unconfirmed: retried next cycle
+    newly = False
+    with _state_lock:
+        STATE["fan"] = False
+        f = STATE["fault"]
+        if f and not f.get("stopped"):
+            f["stopped"] = True
+            newly = True
+            f = dict(f)
+    if newly:
+        save_fault(f)
+        _log("Draw fault - fan stop confirmed")
+
 def _draw_check(plug):
     """Fault the fan if it runs outside its expected draw for long enough.
 
-    Force on deliberately takes precedence: it is how you test a fan after
-    fixing it, so this must not fight it. A fault therefore only ever
-    stops an automatic run.
+    Force on takes precedence: it is how a repaired fan gets tested, so
+    the detector stands down there rather than fighting it.
     """
     global _oob_since
-    pg = CFG["plug"]
-    if not pg.get("watts_enabled") or CFG["control"]["mode"] == "on":
+    if CFG["control"]["mode"] == "on":
         _oob_since = None
         return
     with _state_lock:
-        fan, w = STATE["fan"], STATE["watts"]
-        changed, faulted = STATE["changed_at"], STATE["fault"]
-    now = time.time()
-    # A motor drawing nothing on spin-up is not a fault, and neither is a
-    # fan that is meant to be off.
-    settled = changed is None or (now - changed) > SETTLE_SECONDS
-    if faulted or fan is not True or not settled:
+        fault = STATE["fault"]
+    if fault:
+        _enforce_stop(plug)
+        return
+    pg = CFG["plug"]
+    if not pg.get("watts_enabled"):
         _oob_since = None
         return
+    now = time.time()
+    with _state_lock:
+        fan, w = STATE["fan"], STATE["watts"]
+        w_at, changed = STATE["watts_at"], STATE["changed_at"]
+    # A motor spinning up draws nothing yet, and a fan meant to be off is
+    # not a fault.
+    if fan is not True or changed is None or now - changed <= SETTLE_SECONDS:
+        _oob_since = None
+        return
+    # Freshness is judged here, not taken from the cached value: when the
+    # plug stops answering, STATE keeps the last good reading and would
+    # otherwise look healthy for as long as the outage lasted. No reading
+    # is out of band, since an unanswering plug is what this catches.
+    if w_at is None or (now - w_at) > WATTS_STALE:
+        w = None
     lo, hi = float(pg["watts_min"]), float(pg["watts_max"])
-    # No reading counts as out of band: an unanswering plug is exactly the
-    # case this exists to catch. WATTS_STALE nulls it after 15s, well
-    # inside any sane fault window, so a blip cannot reach the limit.
     if w is not None and lo <= w <= hi:
         _oob_since = None
         return
@@ -785,20 +860,17 @@ def _draw_check(plug):
     if now - _oob_since < float(pg["watts_fault_seconds"]):
         return
     reading = "no reading" if w is None else ("%g W" % w)
-    msg = ("Draw fault - %s outside %g-%g W for %ds, fan stopped"
+    msg = ("Draw fault - %s outside %g-%g W for %ds"
            % (reading, lo, hi, int(now - _oob_since)))
-    try:
-        plug.set(False)
-    except PlugError:
-        # Could not stop it. Still record the fault so the dashboard says
-        # so and automatic runs stay blocked.
-        pass
+    f = {"at": now, "msg": msg, "stopped": False}
     with _state_lock:
-        STATE["fault"] = {"at": now, "msg": msg}
-        STATE["fan"] = False
-        STATE["changed_at"] = now
+        STATE["fault"] = f
+    save_fault(f)
     _oob_since = None
     _log(msg)
+    _enforce_stop(plug)
+
+
 def watts_loop():
     """Poll the plug's meter on its own short cadence.
 
@@ -808,17 +880,24 @@ def watts_loop():
     a plug hiccup cannot overwrite the control loop's error.
     """
     while True:
+        plug = None
         try:
             _, plug = _clients()
             w = plug.power_w()
             with _state_lock:
                 STATE["watts"] = w
                 STATE["watts_at"] = time.time()
-            _draw_check(plug)
         except Exception:
             # Left for the staleness check rather than cleared here: one
-            # missed request should not blank a valid reading, but a stale
-            # one must never be presented as current.
+            # missed request should not blank a valid reading, but a
+            # stale one must never be presented as current.
+            pass
+        # Outside the read, so losing the plug still reaches the detector.
+        # Inside, a failed power_w() jumped straight to except and the
+        # out-of-band timer never started.
+        try:
+            _draw_check(plug)
+        except Exception:
             pass
         time.sleep(WATTS_SECONDS)
 
@@ -1023,6 +1102,7 @@ def api_fault_clear():
     with _state_lock:
         had = STATE["fault"]
         STATE["fault"] = None
+    save_fault(None)
     _oob_since = None
     if had:
         _log("Draw fault cleared")

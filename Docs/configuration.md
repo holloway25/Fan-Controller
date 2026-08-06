@@ -67,6 +67,16 @@ stop, and a fan believed broken should not be started blind.
 Clearing is manual, from the dashboard or `POST /api/fault/clear`. A timed
 retry would switch a seized motor on every few minutes forever.
 
+A fault survives restarts and is enforced continuously, not once. While it
+stands, every draw cycle re-checks the plug and switches the fan off again
+if something turned it back on, so an external switch or the stale-reading
+failsafe cannot leave a faulted fan running.
+
+If the plug does not confirm the stop, the dashboard says "stop
+unconfirmed, retrying" rather than claiming the fan was stopped. That is
+the state to worry about: faulted, possibly still running, and the plug
+not answering to say which.
+
 Tasmota accepts credentials only as query parameters on `/cm`, so they
 travel in the URL. This service never logs request URLs, but it is a
 limitation of the device rather than a choice.

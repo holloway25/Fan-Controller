@@ -121,3 +121,12 @@ for something else and read as broken while working perfectly.
 
 Force on overrides the fault, so use it to test after a repair. Clear the
 fault from the Fan plug card once the draw is right.
+
+A fault reading "stop unconfirmed, retrying" means the plug did not
+acknowledge the stop, so the fan may still be running. The stop is retried
+every draw cycle until confirmed. Check the plug is reachable: losing
+contact with it both raises the fault and prevents acting on it.
+
+Changing the plug address clears its stored password by design, so the
+service cannot be repointed at another host and made to authenticate
+there. Re-enter it after any address change or draw readings stop.
