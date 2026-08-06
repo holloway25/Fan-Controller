@@ -42,6 +42,10 @@ outside it, including when there is no reading at all, since a plug that
 stopped answering is the case worth catching. Both are display only and
 change nothing about switching.
 
+`watts_rated` must be at least 1 and `watts_tolerance` below 100, so that no
+valid setting can place zero draw inside the healthy band. Otherwise the
+fan indicator could read "Fan on, no draw" while the wattage sat green.
+
 Measure the rated figure rather than copying the nameplate. Motors often
 draw more than their rating, and a band centred on the wrong number is
 permanently red and quickly ignored.

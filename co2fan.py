@@ -58,8 +58,8 @@ UI_SCHEMA = {"password_hash": ("str", 0, 200)}
 PLUG_SCHEMA = {
     "host": ("str", 1, 253), "user": ("str", 0, 64),
     "password": ("str", 0, 128),
-    "watts_rated": ("num", 0.0, 5000.0),
-    "watts_tolerance": ("num", 0.0, 100.0),
+    "watts_rated": ("num", 1.0, 5000.0),
+    "watts_tolerance": ("num", 0.0, 99.0),
 }
 SCHEMAS = {"protect": PROTECT_SCHEMA, "plug": PLUG_SCHEMA, "ui": UI_SCHEMA,
            "control": CONTROL_SCHEMA}

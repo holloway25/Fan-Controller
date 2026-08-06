@@ -105,9 +105,10 @@ and a zone-wide token can mint a certificate for any name you host. Add a
 deploy hook so nginx reloads on renewal, or it keeps serving the old
 certificate from memory until it expires:
 
-    echo "systemctl reload nginx" | sudo tee \
+    printf '#!/bin/sh\nsystemctl reload nginx\n' | sudo tee \
       /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh
     sudo chmod 755 /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh
+
 ## Authentication
 
 Off by default. Setting a password protects everything that changes state
