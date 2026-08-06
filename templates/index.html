@@ -75,7 +75,11 @@ button.primary:hover{filter:brightness(1.1)}
 overflow:hidden}
 .seg button{border:0;border-radius:0;padding:8px 14px;background:transparent;
 color:var(--dim)}
-.seg button.sel{background:var(--air);color:#08121e;font-weight:600}
+.seg button.sel{color:#08121e;font-weight:600}
+/* One colour per mode, reused by the activity log so the two agree. */
+.seg button.sel[data-mode="auto"]{background:var(--air)}
+.seg button.sel[data-mode="manual"]{background:var(--warn)}
+.seg button.sel[data-mode="on"]{background:var(--trig)}
 .actions{display:flex;gap:10px;align-items:center;margin-top:16px;flex-wrap:wrap}
 .msg{font-family:var(--mono);font-size:13px;padding:10px 12px;border-radius:8px;
 margin-top:12px;display:none;line-height:1.5}
@@ -92,6 +96,9 @@ padding:8px 11px;cursor:pointer}
 .log span{flex:0 0 auto;white-space:nowrap;color:var(--faint)}
 .log div.fault,.log div.fault span{color:var(--warn)}
 .log div.ok,.log div.ok span{color:var(--ok)}
+.log div.m-auto,.log div.m-auto span{color:var(--air)}
+.log div.m-manual,.log div.m-manual span{color:var(--warn)}
+.log div.m-on,.log div.m-on span{color:var(--trig)}
 @media(max-width:640px){
 header{flex-direction:column;align-items:stretch;gap:10px}
 .seg{width:100%}
@@ -534,6 +541,10 @@ function render(s){
       if(/^Draw fault/i.test(m)||/draw fault$/i.test(m))
         row.className="fault";
       else if(/^Fan /.test(m))row.className="ok";
+      // Mode entries take the same colour as the mode button, so the
+      // log and the selector agree on what each mode looks like.
+      else if(/^Mode: /.test(m))row.className=
+        m==="Mode: Manual"?"m-manual":(m==="Mode: Auto"?"m-auto":"m-on");
       row.appendChild(when);
       row.appendChild(document.createTextNode(e.msg==null?"":String(e.msg)));
       logEl.appendChild(row)});
