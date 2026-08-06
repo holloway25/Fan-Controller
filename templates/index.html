@@ -495,13 +495,15 @@ function render(s){
   drawTrace(HIST,c.on_at,c.off_at);
   drawMini(HIST,c);
   $("tc").textContent=s.temperature==null?"--\u00b0C":s.temperature.toFixed(1)+"\u00b0C";
-  // Green means monitored and behaving, amber means it is the rule
-  // currently demanding the fan. Humidity and PM2.5 stay neutral: they
-  // are shown, not acted on. Temperature is only monitored when enabled.
+  // Green means monitored and behaving, so it needs both: Auto actually
+  // in control, and a live reading. The guard used to cover only the
+  // amber branch, so a stale sensor or Manual still showed green.
   const auto=c.mode==="auto";
-  $("ppm").className="pill"+(auto&&s.latch.co2?" trig":" on");
-  $("tc").className="pill"+(c.temp_enabled?
-    (auto&&s.latch.temp?" trig":" on"):"");
+  $("ppm").className="pill"+
+    (auto&&s.co2!=null?(s.latch.co2?" trig":" on"):"");
+  $("tc").className="pill"+
+    (auto&&c.temp_enabled&&s.temperature!=null
+      ?(s.latch.temp?" trig":" on"):"");
   $("rh").textContent=s.humidity==null?"--%":s.humidity.toFixed(1)+"%";
   $("pm").textContent=s.pm25==null?"-- pm2.5":s.pm25.toFixed(1)+" pm2.5";
   $("w").textContent=s.watts==null?"-- W":fmtW(s.watts)+" W";
