@@ -682,6 +682,17 @@ def _manual_off(plug):
     command, and the flag is cleared only once the plug has confirmed the
     switch - otherwise a failed call silently dropped the request forever.
     """
+    with _act_lock:
+        if CFG["control"].get("mode") != "manual":
+            # Mirror of the guard in _force_on. The pending flag is left
+            # set on purpose: if manual is entered again the one-time
+            # stop is still owed.
+            return
+        _manual_off_locked(plug)
+
+
+def _manual_off_locked(plug):
+    """The body of _manual_off, with _act_lock already held."""
     with _state_lock:
         pending = STATE.get("manual_off_pending")
     if not pending:
@@ -717,6 +728,12 @@ def _force_on(plug):
     so the two callers cannot both switch and both log.
     """
     with _act_lock:
+        if CFG["control"].get("mode") != "on":
+            # Re-checked under the lock, not just by the caller. Manual's
+            # stop is one-shot: if it has already run and cleared its
+            # flag, switching on here would leave the fan going with
+            # nothing left to correct it.
+            return
         actual = _fan_status(plug)   # None when the plug cannot be read
         if actual is True:
             with _state_lock:
@@ -1412,20 +1429,28 @@ def api_config():
     if w_lo >= w_hi:
         return jsonify(error="Expected draw low must be below high."), 400
     summary = _describe_changes(cand)
-    was = CFG["control"].get("mode")
-    for section in cand:
-        CFG[section] = cand[section]
-    now_mode = CFG["control"].get("mode")
-    if now_mode == "manual" and was != "manual":
-        # Entering manual switches the fan off once, then hands control to
-        # the plug's own controls or Google Home without interference.
-        with _state_lock:
-            STATE["manual_off_pending"] = True
-    if was == "on" and now_mode != "on":
-        # Leaving a forced state: do not let the minimum-run timer from the
-        # forced switch hold the fan on once automatic control resumes.
-        with _state_lock:
-            STATE["changed_at"] = None
+    # Committed under _act_lock so the mode cannot change midway through
+    # an actuation. Without it, a Force on that had already passed its
+    # mode check could land after manual's one-time stop had run and
+    # cleared its flag, leaving the fan on with nothing to correct it.
+    # Waits for an in-flight switch, so a save can block for as long as
+    # the plug takes to answer. Order is _act_lock then _state_lock
+    # everywhere, which is why this cannot deadlock.
+    with _act_lock:
+        was = CFG["control"].get("mode")
+        for section in cand:
+            CFG[section] = cand[section]
+        now_mode = CFG["control"].get("mode")
+        if now_mode == "manual" and was != "manual":
+            # Entering manual switches the fan off once, then hands to the
+            # plug's own controls or Google Home without interference.
+            with _state_lock:
+                STATE["manual_off_pending"] = True
+        if was == "on" and now_mode != "on":
+            # Leaving a forced state: do not let the minimum-run timer
+            # from the forced switch hold the fan on once auto resumes.
+            with _state_lock:
+                STATE["changed_at"] = None
     save_cfg(CFG)
     if summary:
         _log(summary)
