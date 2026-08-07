@@ -40,6 +40,16 @@ Every field is coerced and range-checked against a schema before being
 stored, and unknown keys are rejected. State-changing endpoints require an
 `application/json` content type; a form-encoded post returns 415.
 
+A save is all or nothing. One bad field rejects the whole request with a
+400, including sections that were valid, so a post that sets thresholds
+and plug limits together changes neither if the thresholds are refused.
+Read the response body rather than assuming a 200.
+
+A save that changes the mode waits for any switch already in progress, so
+it can block for as long as the plug takes to answer. This is deliberate:
+committing a mode midway through an actuation is what let Force on land
+after Manual had already stopped the fan. See `architecture.md`.
+
 ## Why history is a separate endpoint
 
 The trace was ~99% of `/api/state` (188KB of 191KB), and the UI polls that

@@ -30,8 +30,14 @@ started fan is also held on for the minimum run time. Force on overrides
 the thresholds entirely; Manual switches the fan off once and then leaves
 it to Google Home or the plug itself.
 
+Manual and Force on are applied before the sensor is read, so both work
+when the console is down, the payload has stopped resolving, or no sensor
+has been chosen yet - Force on is the override reached for precisely when
+the reading cannot be trusted.
+
 The API refuses any save where the on level is not above the off level,
-since that leaves the fan running forever.
+since that leaves the fan running forever, and refuses the whole request
+rather than the offending field.
 
 ## When it breaks
 

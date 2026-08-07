@@ -54,6 +54,10 @@ should not read two ways on adjacent lines.
 The fault match is anchored to the start or end of the message rather
 than searching for the word. `Changed: watts_fault_seconds` names a
 setting, not a fault, and a substring match turned it red.
+Poll failures appear in the log as well as the banner, coloured as faults.
+The banner shows only the current error, so it disappears the moment the
+problem clears; the log is what remains afterwards. A "Sensor poll
+recovered" line marks the end of one.
 
 ## Why the fan is running
 

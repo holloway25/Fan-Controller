@@ -36,6 +36,29 @@ their off levels before stopping, so a rule that had never triggered could
 still veto the stop. In practice a CO2-driven run was held on for hours by
 a temperature condition that had never been met.
 
+A latch is held in memory, not derived from the current thresholds, so
+changing a threshold does not release one that is already set. Lowering
+`on_at` to start the fan and then raising it back leaves CO2 latched: the
+release condition is `co2 <= off_at`, which the reading may be nowhere
+near. The fan keeps running, correctly by the rule but surprisingly if you
+were only adjusting a number. To clear one deliberately, raise the off
+level above the current reading for a poll, then put it back.
+
+## Enforcement
+
+A mode is not a one-off command; it is re-asserted. Force on is checked by
+the poll thread and again by the draw thread on its shorter cadence, so a
+fan switched off at the plug or by Google Home comes back promptly even
+while Protect is unreachable and the poll loop is backing off. Without the
+second thread, enforcement inherited the Protect backoff and could take
+five minutes.
+
+Every actuation takes a lock and re-checks the mode before touching the
+plug, and a settings save commits the new mode under that same lock. A
+mode change and a switch therefore cannot interleave: without this, Force
+on could land after Manual's one-time stop had run, leaving the fan going
+with nothing left to correct it. See `architecture.md`.
+
 ## Minimum run time
 
 Once the fan starts it stays on for `min_run_minutes` even if the readings
@@ -51,10 +74,7 @@ idle, and a green countdown while this is the only reason the fan is
 running - fan on, in Auto, with neither rule latched. Without it a fan
 running below the off level looks like a fault rather than the
 anti-short-cycling working. The countdown is deliberately not shown in
-Force on, where the mode holds the fan rather than the lease. Force on is also re-asserted on
-the draw thread every few seconds, not only on the poll interval, so a fan
-switched off elsewhere returns promptly even while Protect is unreachable
-and the poll loop is backing off. See
+Force on, where the mode holds the fan rather than the lease. See
 `dashboard.md` for the colours.
 
 ## Responsiveness

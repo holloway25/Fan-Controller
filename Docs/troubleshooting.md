@@ -32,6 +32,18 @@ clears on its own - the loop backs off and retries. One that never clears
 means the name really is unresolvable: check the record and the
 nameserver, not the console.
 
+## An error appeared and then cleared
+
+Poll failures are written to the activity log as well as the banner, so a
+fault that has since resolved can still be found after the fact. Look for
+the message in the log with its timestamp, and for "Sensor poll recovered"
+marking when it cleared.
+
+Repeats are deduplicated: an outage lasting hours logs once, not once per
+retry, so the entry you see is when it started rather than when it last
+tried. This keeps a long outage from evicting real switching history from
+the 300-entry log.
+
 ## HTTP 429 from UniFi
 
 Login rate limiting. Clients are cached to avoid this, but if it appears,
@@ -146,6 +158,9 @@ for something else and read as broken while working perfectly.
 
 Force on overrides the fault, so use it to test after a repair. Clear the
 fault from the Fan plug card once the draw is right.
+Force on is re-asserted every few seconds by the draw thread, not only on
+the poll interval, so testing a repaired fan works even while the console
+is unreachable.
 
 A fault reading "stop unconfirmed, retrying" means the plug did not
 acknowledge the stop, so the fan may still be running. The stop is retried

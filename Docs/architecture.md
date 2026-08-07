@@ -1,9 +1,10 @@
 # Architecture
 
-A single Flask process run under systemd, with two background threads:
-one polls the sensor and switches the fan, the other reads the plug's
-energy meter on a shorter cadence. The Flask routes serve the UI and
-settings.
+A single Flask process run under systemd, with two background threads.
+The poll thread reads the sensor and decides; the draw thread reads the
+plug's energy meter on a shorter cadence, enforces a latched fault, and
+re-asserts Force on. Both switch the plug, which is why the locking below
+matters. The Flask routes serve the UI and settings.
 
 ```
 UniFi Protect  --HTTPS-->  Fan Controller  --HTTP-->   Tasmota plug
@@ -65,6 +66,45 @@ compresses application/json, which matters most for /api/history - the
 trace is the one large payload left, and it is fetched only when the
 revision changes rather than on every 5 second poll.
 
+## Threads and locks
+
+Three things can drive the plug: the poll thread through `tick()`, the
+draw thread through the fault detector and the Force on re-assertion, and
+a settings save that changes the mode. Every actuation therefore follows
+one rule:
+
+> take `_act_lock`, re-check the mode, then touch the plug.
+
+The re-check is not defensive padding. Checking the mode before taking the
+lock and acting after it is a race: Manual's stop runs exactly once and
+then clears its flag, so a Force on that had already passed its check
+could land afterwards and leave the fan running in the one mode whose
+purpose is to stop touching it.
+
+Settings saves commit the mode under the same lock, so an in-flight switch
+completes before a new mode takes effect. A save can therefore block for
+as long as the plug takes to answer - bounded by its 12s timeout, and only
+when the plug is already misbehaving. A slow save is visible and
+recoverable; a fan stuck on in Manual is neither.
+
+The fault is a separate transaction. `_fault_lock` covers the in-memory
+value and `fault.json` together, because updating one and then the other
+let an acknowledgement land in the gap and be overwritten by a stale
+snapshot - clearing the fault on screen while leaving it on disk, to
+reappear at the next restart.
+
+```
+_act_lock   -> _state_lock      three actuation paths
+_fault_lock -> _state_lock      three fault writers
+_act_lock and _fault_lock are never held together
+```
+
+`_state_lock` is an RLock because nested acquisition previously deadlocked
+the poll thread. Nothing takes `_act_lock` or `_fault_lock` while holding
+`_state_lock`, and keeping it that way is what makes the ordering above
+deadlock-free. Disk writes and event logging stay outside both, so they
+cannot extend a hold something else is waiting on.
+
 ## State
 
 - `config.json` - settings, written atomically, mode 0600. Not in git.
@@ -75,8 +115,8 @@ revision changes rather than on every 5 second poll.
 - `events.json` - the activity log, written on each entry and reloaded
   at startup so switching history survives a restart. 300 kept, the
   most recent 30 returned to the UI each poll. Not in git.
-- `fault.json` - a latched draw fault, written atomically when raised and
-  removed when acknowledged. Persisted rather than held in memory because
+- `fault.json` - a latched draw fault. Raised, confirmed and acknowledged
+  as one transaction with the in-memory copy, never as two steps. Persisted rather than held in memory because
   a restart would otherwise skip the acknowledgement it is waiting for and
   re-arm a fan already judged faulty. Not in git.
 - In-memory only - latch state and current fan state.
