@@ -51,7 +51,10 @@ idle, and a green countdown while this is the only reason the fan is
 running - fan on, in Auto, with neither rule latched. Without it a fan
 running below the off level looks like a fault rather than the
 anti-short-cycling working. The countdown is deliberately not shown in
-Force on, where the mode holds the fan rather than the lease. See
+Force on, where the mode holds the fan rather than the lease. Force on is also re-asserted on
+the draw thread every few seconds, not only on the poll interval, so a fan
+switched off elsewhere returns promptly even while Protect is unreachable
+and the poll loop is backing off. See
 `dashboard.md` for the colours.
 
 ## Responsiveness

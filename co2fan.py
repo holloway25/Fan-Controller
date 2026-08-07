@@ -551,6 +551,10 @@ STATE = {
 _state_lock = threading.RLock()
 START_TIME = time.time()
 _wake = threading.Event()  # set to make the poll loop act at once
+# Force on is asserted from both the poll thread and the draw thread, so
+# the read-decide-switch has to be atomic or the two can each see the fan
+# off, both switch it, and both log the same event.
+_act_lock = threading.Lock()
 CFG = load_cfg()
 STATE["history"] = load_hist()
 # Reloaded, not reset: a fault must survive a restart or the acknowledgement
@@ -705,30 +709,34 @@ def _force_on(plug):
     _manual_off is, and it does not return early: readings are still
     recorded while forced on, so the 24h trace has no gap.
 
-    Re-asserted each tick rather than latched, so a fan switched off at
-    the plug or by Google Home comes back on while the mode stands.
+    Re-asserted rather than latched, so a fan switched off at the plug or
+    by Google Home comes back on while the mode stands. Called from the
+    draw thread as well as tick(): the poll loop backs off to 300s while
+    Protect is unreachable, and the override must not wait that long to
+    undo an external switch-off. Idempotent, and serialised on _act_lock
+    so the two callers cannot both switch and both log.
     """
-    try:
-        already_on = plug.state() is True
-    except PlugError:
-        already_on = False           # unknown: switch anyway
-    if already_on:
+    with _act_lock:
+        actual = _fan_status(plug)   # None when the plug cannot be read
+        if actual is True:
+            with _state_lock:
+                STATE["fan"] = True  # no change, so no lease and no event
+            return
         with _state_lock:
-            STATE["fan"] = True      # no change, so no lease and no event
-        return
-    with _state_lock:
-        was_on = STATE["fan"] is True
-    if was_on:
-        # We believed it on and the plug says otherwise, so something else
-        # switched it. Recorded before we undo it, as the automatic path
-        # does - forcing it back on must not swallow the evidence.
-        _log("Fan switched to off outside this service")
-    plug.set(True)                   # raises: retried on the next tick
-    now = time.time()
-    with _state_lock:
-        STATE["fan"] = True
-        STATE["changed_at"] = now
-    _log("Fan on \u2014 forced on")
+            was_on = STATE["fan"] is True
+        if actual is False and was_on:
+            # Confirmed off while we believed it on, so something else
+            # switched it. Recorded before we undo it, as the automatic
+            # path does - forcing it back must not swallow the evidence.
+            # Only on a confirmed False: an unreadable plug is unknown,
+            # not off, and reporting it as a switch invents an event.
+            _log("Fan switched to off outside this service")
+        plug.set(True)               # raises: retried on the next cycle
+        now = time.time()
+        with _state_lock:
+            STATE["fan"] = True
+            STATE["changed_at"] = now
+        _log("Fan on \u2014 forced on")
 
 
 def tick():
@@ -948,6 +956,18 @@ def watts_loop():
         # Outside the read, so losing the plug still reaches the detector.
         # Inside, a failed power_w() jumped straight to except and the
         # out-of-band timer never started.
+        try:
+            if plug is not None and CFG["control"]["mode"] == "on":
+                # Enforced on this thread too. The poll loop backs off to
+                # 300s while Protect is unreachable, so tick() alone could
+                # leave a fan switched off elsewhere stopped for minutes
+                # while the mode says otherwise.
+                _force_on(plug)
+        except Exception:
+            pass
+        # Called even in Force on, where it stands down and clears the
+        # out-of-band timer. Skipping it there would leave a stale start
+        # time to resume from and could fault the fan early on the way out.
         try:
             _draw_check(plug)
         except Exception:
