@@ -7,7 +7,7 @@ Protect 7.1's documented API omits air-quality metrics, so this reads the
 private /proxy/protect/api/bootstrap endpoint. That is undocumented and may
 break on firmware updates; use the Debug view to inspect the live payload.
 """
-import atexit, copy, hashlib, hmac, json, math, os, signal, sys
+import atexit, copy, hashlib, hmac, json, math, os, signal, socket, sys
 import threading, time
 import requests, urllib3
 from flask import Flask, Response, jsonify, request, render_template
@@ -376,6 +376,14 @@ class Protect:
                 "this exact name and be current - an IP address will not "
                 "validate. Untick Verify certificate to use an IP. (%s)"
                 % (self.host, str(e)[:120]))
+        except requests.RequestException as e:
+            # Ordered after SSLError, which is a subclass of this. Without
+            # it a DNS or connection failure during login escaped as a raw
+            # requests exception, while the identical failure in _get()
+            # reported cleanly. Most visible on restart: logging in is the
+            # first thing the poll loop does, and the resolver may not be
+            # answering yet. Wording matches _get() deliberately.
+            raise ProtectError("Cannot reach the UniFi console: %s" % e)
         if r.status_code == 499:
             raise ProtectError("That account has two-factor enabled. Create a "
                                "separate local user without 2FA.")
@@ -905,8 +913,77 @@ def watts_loop():
             pass
         time.sleep(WATTS_SECONDS)
 
+def _wait_for_dns(host, timeout=90, interval=3):
+    """Block until `host` resolves, up to `timeout` seconds.
+
+    The unit is ordered after network-online.target, but that only proves
+    the link has an address - not that the resolver is answering. This box
+    boots in about two seconds and its only nameserver is the gateway, so
+    the first Protect login could lose the race and fail with EAI_AGAIN
+    ("Temporary failure in name resolution"), backing off for a minute
+    before recovering on its own.
+
+    Waiting here rather than in the unit keeps the hostname in config.json
+    alone, instead of duplicating it into /etc/hosts or an ExecStartPre
+    where an edit made in the UI would never reach it.
+
+    Bounded, not infinite: a genuinely wrong hostname must still reach the
+    normal error path so the UI can report it. True if it resolved.
+    """
+    if not host:
+        return False           # unconfigured; tick() reports that properly
+    try:
+        # A literal address needs no resolver. AI_NUMERICHOST fails fast on
+        # anything that is not one, so this never queries DNS.
+        socket.getaddrinfo(host, None, flags=socket.AI_NUMERICHOST)
+        return True
+    except socket.gaierror:
+        pass
+    deadline = time.time() + timeout
+    waited = False
+    while True:
+        try:
+            socket.getaddrinfo(host, None)
+            if waited:
+                _log("Resolved %s, starting normally" % host)
+            return True
+        except socket.gaierror:
+            if time.time() >= deadline:
+                _log("Could not resolve %s after %ds, starting anyway"
+                     % (host, timeout))
+                return False
+            if not waited:
+                _log("Waiting for DNS to resolve %s" % host)
+                waited = True
+            time.sleep(interval)
+
+
+def _fail(msg, last):
+    """Record a poll failure in STATE and, once, in the activity log.
+
+    STATE["error"] is the live value the dashboard shows. The log entry is
+    what survives the tab being closed: this branch previously wrote only
+    to STATE, so a restart-time failure left no trace in journalctl or
+    events.json and could be caught only by watching the UI at the time.
+
+    Logged only when the message changes. The loop backs off to at most
+    300s, so a sustained outage would otherwise append an identical entry
+    every few minutes and push real switching history out of the
+    300-entry window.
+    """
+    with _state_lock:
+        STATE["error"] = msg
+    if msg != last:            # outside the lock: _log takes it itself
+        _log(msg)
+    return msg
+
+
 def loop():
+    # Ordered after network-online.target, which proves an address but not
+    # a working resolver. See _wait_for_dns.
+    _wait_for_dns((CFG.get("protect") or {}).get("host"))
     fails = 0
+    last_logged = None
     while True:
         try:
             # Inside the try: a bad value here used to kill the thread.
@@ -915,16 +992,20 @@ def loop():
             base = 30
         try:
             tick()
+            if last_logged is not None:
+                _log("Sensor poll recovered")
             fails = 0
+            last_logged = None
         except (ProtectError, PlugError) as e:
+            # Logged as well as shown: making login() raise ProtectError
+            # moved the restart-time DNS failure into this branch, so
+            # logging only the generic one below would hide it again.
             fails += 1
-            with _state_lock:
-                STATE["error"] = _redact(e)
+            last_logged = _fail(_redact(e), last_logged)
         except Exception as e:  # keep the loop alive on anything unexpected
             fails += 1
-            with _state_lock:
-                STATE["error"] = _redact(
-                    "%s: %s" % (type(e).__name__, e))
+            last_logged = _fail(
+                _redact("%s: %s" % (type(e).__name__, e)), last_logged)
         if fails:
             # After both branches: a login timeout or malformed payload is
             # exactly when ventilation matters, and neither raises

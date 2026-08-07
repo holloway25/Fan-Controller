@@ -7,6 +7,26 @@ Most likely a Protect firmware update reshaped the payload. Open
 `EXTRA_HINTS` in `co2fan.py`. The hints are substring matches against
 flattened key names.
 
+## "Cannot reach the UniFi console" right after a restart
+
+The resolver, not the console. The service is ordered after
+`network-online.target`, which only proves the link has an address - not
+that DNS is answering. A machine that boots in a couple of seconds can
+issue its first login before its nameserver is up, and the lookup fails
+with `Temporary failure in name resolution` (EAI_AGAIN) rather than a
+refusal or a timeout.
+
+`loop()` waits for `protect.host` to resolve before its first poll, up to
+90 seconds, then continues regardless. Bounded on purpose: a genuinely
+wrong hostname must still reach the normal error path so the UI can report
+it. The wait is on the poll thread, so the dashboard is served throughout.
+A literal IP skips it entirely.
+
+If the message does appear it is logged once to the activity feed and
+clears on its own - the loop backs off and retries. One that never clears
+means the name really is unresolvable: check the record and the
+nameserver, not the console.
+
 ## HTTP 429 from UniFi
 
 Login rate limiting. Clients are cached to avoid this, but if it appears,
