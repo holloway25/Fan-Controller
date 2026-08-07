@@ -17,10 +17,15 @@ with `Temporary failure in name resolution` (EAI_AGAIN) rather than a
 refusal or a timeout.
 
 `loop()` waits for `protect.host` to resolve before its first poll, up to
-90 seconds, then continues regardless. Bounded on purpose: a genuinely
+30 seconds, then continues regardless. Bounded on purpose: a genuinely
 wrong hostname must still reach the normal error path so the UI can report
-it. The wait is on the poll thread, so the dashboard is served throughout.
-A literal IP skips it entirely.
+it. The wait is on the poll thread, so the dashboard is served throughout,
+and it ends early on any settings change - Manual, Force on and a
+corrected hostname take effect at once rather than queueing behind it,
+since modes are applied by the poll loop and not by the route that sets
+them. The ceiling is below the shortest fail-safe window `stale_minutes`
+can express, so ventilation is never delayed by it. A literal IP skips the
+wait entirely.
 
 If the message does appear it is logged once to the activity feed and
 clears on its own - the loop backs off and retries. One that never clears

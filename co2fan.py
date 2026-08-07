@@ -913,8 +913,8 @@ def watts_loop():
             pass
         time.sleep(WATTS_SECONDS)
 
-def _wait_for_dns(host, timeout=90, interval=3):
-    """Block until `host` resolves, up to `timeout` seconds.
+def _wait_for_dns(timeout=30, interval=3):
+    """Wait for the Protect host to resolve, up to `timeout` seconds.
 
     The unit is ordered after network-online.target, but that only proves
     the link has an address - not that the resolver is answering. A host
@@ -927,35 +927,53 @@ def _wait_for_dns(host, timeout=90, interval=3):
     alone, instead of duplicating it into /etc/hosts or an ExecStartPre
     where an edit made in the UI would never reach it.
 
+    Nothing else may be held up by this. Mode changes are applied by the
+    poll loop, not by the route that sets them, so the wait ends early on
+    `_wake`: Manual and Force on reach tick() in about a second instead of
+    queueing behind a resolver that is not answering. The host is re-read
+    each attempt for the same reason - correcting a wrong hostname in the
+    UI must not leave the wait chasing the old one.
+
+    The ceiling sits below 60s, the shortest fail-safe window
+    `stale_minutes` can express, so ventilating on stale readings is never
+    delayed by waiting for DNS.
+
     Bounded, not infinite: a genuinely wrong hostname must still reach the
     normal error path so the UI can report it. True if it resolved.
     """
-    if not host:
-        return False           # unconfigured; tick() reports that properly
-    try:
-        # A literal address needs no resolver. AI_NUMERICHOST fails fast on
-        # anything that is not one, so this never queries DNS.
-        socket.getaddrinfo(host, None, flags=socket.AI_NUMERICHOST)
-        return True
-    except socket.gaierror:
-        pass
     deadline = time.time() + timeout
     waited = False
     while True:
+        host = (CFG.get("protect") or {}).get("host")
+        if not host:
+            return False       # unconfigured; tick() reports that properly
+        try:
+            # A literal address needs no resolver. AI_NUMERICHOST fails
+            # fast on anything else, so this never queries DNS.
+            socket.getaddrinfo(host, None, flags=socket.AI_NUMERICHOST)
+            return True
+        except socket.gaierror:
+            pass
         try:
             socket.getaddrinfo(host, None)
             if waited:
                 _log("Resolved %s, starting normally" % host)
             return True
         except socket.gaierror:
-            if time.time() >= deadline:
-                _log("Could not resolve %s after %ds, starting anyway"
-                     % (host, timeout))
-                return False
-            if not waited:
-                _log("Waiting for DNS to resolve %s" % host)
-                waited = True
-            time.sleep(interval)
+            pass
+        if time.time() >= deadline:
+            _log("Could not resolve %s after %ds, starting anyway"
+                 % (host, timeout))
+            return False
+        if not waited:
+            _log("Waiting for DNS to resolve %s" % host)
+            waited = True
+        if _wake.wait(interval):
+            # Settings changed. Cleared here rather than left for loop(),
+            # which would otherwise consume it after its first tick() and
+            # poll a second time immediately. That tick applies the change.
+            _wake.clear()
+            return False
 
 
 def _fail(msg, last):
@@ -981,7 +999,7 @@ def _fail(msg, last):
 def loop():
     # Ordered after network-online.target, which proves an address but not
     # a working resolver. See _wait_for_dns.
-    _wait_for_dns((CFG.get("protect") or {}).get("host"))
+    _wait_for_dns()
     fails = 0
     last_logged = None
     while True:
