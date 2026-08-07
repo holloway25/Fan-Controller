@@ -873,19 +873,29 @@ def _enforce_stop(plug):
     """
     if plug is None:
         return
-    try:
-        if plug.state() is not False:
-            plug.set(False)
-    except PlugError:
-        return                      # unconfirmed: retried next cycle
     newly = False
-    with _state_lock:
-        STATE["fan"] = False
-        f = STATE["fault"]
-        if f and not f.get("stopped"):
-            f["stopped"] = True
-            newly = True
-            f = dict(f)
+    with _act_lock:
+        if CFG["control"].get("mode") == "on":
+            # Force on overrides a fault by design, and the mode can move
+            # between _draw_check reading it and this point. Without the
+            # re-check the stop could land just after _force_on switched
+            # the fan on, flapping it off until the next draw cycle put
+            # it back.
+            return
+        try:
+            if plug.state() is not False:
+                plug.set(False)
+        except PlugError:
+            return                  # unconfirmed: retried next cycle
+        with _state_lock:
+            STATE["fan"] = False
+            f = STATE["fault"]
+            if f and not f.get("stopped"):
+                f["stopped"] = True
+                newly = True
+                f = dict(f)
+    # Outside the lock: a disk write and an event append must not extend
+    # a hold that a settings save may be waiting on.
     if newly:
         save_fault(f)
         _log("Draw fault - fan stop confirmed")
