@@ -555,6 +555,10 @@ _wake = threading.Event()  # set to make the poll loop act at once
 # the read-decide-switch has to be atomic or the two can each see the fan
 # off, both switch it, and both log the same event.
 _act_lock = threading.Lock()
+# Guards the fault as one transaction across memory and disk. Held with
+# _state_lock inside it, and never together with _act_lock, so the two
+# stay independent and there is no ordering between them to get wrong.
+_fault_lock = threading.Lock()
 CFG = load_cfg()
 STATE["history"] = load_hist()
 # Reloaded, not reset: a fault must survive a restart or the acknowledgement
@@ -863,6 +867,44 @@ SETTLE_SECONDS = 20  # spin-up grace before draw is judged
 
 
 
+def _store_fault(value):
+    """Set the fault in memory and on disk as one transaction.
+
+    Three paths write it - raising, confirming the stop, acknowledging -
+    and each used to update STATE and then write the file as a separate
+    step. An acknowledgement landing in that gap was then overwritten by
+    a stale snapshot from another thread, leaving memory clear but disk
+    faulted. Nothing showed it until a restart reloaded the file and
+    blocked automatic running again, the stale-reading failsafe with it.
+
+    Returns the fault that was there before.
+    """
+    with _fault_lock:
+        with _state_lock:
+            had = STATE["fault"]
+            STATE["fault"] = value
+        save_fault(value)
+    return had
+
+
+def _confirm_fault_stopped():
+    """Record that the plug confirmed the stop. True if this call did it.
+
+    Re-reads the fault inside the lock rather than trusting a snapshot
+    taken earlier: an acknowledgement may have landed in between, and
+    writing the older value back would resurrect a cleared fault.
+    """
+    with _fault_lock:
+        with _state_lock:
+            cur = STATE["fault"]
+            if not cur or cur.get("stopped"):
+                return False
+            cur["stopped"] = True
+            snap = dict(cur)
+        save_fault(snap)
+    return True
+
+
 def _enforce_stop(plug):
     """Keep a faulted fan off until the fault is acknowledged.
 
@@ -873,7 +915,6 @@ def _enforce_stop(plug):
     """
     if plug is None:
         return
-    newly = False
     with _act_lock:
         if CFG["control"].get("mode") == "on":
             # Force on overrides a fault by design, and the mode can move
@@ -889,15 +930,9 @@ def _enforce_stop(plug):
             return                  # unconfirmed: retried next cycle
         with _state_lock:
             STATE["fan"] = False
-            f = STATE["fault"]
-            if f and not f.get("stopped"):
-                f["stopped"] = True
-                newly = True
-                f = dict(f)
-    # Outside the lock: a disk write and an event append must not extend
-    # a hold that a settings save may be waiting on.
-    if newly:
-        save_fault(f)
+    # Outside _act_lock: the fault write takes its own lock, and a disk
+    # write must not extend a hold a settings save may be waiting on.
+    if _confirm_fault_stopped():
         _log("Draw fault - fan stop confirmed")
 
 def _draw_check(plug):
@@ -951,9 +986,7 @@ def _draw_check(plug):
     msg = ("Draw fault - %s outside %g-%g W for %ds"
            % (reading, lo, hi, int(now - _oob_since)))
     f = {"at": now, "msg": msg, "stopped": False}
-    with _state_lock:
-        STATE["fault"] = f
-    save_fault(f)
+    _store_fault(f)
     _oob_since = None
     _log(msg)
     _enforce_stop(plug)
@@ -1326,10 +1359,9 @@ def api_fault_clear():
     stop.
     """
     global _oob_since
-    with _state_lock:
-        had = STATE["fault"]
-        STATE["fault"] = None
-    save_fault(None)
+    # One transaction: clearing memory and deleting the file separately
+    # let a concurrent confirmation write the old fault back afterwards.
+    had = _store_fault(None)
     _oob_since = None
     if had:
         _log("Draw fault cleared")
