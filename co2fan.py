@@ -917,11 +917,11 @@ def _wait_for_dns(host, timeout=90, interval=3):
     """Block until `host` resolves, up to `timeout` seconds.
 
     The unit is ordered after network-online.target, but that only proves
-    the link has an address - not that the resolver is answering. This box
-    boots in about two seconds and its only nameserver is the gateway, so
-    the first Protect login could lose the race and fail with EAI_AGAIN
-    ("Temporary failure in name resolution"), backing off for a minute
-    before recovering on its own.
+    the link has an address - not that the resolver is answering. A host
+    that boots quickly can issue its first Protect login before DNS is
+    available and lose the race, failing with EAI_AGAIN ("Temporary
+    failure in name resolution") and backing off for a minute before
+    recovering on its own.
 
     Waiting here rather than in the unit keeps the hostname in config.json
     alone, instead of duplicating it into /etc/hosts or an ExecStartPre
