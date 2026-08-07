@@ -12,6 +12,13 @@ Manual hands control back to Google Home or the plug itself. Entering it switche
 the fan off once so it is not left running, and after that nothing is
 touched - external switching is recorded but never undone.
 
+Manual and Force on are both applied before the sensor is read, so neither
+depends on Protect. Force on is the override reached for when the reading
+cannot be trusted, so it has to work while the console is unreachable, the
+payload has stopped resolving, or no sensor has been selected yet. Neither
+mode returns early: readings are still recorded, so the 24h trace has no
+gap across a forced run.
+
 There is no force-off mode: holding the fan off actively fought manual
 control. Configs still holding the old `off` value migrate to `manual`.
 

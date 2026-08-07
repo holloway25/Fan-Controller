@@ -695,12 +695,53 @@ def _manual_off(plug):
     if not already_off:
         _log("Manual mode - switched off, now hands off")
 
+def _force_on(plug):
+    """Hold the fan on without consulting Protect.
+
+    Force on is reached for precisely when the sensor cannot be trusted -
+    a console that is down, a payload that stopped resolving - so it must
+    not sit behind the reading, or the override would be unavailable
+    exactly when it is wanted. Before the read for the same reason
+    _manual_off is, and it does not return early: readings are still
+    recorded while forced on, so the 24h trace has no gap.
+
+    Re-asserted each tick rather than latched, so a fan switched off at
+    the plug or by Google Home comes back on while the mode stands.
+    """
+    try:
+        already_on = plug.state() is True
+    except PlugError:
+        already_on = False           # unknown: switch anyway
+    if already_on:
+        with _state_lock:
+            STATE["fan"] = True      # no change, so no lease and no event
+        return
+    with _state_lock:
+        was_on = STATE["fan"] is True
+    if was_on:
+        # We believed it on and the plug says otherwise, so something else
+        # switched it. Recorded before we undo it, as the automatic path
+        # does - forcing it back on must not swallow the evidence.
+        _log("Fan switched to off outside this service")
+    plug.set(True)                   # raises: retried on the next tick
+    now = time.time()
+    with _state_lock:
+        STATE["fan"] = True
+        STATE["changed_at"] = now
+    _log("Fan on \u2014 forced on")
+
+
 def tick():
     p, h = _clients()
     c = CFG["control"]
-    # Before the sensor read: a manual stop must not depend on Protect.
+    # Before the sensor read: a manual stop must not depend on Protect,
+    # and neither may the override that exists for when Protect is the
+    # thing that has failed. Both actuate here, then fall through so the
+    # reading is still recorded.
     if c["mode"] == "manual":
         _manual_off(h)
+    elif c["mode"] == "on":
+        _force_on(h)
     sid = CFG["protect"]["sensor_id"]
     if not sid:
         raise ProtectError("No air-quality sensor selected yet")
@@ -996,6 +1037,39 @@ def _fail(msg, last):
     return msg
 
 
+def _failsafe_cap(delay):
+    """Never sleep past the moment the stale-reading fail-safe falls due.
+
+    The backoff exists so a rate limit is not made worse, but it also
+    decides when _failsafe() is next evaluated. With a 30s poll the first
+    failure sleeps 60s, so a 1 minute stale window was checked at 90s
+    rather than 60s and ventilation started late.
+
+    Shortens only, never extends, and only while the deadline is still
+    ahead. Once it has passed _failsafe() has already run, and the normal
+    backoff must resume: capping on a deadline in the past would leave a
+    zero delay and spin the loop against a console that is very likely
+    rate limiting already.
+    """
+    c = CFG["control"]
+    if c.get("mode") != "auto":
+        return delay                 # _failsafe only acts in auto
+    try:
+        mins = int(c.get("stale_minutes") or 0)
+    except (TypeError, ValueError):
+        return delay
+    if mins <= 0:
+        return delay                 # fail-safe disabled
+    with _state_lock:
+        last = STATE["reading_at"]
+    # Measured from startup when nothing has been read, matching _failsafe.
+    due = (last if last is not None else START_TIME) + mins * 60
+    remaining = due - time.time()
+    if remaining <= 0:
+        return delay
+    return min(delay, remaining)
+
+
 def loop():
     # Ordered after network-online.target, which proves an address but not
     # a working resolver. See _wait_for_dns.
@@ -1035,6 +1109,9 @@ def loop():
                  % (type(e).__name__, e)))
         # Back off on repeated failures so a rate limit is not made worse.
         delay = base if not fails else min(300, base * 2 ** min(fails, 5))
+        if fails:
+            # The backoff must not outrun the fail-safe's own deadline.
+            delay = _failsafe_cap(delay)
         # Wake early when settings change so mode switches are instant.
         _wake.wait(delay)
         _wake.clear()
