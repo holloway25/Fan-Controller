@@ -191,5 +191,56 @@ def test_failsafe_rechecks_config_after_waiting_for_the_lock():
     return "cancelled while queued"
 
 
+def test_password_change_survives_a_concurrent_save():
+    """A settings save must not commit its stale "ui" section.
+
+    api_config deep-copies every section, so before _cfg_lock a save
+    that started first would write back the ui section as it looked
+    then - silently reverting a password set in the meantime.
+    """
+    C = harness.load()
+    C.CFG["ui"]["password_hash"] = ""
+    C.CFG["control"].update(mode="auto", on_at=1000.0, off_at=700.0)
+
+    inside = threading.Event()
+    release = threading.Event()
+    real = C._guard_credentials
+
+    def gated(cand, body):
+        """Runs after the snapshot, before the commit."""
+        inside.set()
+        release.wait(5)
+        return real(cand, body)
+
+    C._guard_credentials = gated
+    client = C.app.test_client()
+    result = {}
+
+    def save():
+        r = client.post("/api/config", json={"control": {"on_at": 900}})
+        result["status"] = r.status_code
+
+    def set_password():
+        r = client.post("/api/ui/password", json={"password": "hunter2!x"})
+        result["pw_status"] = r.status_code
+
+    saver = threading.Thread(target=save)
+    saver.start()
+    inside.wait(5)                     # snapshot taken, not yet committed
+    pw = threading.Thread(target=set_password)
+    pw.start()
+    time.sleep(0.3)                    # it must be queued on _cfg_lock
+    release.set()
+    saver.join(10)
+    pw.join(10)
+
+    assert result.get("status") == 200, result
+    assert result.get("pw_status") == 200, result
+    assert C.CFG["control"]["on_at"] == 900.0, C.CFG["control"]["on_at"]
+    assert C.CFG["ui"]["password_hash"], (
+        "password reverted by a save that had already copied CFG")
+    return "both changes survived"
+
+
 if __name__ == "__main__":
     sys.exit(harness.run(dict(globals())))

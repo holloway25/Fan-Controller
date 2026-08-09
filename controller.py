@@ -172,6 +172,13 @@ def load_cfg():
 
 
 def save_cfg(cfg):
+    """Write config.json atomically. CALLERS MUST HOLD _cfg_lock.
+
+    The temp path is fixed, so two concurrent writers would truncate the
+    same file and one os.replace would then fail on a name the other had
+    already moved. The lock is what makes that impossible; this function
+    does not defend itself.
+    """
     tmp = CFG_PATH + ".tmp"
     # Created 0600 up front: the temp file holds the UniFi and plug
     # key, and chmod after the rename left a window at the process umask.
@@ -560,6 +567,14 @@ _act_lock = threading.Lock()
 # _state_lock inside it, and never together with _act_lock, so the two
 # stay independent and there is no ordering between them to get wrong.
 _fault_lock = threading.Lock()
+# One settings write at a time, covering snapshot, validation, commit AND
+# the disk write. Flask is threaded, so two saves could otherwise each
+# deep-copy CFG, and the later commit would write back the earlier
+# snapshot of every section it did not touch - silently reverting an
+# unrelated change, a UI password among them. They also shared one
+# config.json.tmp. Order is _cfg_lock then _act_lock; nothing takes
+# _cfg_lock while holding _act_lock.
+_cfg_lock = threading.Lock()
 CFG = load_cfg()
 STATE["history"] = load_hist()
 # Reloaded, not reset: a fault must survive a restart or the acknowledgement
@@ -1342,8 +1357,11 @@ def api_ui_password():
     if pw is None or (pw != "" and len(pw) < 8):
         return jsonify(error="Password must be at least 8 characters, or "
                              "empty to disable authentication."), 400
-    CFG["ui"]["password_hash"] = set_ui_password(pw) if pw else ""
-    save_cfg(CFG)
+    # Same lock as /api/config: without it a settings save that had
+    # already copied CFG would commit its stale "ui" section over this.
+    with _cfg_lock:
+        CFG["ui"]["password_hash"] = set_ui_password(pw) if pw else ""
+        save_cfg(CFG)
     _log("UI password %s" % ("set" if pw else "cleared"))
     return jsonify(ok=True, enabled=bool(pw))
 
@@ -1461,7 +1479,19 @@ def _guard_credentials(cand, body):
 
 @app.route("/api/config", methods=["POST"])
 def api_config():
-    """Validate against a copy so a rejected save cannot alter live settings."""
+    """Serialise the whole save: snapshot, validate, commit, persist."""
+    with _cfg_lock:
+        return _api_config_locked()
+
+
+def _api_config_locked():
+    """The body of api_config, with _cfg_lock already held.
+
+    Validates against a copy so a rejected save cannot alter live
+    settings. That copy is also why the lock is needed: it spans every
+    section, so committing it writes back whatever the sections this
+    request did not touch looked like when the copy was taken.
+    """
     body = _json_body()
     if body is None:
         return jsonify(error="Send JSON with Content-Type "
