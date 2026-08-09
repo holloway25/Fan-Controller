@@ -3,6 +3,7 @@
 Everything here injects a failure rather than waiting for one, so no
 disk is filled and no permissions are changed.
 """
+import json
 import os
 import sys
 
@@ -95,13 +96,153 @@ def test_malformed_bodies_are_rejected_not_crashed():
         ("/api/config", [1, 2]),
         ("/api/ui/password", {"password": 12345678}),
         ("/api/ui/password", "bad"),
+        ("/api/clienterror", "bad"),
     ]
     for path, body in cases:
         r = client.post(path, json=body)
         assert r.status_code == 400, "%s %r gave %s" % (
             path, body, r.status_code)
-    return "%d bodies rejected with 400" % len(cases)
+    # Raw bodies, not json=: a truncated "{" parsed to None under
+    # get_json(silent=True) and read as an empty request, so the save
+    # answered 200 Saved and changed nothing.
+    raw = [("/api/config", "{", 400),
+           ("/api/config", "null", 400),
+           ("/api/config", "[1,2]", 400),
+           ("/api/config", "{}", 200)]
+    for path, data, want in raw:
+        r = client.post(path, data=data, content_type="application/json")
+        assert r.status_code == want, "%s %r gave %s, wanted %s" % (
+            path, data, r.status_code, want)
+    # Right shape, wrong content type, is still a 415.
+    assert client.post("/api/config", data="{}").status_code == 415
+    return "%d bodies rejected, %d raw checked" % (len(cases), len(raw))
+
+class failing_os(object):
+    """Force one os call to fail, and always put it back."""
+
+    def __init__(self, name, err=OSError(28, "No space left on device")):
+        self.name, self.err, self.real = name, err, None
+
+    def __enter__(self):
+        self.real = getattr(os, self.name)
+        def blow(*a, **k):
+            raise self.err
+        setattr(os, self.name, blow)
+        return self
+
+    def __exit__(self, *exc):
+        setattr(os, self.name, self.real)
+        return False
 
 
+FAULT = {"msg": "19 W outside 15-22 W for 30s", "at": 1, "stopped": False}
+
+
+def test_retry_does_not_resurrect_an_acknowledged_fault():
+    """The retry snapshotted outside _fault_lock.
+
+    An acknowledgement landing between the snapshot and the write was
+    overwritten: memory clear, disk faulted, and the next restart
+    brought back a fault the operator had already dismissed.
+    """
+    C = harness.load()
+    with failing_os("replace"):
+        C._store_fault(dict(FAULT))
+    C._clear_fault()
+
+    assert C._retry_fault_persist() is False, "retried a cleared fault"
+    assert C.STATE["fault"] is None
+    assert not os.path.exists(C.FAULT_PATH), "cleared fault written back"
+    return "stayed cleared"
+
+
+def test_failed_clear_keeps_the_fault_live():
+    """Clearing memory first meant a failed delete still reported gone."""
+    C = harness.load()
+    C._store_fault(dict(FAULT))
+    with failing_os("remove"):
+        had, ok = C._clear_fault()
+
+    assert ok is False, "reported success on a failed delete"
+    assert had is not None
+    assert C.STATE["fault"] is not None, "fault dropped from memory"
+    assert os.path.exists(C.FAULT_PATH), "file gone but call failed"
+    return "fault kept"
+
+
+def test_failed_clear_endpoint_answers_503():
+    C = harness.load()
+    C._store_fault(dict(FAULT))
+    with failing_os("remove"):
+        r = C.app.test_client().post("/api/fault/clear")
+
+    assert r.status_code == 503, r.status_code
+    assert C.STATE["fault"] is not None, "fault cleared despite the error"
+    return "503, fault still live"
+
+
+def test_failed_stop_confirmation_is_retried():
+    """stopped=True in memory before the write made the miss permanent.
+
+    The next call saw it already true and returned early, so disk and
+    memory disagreed for good.
+    """
+    C = harness.load()
+    C._store_fault(dict(FAULT))
+    with failing_os("replace"):
+        first = C._confirm_fault_stopped()
+
+    assert first is False, "claimed confirmed after a failed write"
+    assert C.STATE["fault"].get("stopped") is not True, \
+        "memory moved ahead of disk"
+    assert C.STATE["fault_unsaved"] is True, "not flagged for retry"
+
+    assert C._confirm_fault_stopped() is True, "never retried"
+    assert json.load(open(C.FAULT_PATH)).get("stopped") is True
+    return "retried and landed"
+
+
+def test_readings_survive_a_payload_without_co2():
+    """CO2 can be disabled, so a missing CO2 field is not fatal.
+
+    readings() used to raise, which took temperature and humidity down
+    with it and stopped the poll entirely.
+    """
+    C = harness.load()
+
+    class Stub:
+        def sensor(self, sid):
+            return {"airQuality": {"temperature": 21.5, "humidity": 72.0}}
+
+    vals, path = C.Protect.readings(Stub(), "x")
+    assert vals["co2"] is None and path is None, (vals, path)
+    assert vals["temperature"] == 21.5 and vals["humidity"] == 72.0
+
+    c = dict(C.CFG["control"])
+    c.update(mode="auto", co2_enabled=False, temp_enabled=False,
+             humidity_enabled=True, humidity_on=70.0, humidity_off=60.0,
+             min_run_minutes=0)
+    latch = {"co2": False, "temp": False, "humidity": False}
+    want, why = C.decide(None, None, False, c, None, latch, humidity=72.0)
+    assert want is True and "72% RH" in why, (want, why)
+    return "humidity drives it with no CO2 present"
+
+
+def test_poll_fails_only_when_no_enabled_trigger_has_a_reading():
+    C = harness.load()
+    c = dict(C.CFG["control"])
+
+    def usable(vals, **flags):
+        c.update(flags)
+        live = C.active_rules(c)
+        return bool(live) and any(
+            vals.get(r["reading"]) is not None for r in live)
+
+    no_co2 = {"co2": None, "temperature": 21.5, "humidity": 72.0}
+    assert usable(no_co2, co2_enabled=True, temp_enabled=True,
+                  humidity_enabled=False), "temperature alone is enough"
+    assert not usable({"co2": None}, co2_enabled=True, temp_enabled=False,
+                      humidity_enabled=False), "nothing live had a reading"
+    return "judged per enabled rule"
 if __name__ == "__main__":
     sys.exit(harness.run(dict(globals())))
