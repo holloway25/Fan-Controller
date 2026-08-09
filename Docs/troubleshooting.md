@@ -4,7 +4,7 @@
 
 Most likely a Protect firmware update reshaped the payload. Open
 `/api/debug/sensor` to see the live structure, then adjust `CO2_HINTS` or
-`EXTRA_HINTS` in `co2fan.py`. The hints are substring matches against
+`EXTRA_HINTS` in `controller.py`. The hints are substring matches against
 flattened key names.
 
 ## "Cannot reach the UniFi console" right after a restart

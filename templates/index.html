@@ -677,7 +677,7 @@ async function hydrate(){
 
 // Remember which sections were left open, per browser.
 document.querySelectorAll("details.card").forEach(d=>{
-  const k="co2fan.open."+d.id;
+  const k="controller.open."+d.id;
   try{const v=localStorage.getItem(k); if(v!==null)d.open=(v==="1")}catch(e){}
   d.addEventListener("toggle",()=>{
     try{localStorage.setItem(k,d.open?"1":"0")}catch(e){}});

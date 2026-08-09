@@ -1,5 +1,5 @@
 [Unit]
-Description=Office Fan Controller (CO2-driven fan control)
+Description=Office Fan Controller (air-quality-driven fan control)
 Documentation=https://github.com/holloway25/Fan-Controller
 After=network-online.target
 Wants=network-online.target
@@ -9,7 +9,7 @@ Type=simple
 User=fan-admin
 Group=fan-admin
 WorkingDirectory=/home/fan-admin/office-fan-controller
-ExecStart=/home/fan-admin/office-fan-controller/venv/bin/python co2fan.py
+ExecStart=/home/fan-admin/office-fan-controller/venv/bin/python controller.py
 Restart=on-failure
 RestartSec=10
 

@@ -1,7 +1,8 @@
-"""CO2-driven fan control via a Tasmota smart plug.
+"""Air-quality-driven fan control via a Tasmota smart plug.
 
-Reads CO2 from a UniFi Protect UP-AirQuality sensor and switches a
-lights/plugs with hysteresis. Settings are editable in the web UI.
+Reads CO2, temperature and humidity from a UniFi Protect UP-AirQuality
+sensor and switches the plug with hysteresis. Settings are editable in
+the web UI.
 
 Protect 7.1's documented API omits air-quality metrics, so this reads the
 private /proxy/protect/api/bootstrap endpoint. That is undocumented and may

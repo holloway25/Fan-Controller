@@ -48,7 +48,7 @@ undocumented and can change on any firmware update.
 CO2 is found by searching the payload for a numeric field whose key looks
 like CO2, rather than a fixed path, so a rename survives. If it stops
 resolving, open /api/debug/sensor to see the live payload and adjust
-CO2_HINTS in co2fan.py.
+CO2_HINTS in controller.py.
 
 Once Ubiquiti publishes these fields properly, this can be replaced with a
 few lines against the documented API.
