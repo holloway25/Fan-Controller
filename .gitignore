@@ -12,3 +12,4 @@ libs/
 __pycache__/
 *.pyc
 fault.json
+restart.request

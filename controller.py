@@ -214,6 +214,12 @@ _last_flush = 0.0
 # reading resets the clock rather than accumulating toward a fault.
 
 FAULT_PATH = os.path.join(DIR, "fault.json")
+RESTART_PATH = os.path.join(DIR, "restart.request")
+# Captured at import, and again by the process that replaces this one,
+# so a trigger written before startup can be told from one written
+# after it.
+_PROC_START = time.time()
+RESTART_POLL_SECONDS = 2
 
 
 def load_fault():
@@ -1841,10 +1847,93 @@ def api_debug():
         return jsonify(error=str(e)), 400
 
 
+def _consume_restart_request():
+    """Take the restart trigger if there is a fresh one.
+
+    Deleting BEFORE the exec, and only going ahead when the delete
+    succeeded, is what stops a boot loop. A trigger that cannot be
+    removed would otherwise be seen again by the process that replaces
+    this one, and again by the next, forever. A failed unlink refuses
+    the request and says so rather than retrying.
+
+    A file older than this process has already been acted on: exec
+    keeps the working directory, so a trigger written just before
+    startup would otherwise fire a second, pointless restart. It is
+    still removed, so it cannot accumulate.
+    """
+    try:
+        st = os.stat(RESTART_PATH)
+    except OSError:
+        return False
+    fresh = st.st_mtime >= _PROC_START
+    try:
+        os.unlink(RESTART_PATH)
+    except OSError as e:
+        _log("Restart request ignored - could not remove restart.request "
+             "(%s)" % e)
+        return False
+    return fresh
+
+
+def _restart_now():
+    """Replace this process with a fresh one. Same PID, same unit.
+
+    execv rather than exiting: the unit is Restart=on-failure and
+    flush_hist exits zero, so anything that merely stops would stay
+    stopped. Replacing the image keeps systemd's main PID valid and
+    needs no privilege, which is the point - a restart should not
+    depend on sudo being reachable.
+
+    History is flushed first because the batch writer holds up to
+    HIST_FLUSH_SECONDS of samples in memory and exec discards them.
+    config, fault and events are each written atomically as they
+    change, so they need nothing here.
+
+    The relay is not touched. The fan keeps doing whatever it was
+    doing, and the fault survives in fault.json; the in-memory latches
+    and the minimum-run lease do not, so a restart re-decides from the
+    current readings.
+    """
+    _log("Restarting on request")
+    try:
+        flush_hist()
+    except Exception as e:
+        # Losing at most HIST_FLUSH_SECONDS of history is not a reason
+        # to refuse a restart that has already been logged.
+        _log("Restart - history flush failed (%s), continuing" % e)
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except Exception:
+        pass
+    os.chdir(DIR)
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
+
+def restart_loop():
+    """Watch for the restart trigger.
+
+    A file rather than an endpoint on purpose. Basic auth is inactive
+    until a UI password is set, so an HTTP route would let anything on
+    the VLAN bounce the controller - and since a restart clears the
+    latches and the lease, repeatedly is a way to stop the room being
+    ventilated. Writing this file needs shell access as the service
+    user, which is already total control.
+    """
+    while True:
+        try:
+            if _consume_restart_request():
+                _restart_now()
+        except Exception as e:
+            _log("Restart watch error - %s" % e)
+        time.sleep(RESTART_POLL_SECONDS)
+
+
 if __name__ == "__main__":
     atexit.register(flush_hist)
     for _sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(_sig, flush_hist)
     threading.Thread(target=loop, daemon=True).start()
     threading.Thread(target=watts_loop, daemon=True).start()
+    threading.Thread(target=restart_loop, daemon=True).start()
     app.run(host="127.0.0.1", port=8096, threaded=True)
