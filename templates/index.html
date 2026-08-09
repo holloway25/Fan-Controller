@@ -133,19 +133,10 @@ header{flex-direction:column;align-items:stretch;gap:10px}
     <div class="pill" id="rh">--%</div>
   </div>
   <svg class="trace" id="trace" viewBox="0 0 700 216"></svg>
-  <svg class="trace" id="trace2" viewBox="0 0 700 231"></svg>
+  <svg class="trace" id="trace2" viewBox="0 0 700 159"></svg>
   <div class="sub" id="sub">Waiting for a reading</div>
   <div class="msg" id="topmsg"></div>
 </div>
-
-<details class="card" id="c-measure">
-  <summary>Measurements</summary>
-  <div class="body">
-  <div class="now">
-    <div class="pill" id="pm">-- pm2.5</div>
-  </div>
-  </div>
-</details>
 
 <details class="card" id="c-activity" open>
   <summary>Activity</summary>
@@ -382,9 +373,12 @@ function drawMini(hist,c){
   // Each metric keeps its own scale; degrees, percent and ug/m3 do not
   // share an axis. Units live in the name, not the gutter value, so the
   // gutter text cannot outgrow its 46px column.
+  // PM2.5 is still read, charted into history and returned by
+  // /api/state - it is only absent from the UI. Add ["pm","#4a9eff",
+  // "PM2.5 \u00b5g/m\u00b3"] here and raise the trace2 viewBox height
+  // to 231 to bring it back.
   const defs=[["tc","#f5a623","Temperature \u00b0C"],
-              ["rh","#34d399","Humidity %"],
-              ["pm","#4a9eff","PM2.5 \u00b5g/m\u00b3"]];
+              ["rh","#34d399","Humidity %"]];
   // AXIS reserves the strip the shared time labels sit in, so row heights
   // stay what they were when the axis lived under the CO2 chart.
   const AXIS=26,GAP=10;
@@ -513,7 +507,6 @@ function render(s){
     (auto&&c.temp_enabled&&s.temperature!=null
       ?(s.latch.temp?" trig":" on"):"");
   $("rh").textContent=s.humidity==null?"--%":s.humidity.toFixed(1)+"%";
-  $("pm").textContent=s.pm25==null?"-- pm2.5":s.pm25.toFixed(1)+" pm2.5";
   $("w").textContent=s.watts==null?"-- W":fmtW(s.watts)+" W";
   // Draw is only meaningful while the fan is meant to be running, and only
   // once settled: a motor spinning up would otherwise flash red every start.
