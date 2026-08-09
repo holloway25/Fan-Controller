@@ -812,17 +812,19 @@ def tick():
     ran_for = (now - changed) if changed else None
     if c["mode"] == "manual":
         return
-    want, why = decide(co2, vals.get('temperature'), fan_on, c, ran_for,
-                       STATE["latch"], STATE["fault"])
-    if want is None or want == fan_on:
-        return
-    # Same rule as the three enforcement paths: take _act_lock and
-    # re-check the mode before touching the plug. decide() reads the mode
-    # live, but a change can still land between that read and this switch,
-    # letting an automatic start undo a Manual stop that has already run
-    # its one-time correction.
+    # Decided under the lock, not merely actuated under it. A settings
+    # save replaces CFG["control"] wholesale, and decide() latches in
+    # place: deciding on thresholds a save has already replaced sets a
+    # latch from numbers no longer in force. That latch is sticky inside
+    # the hysteresis band, so gating only the switch would delay the
+    # unintended start by one poll rather than prevent it.
     with _act_lock:
-        if CFG["control"].get("mode") != "auto":
+        cur = CFG["control"]
+        if cur["mode"] != "auto":
+            return
+        want, why = decide(co2, vals.get('temperature'), fan_on, cur,
+                           ran_for, STATE["latch"], STATE["fault"])
+        if want is None or want == fan_on:
             return
         h.set(want)
         with _state_lock:
@@ -861,12 +863,21 @@ def _failsafe():
     # 12s timeout, and a mode change landing in that window could leave
     # this switching the fan on just after Manual ran its one-time stop -
     # which is never repeated, so the fan would stay on in Manual.
+    # stale_minutes and the deadline are re-read here too, not just the
+    # mode: setting it to 0 disables the fail-safe, and a save doing that
+    # while this call sits in the plug read must not still ventilate.
     with _act_lock:
-        if CFG["control"]["mode"] != "auto":
+        cur = CFG["control"]
+        mins = int(cur.get("stale_minutes") or 0)
+        if not mins or cur["mode"] != "auto":
             return
         with _state_lock:
             if STATE["fault"]:
                 return
+            last = STATE["reading_at"]
+        since = last if last is not None else START_TIME
+        if time.time() - since < mins * 60:
+            return
         try:
             if h.state() is True:
                 return
