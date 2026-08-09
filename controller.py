@@ -304,14 +304,21 @@ def load_hist():
 
 
 def save_hist(hist):
-    """Persist readings so a restart does not blank the graph."""
+    """Persist readings so a restart does not blank the graph.
+
+    Returns whether the write landed. The OSError is still swallowed -
+    a full disk must not take the controller down over the graph - but
+    swallowing it silently left callers unable to tell, and the restart
+    path guarded this with a try/except that could never fire.
+    """
     try:
         tmp = HIST_PATH + ".tmp"
         with open(tmp, "w") as f:
             json.dump(hist, f, separators=(",", ":"))
         os.replace(tmp, HIST_PATH)
+        return True
     except OSError:
-        pass
+        return False
 
 
 
@@ -321,18 +328,21 @@ def maybe_save_hist(hist, force=False):
     now = time.time()
     if not force and now - _last_flush < HIST_FLUSH_SECONDS:
         return False
-    save_hist(hist)
+    ok = save_hist(hist)
+    # Advanced either way. A failing disk should not turn every poll
+    # into a full rewrite of 20,000 points.
     _last_flush = now
-    return True
+    return ok
 
 
 def flush_hist(signum=None, frame=None):
     """Persist on shutdown so batching never costs a restart's samples."""
     with _state_lock:
         snapshot = list(STATE["history"])
-    maybe_save_hist(snapshot, force=True)
+    ok = maybe_save_hist(snapshot, force=True)
     if signum is not None:
         sys.exit(0)
+    return ok
 
 def _num(v):
     if isinstance(v, bool):
@@ -1847,6 +1857,90 @@ def api_debug():
         return jsonify(error=str(e)), 400
 
 
+RESUME_ENV = "FAN_CONTROLLER_RESUME"
+
+
+def _n(v):
+    """A number or None. Anything else in a handover is not trusted."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    return float(v)
+
+
+def _resume_payload():
+    """Snapshot the timing state that exists only in memory.
+
+    A restart is a clean slate everywhere else by design, but these are
+    not values the controller can re-derive, and dropping them silently
+    changes what the fan does. A latched rule releases, so a fan running
+    on demand stops. changed_at carries the minimum-run lease, without
+    which a restart short-cycles the motor that lease exists to protect.
+    _oob_since carries how long the draw has been out of band, so a
+    developing fault does not restart its clock. reading_at carries the
+    stale-reading fail-safe, and START_TIME the grace periods that fall
+    back to it when nothing has been read yet.
+    """
+    with _state_lock:
+        return {
+            "v": 1,
+            "latch": dict(STATE["latch"]),
+            "changed_at": STATE["changed_at"],
+            "reading_at": STATE["reading_at"],
+            "oob_since": _oob_since,
+            "start_time": START_TIME,
+        }
+
+
+def _apply_resume():
+    """Take over the timing state of the process we replaced.
+
+    Carried in the environment rather than a file, deliberately. The
+    environment survives execv and nothing else: a crash, a systemd
+    restart or a hand start all begin clean, which is exactly right
+    when the previous process did not hand over in an orderly way. A
+    file would be found by all of them, and a stale one would resume
+    a lease that expired hours ago.
+
+    Anything malformed is ignored rather than raised. Starting from a
+    clean slate is the behaviour we had before this existed; not
+    starting at all is worse.
+    """
+    global _oob_since, START_TIME
+    raw = os.environ.pop(RESUME_ENV, None)
+    if not raw:
+        return False
+    try:
+        d = json.loads(raw)
+    except (ValueError, TypeError):
+        _log("Restart - handover data unreadable, starting clean")
+        return False
+    if not isinstance(d, dict) or d.get("v") != 1:
+        _log("Restart - handover data not a version this build reads, "
+             "starting clean")
+        return False
+    latch = d.get("latch")
+    with _state_lock:
+        if isinstance(latch, dict):
+            for k in STATE["latch"]:
+                STATE["latch"][k] = bool(latch.get(k, False))
+        STATE["changed_at"] = _n(d.get("changed_at"))
+        STATE["reading_at"] = _n(d.get("reading_at"))
+        held = [k for k, v in sorted(STATE["latch"].items()) if v]
+        lease = STATE["changed_at"] is not None
+    _oob_since = _n(d.get("oob_since"))
+    st = _n(d.get("start_time"))
+    if st is not None:
+        START_TIME = st
+    # Logged because the handover is otherwise invisible: the values it
+    # carries are the ones that decide whether the fan keeps running,
+    # and without a line here the only way to tell a handover from a
+    # clean start is that the fan did not behave oddly.
+    _log("Resumed after restart - %s, %s"
+         % ("latched: " + ", ".join(held) if held else "no latch held",
+            "minimum-run lease carried" if lease else "no lease"))
+    return True
+
+
 def _consume_restart_request():
     """Take the restart trigger if there is a fresh one.
 
@@ -1915,6 +2009,9 @@ def _mark_fds_close_on_exec():
 def _restart_now():
     """Replace this process with a fresh one. Same PID, same unit.
 
+    Returns False if the restart was refused. On success it does not
+    return at all - the process image is gone.
+
     execv rather than exiting: the unit is Restart=on-failure and
     flush_hist exits zero, so anything that merely stops would stay
     stopped. Replacing the image keeps systemd's main PID valid and
@@ -1931,20 +2028,38 @@ def _restart_now():
     and the minimum-run lease do not, so a restart re-decides from the
     current readings.
     """
+    # A fault that never reached disk exists only in this process.
+    # The replacement loads fault.json, finds nothing, and Auto is then
+    # free to start a fan that was stopped for drawing wrong - the
+    # exact failure fault.json exists to prevent. Refuse, and let the
+    # draw loop's retry clear the flag before a later request tries
+    # again. Returns False rather than raising: the caller is a watch
+    # loop, and a refused restart is a decision, not an error.
+    with _state_lock:
+        unsaved = STATE["fault_unsaved"]
+    if unsaved:
+        _log("Restart refused - the active fault is not saved to disk "
+             "and would be lost")
+        return False
+
     _log("Restarting on request")
-    try:
-        flush_hist()
-    except Exception as e:
-        # Losing at most HIST_FLUSH_SECONDS of history is not a reason
-        # to refuse a restart that has already been logged.
-        _log("Restart - history flush failed (%s), continuing" % e)
+    if not flush_hist():
+        # Worth saying, not worth refusing over: the graph loses at
+        # most HIST_FLUSH_SECONDS of points and nothing about the
+        # fan's safety rests on them.
+        _log("Restart - history could not be written, up to %ds of "
+             "readings will be lost" % HIST_FLUSH_SECONDS)
     try:
         sys.stdout.flush()
         sys.stderr.flush()
     except Exception:
         pass
-    # Must come after the flush and immediately before the exec: it is
-    # what stops the replacement inheriting the bound listening socket.
+    # Handed over through the environment, which execv preserves and
+    # nothing else does. Set last, so a refusal above never leaves it
+    # behind for a later exec to pick up.
+    os.environ[RESUME_ENV] = json.dumps(_resume_payload())
+    # Must come immediately before the exec: it is what stops the
+    # replacement inheriting the bound listening socket.
     _mark_fds_close_on_exec()
     os.chdir(DIR)
     os.execv(sys.executable, [sys.executable] + sys.argv)
@@ -1970,6 +2085,9 @@ def restart_loop():
 
 
 if __name__ == "__main__":
+    # Before any thread starts, so the first decide() sees the lease and
+    # the latches the previous process was holding.
+    _apply_resume()
     atexit.register(flush_hist)
     for _sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(_sig, flush_hist)

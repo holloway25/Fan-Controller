@@ -5,6 +5,7 @@ replace the test process itself - so what is tested is the decision to
 restart, not the exec. The exec path is four lines and is exercised for
 real every time the trigger is used.
 """
+import json
 import os
 import socket
 import sys
@@ -119,6 +120,152 @@ def test_open_sockets_do_not_survive_the_exec():
     finally:
         s.close()
     return "socket closed on exec, journal kept"
+
+
+class ExecCalled(Exception):
+    """Raised by the stub in place of execv, which never returns."""
+
+
+def _stub_exec(C):
+    """Replace execv so the restart path can be run without losing the
+    test process. Returns the list the call is recorded in."""
+    calls = []
+
+    def fake(*a, **k):
+        calls.append(a)
+        raise ExecCalled()
+
+    C.os.execv = fake
+    return calls
+
+
+def test_restart_is_refused_while_a_fault_is_unsaved():
+    """The P1 from review 21.
+
+    A fault that never reached fault.json exists only in this process.
+    Restarting drops it, and Auto is then free to start a fan that was
+    stopped for drawing wrong.
+    """
+    C = harness.load()
+    real = C.os.execv
+    calls = _stub_exec(C)
+    try:
+        with C._state_lock:
+            C.STATE["fault"] = {"msg": "draw fault", "stopped": True}
+            C.STATE["fault_unsaved"] = True
+        result = C._restart_now()
+    finally:
+        C.os.execv = real
+
+    assert result is False, "a restart went ahead on an unsaved fault"
+    assert not calls, "exec was reached despite the refusal"
+    logged = " ".join(e["msg"] for e in C.STATE["events"])
+    assert "Restart refused" in logged, "the refusal was not logged"
+    assert C.RESUME_ENV not in C.os.environ, \
+        "handover data was left behind by a refused restart"
+    return "refused, logged, nothing left behind"
+
+
+def test_restart_proceeds_once_the_fault_is_saved():
+    """The guard must not block an ordinary restart."""
+    C = harness.load()
+    real = C.os.execv
+    calls = _stub_exec(C)
+    try:
+        with C._state_lock:
+            C.STATE["fault"] = {"msg": "draw fault", "stopped": True}
+            C.STATE["fault_unsaved"] = False
+        raised = False
+        try:
+            C._restart_now()
+        except ExecCalled:
+            raised = True
+    finally:
+        C.os.execv = real
+        C.os.environ.pop(C.RESUME_ENV, None)
+
+    assert raised and calls, "a saved fault blocked a legitimate restart"
+    return "a persisted fault does not block a restart"
+
+
+def test_handover_carries_the_latches_and_the_lease():
+    """The P2 from review 21: without this a restart re-decides from
+    scratch, releasing a latch and cancelling the minimum-run lease."""
+    C = harness.load()
+    with C._state_lock:
+        C.STATE["latch"]["co2"] = True
+        C.STATE["latch"]["temp"] = False
+        C.STATE["changed_at"] = 111.0
+        C.STATE["reading_at"] = 222.0
+    C._oob_since = 333.0
+
+    carried = json.dumps(C._resume_payload())
+
+    with C._state_lock:
+        C.STATE["latch"]["co2"] = False
+        C.STATE["changed_at"] = None
+        C.STATE["reading_at"] = None
+    C._oob_since = None
+
+    C.os.environ[C.RESUME_ENV] = carried
+    assert C._apply_resume() is True, "the handover was not taken"
+
+    assert C.STATE["latch"]["co2"] is True, \
+        "a latched rule released, so a fan running on demand would stop"
+    assert C.STATE["latch"]["temp"] is False, "an unlatched rule was set"
+    assert C.STATE["changed_at"] == 111.0, \
+        "the minimum-run lease was lost, so the motor can short-cycle"
+    assert C.STATE["reading_at"] == 222.0, "the fail-safe clock reset"
+    assert C._oob_since == 333.0, "the draw fault restarted its clock"
+    return "latches, lease, draw and fail-safe clocks all carried"
+
+
+def test_handover_is_consumed_exactly_once():
+    """Left in place it would resume a lease that expired long ago."""
+    C = harness.load()
+    C.os.environ[C.RESUME_ENV] = json.dumps(C._resume_payload())
+
+    assert C._apply_resume() is True, "first call did not take it"
+    assert C.RESUME_ENV not in C.os.environ, "the handover was left set"
+    assert C._apply_resume() is False, "the same handover applied twice"
+    return "taken once, then gone"
+
+
+def test_malformed_handover_is_ignored_not_fatal():
+    """A clean slate is the old behaviour; refusing to start is worse."""
+    C = harness.load()
+    for bad in ("not json at all", "[]", '{"v": 99}', '{"v": 1, "latch": 5}'):
+        C.os.environ[C.RESUME_ENV] = bad
+        C._apply_resume()
+        assert C.RESUME_ENV not in C.os.environ, \
+            "bad handover %r was left in the environment" % bad
+    return "four malformed payloads survived"
+
+
+def test_handover_rejects_values_that_are_not_numbers():
+    """Garbage in a timestamp would break the arithmetic that reads it."""
+    C = harness.load()
+    C.os.environ[C.RESUME_ENV] = json.dumps({
+        "v": 1, "latch": {}, "changed_at": "soon",
+        "reading_at": True, "oob_since": [], "start_time": None})
+    C._apply_resume()
+
+    assert C.STATE["changed_at"] is None, "a string was taken as a time"
+    assert C.STATE["reading_at"] is None, "a bool was taken as a time"
+    assert C._oob_since is None, "a list was taken as a time"
+    return "non-numeric times rejected"
+
+
+def test_a_failed_history_write_is_reported():
+    """The other P2: save_hist swallows OSError, so the restart path
+    could not tell whether the flush landed."""
+    C = harness.load()
+    assert C.flush_hist() is True, "a healthy flush reported failure"
+
+    C.HIST_PATH = "/nonexistent-directory-for-tests/history.json"
+    assert C.flush_hist() is False, \
+        "a failed history write reported success"
+    return "success and failure both reported"
 
 
 if __name__ == "__main__":
