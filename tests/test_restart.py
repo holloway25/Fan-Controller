@@ -268,5 +268,88 @@ def test_a_failed_history_write_is_reported():
     return "success and failure both reported"
 
 
+def test_non_finite_times_are_rejected():
+    """json.loads parses bare NaN and Infinity, and both are floats.
+
+    A NaN lease is the worst case: every comparison against it is
+    False, so a minimum-run lease would neither hold nor expire, and
+    nothing in the state dump would look wrong.
+    """
+    C = harness.load()
+    for bad in ("NaN", "Infinity", "-Infinity"):
+        C.os.environ[C.RESUME_ENV] = (
+            '{"v": 1, "latch": {}, "changed_at": %s, "reading_at": %s,'
+            ' "oob_since": %s, "start_time": %s}' % (bad, bad, bad, bad))
+        start_before = C.START_TIME
+        C._apply_resume()
+
+        assert C.STATE["changed_at"] is None, "%s taken as a lease" % bad
+        assert C.STATE["reading_at"] is None, "%s taken as a reading" % bad
+        assert C._oob_since is None, "%s taken as a draw timer" % bad
+        assert C.START_TIME == start_before, "%s taken as a start" % bad
+    return "NaN, +inf and -inf all rejected"
+
+
+def test_latch_restore_requires_real_booleans():
+    """bool('false') is True, and a latch is what keeps the fan on."""
+    C = harness.load()
+    C.os.environ[C.RESUME_ENV] = json.dumps({
+        "v": 1,
+        "latch": {"co2": "false", "temp": 1, "humidity": None},
+        "changed_at": None, "reading_at": None,
+        "oob_since": None, "start_time": None})
+    C._apply_resume()
+
+    for k in ("co2", "temp", "humidity"):
+        assert C.STATE["latch"][k] is False, \
+            "latch %s was restored from a non-boolean" % k
+    return "truthy non-booleans do not latch"
+
+
+def test_unsaved_fault_is_written_on_shutdown():
+    """A signalled shutdown cannot refuse, so it must try once more.
+
+    The write that failed may have failed minutes ago, and the disk may
+    since have recovered.
+    """
+    C = harness.load()
+    with C._state_lock:
+        C.STATE["fault"] = {"msg": "draw fault", "stopped": True}
+        C.STATE["fault_unsaved"] = True
+
+    assert C._persist_fault_on_exit() is True, \
+        "the last-chance write did not happen"
+    assert C.STATE["fault_unsaved"] is False, "the flag was left set"
+    assert C.load_fault() is not None, \
+        "the fault did not reach disk, so the next start would not hold"
+    return "recovered disk means the fault survives"
+
+
+def test_shutdown_without_an_unsaved_fault_writes_nothing():
+    C = harness.load()
+    with C._state_lock:
+        C.STATE["fault"] = None
+        C.STATE["fault_unsaved"] = False
+    assert C._persist_fault_on_exit() is False, \
+        "wrote a fault when there was nothing owed"
+    return "no fault, no write"
+
+
+def test_shutdown_reports_a_fault_it_cannot_save():
+    """If it still cannot be written the fault is genuinely lost, and
+    that has to be said out loud rather than swallowed."""
+    C = harness.load()
+    with C._state_lock:
+        C.STATE["fault"] = {"msg": "draw fault", "stopped": True}
+        C.STATE["fault_unsaved"] = True
+    C.FAULT_PATH = "/nonexistent-directory-for-tests/fault.json"
+
+    assert C._persist_fault_on_exit() is False, \
+        "claimed success on a write that could not land"
+    assert C.STATE["fault_unsaved"] is True, \
+        "cleared the flag despite the write failing"
+    return "still unsaved, and flagged as such"
+
+
 if __name__ == "__main__":
     sys.exit(harness.run(dict(globals())))

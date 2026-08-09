@@ -124,9 +124,50 @@ means it will not recognise what is running and will start a second
 instance - two processes driving the same plug and both writing
 `config.json`.
 
-Restarting is safe at any time: `history.json` is flushed on `SIGTERM`,
-and `config.json`, `events.json` and `fault.json` are untouched. A latched
-draw fault survives deliberately.
+## Restarting
+
+Ask the controller to restart itself. No privilege needed:
+
+    ./restart.sh
+
+It writes `restart.request`, waits for the controller to take it, and
+reports what happened. Doing it by hand is the same thing without the
+reporting:
+
+    touch restart.request
+
+The watcher checks every two seconds, then replaces its own process with
+`execv`. The PID does not change and systemd is not involved. The
+activity log shows `Restarting on request` followed by `Resumed after
+restart`; if the second line is missing, the exec failed and systemd
+caught it.
+
+A restart carries the state that exists only in memory - the per-rule
+latches, the minimum-run lease, the draw-fault timer and the
+stale-reading clock - to the replacement process, so a restart does not
+release a latched fan or short-cycle the motor. That handover rides in
+the environment, which survives `execv` and nothing else, so a crash or
+a `systemctl restart` correctly starts clean instead of resuming a lease
+that expired hours ago.
+
+**A restart is refused while a fault is live but unsaved.** The
+dashboard shows `Fault not saved to disk` in that state. The fault
+exists only in memory, so a replacement process would load `fault.json`,
+find nothing, and let Auto start a fan that was stopped for drawing
+wrong. `restart.sh` exits 1 and says so. Clear the fault, or fix
+whatever is stopping `fault.json` being written, and try again.
+
+`sudo systemctl restart office-fan-controller` still works and is the
+fallback if the watcher is not running. It cannot refuse: a signalled
+shutdown makes one last attempt to write the fault and then goes ahead
+either way. If that attempt fails the journal says so in capitals, and
+the fan will not be held off on the next start - check the draw before
+running it. Prefer `./restart.sh` when the dashboard shows an unsaved
+fault.
+
+Otherwise restarting is safe: `history.json` is flushed on `SIGTERM`,
+and `config.json`, `events.json` and `fault.json` are untouched. A
+saved draw fault survives deliberately.
 
 ## Tests
 
@@ -140,6 +181,15 @@ Protect console is contacted. Safe to run against a live install.
 - `test_control.py` - `decide()`, the per-rule latches, the min-run lease
 - `test_data.py` - `_coerce` validation, `prune_hist`, `find_metric`
 - `test_concurrency.py` - the actuation paths under `_act_lock`
+- `test_failures.py` - persistence errors and malformed request bodies
+- `test_restart.py` - the restart trigger, the handover, and the
+  last-chance fault write on shutdown
+
+`test_restart.py` includes one test that needs Linux `/proc/self/fd` and
+will not run on Windows. It covers descriptor inheritance across the
+`execv`, which is what stopped the replacement binding port 8096 the
+first time - so run the suite on the deployment host before trusting a
+restart change.
 
 The concurrency tests gate the interleaving with events rather than
 sleeping. Timing alone does not reproduce these races: `_manual_off` does

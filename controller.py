@@ -335,8 +335,56 @@ def maybe_save_hist(hist, force=False):
     return ok
 
 
+def _persist_fault_on_exit():
+    """Last chance to write a fault that exists only in memory.
+
+    A signalled shutdown - systemctl restart, a reboot - cannot be
+    refused the way a requested restart can. The replacement loads
+    fault.json, and if the flag is still set there is nothing there to
+    load: Auto would then be free to start a fan that was stopped for
+    drawing wrong. The write that failed may have failed minutes ago
+    and the disk may since have recovered, so try once more on the way
+    down. It costs one write and turns a silent loss into either a save
+    or a loud complaint.
+
+    Deliberately does NOT take _fault_lock. This runs in a signal
+    handler on the main thread, and blocking on a lock another thread
+    holds would hang the shutdown until systemd escalated to SIGKILL -
+    which loses the fault anyway, and the history with it. _state_lock
+    is an RLock, so re-entering it here is safe. save_fault writes via
+    tmp and os.replace, so a racing write cannot tear the file: one
+    simply wins, and both are writing the same fault.
+
+    Reports to stderr rather than the activity log for the same reason.
+    _log takes _events_lock, which is a plain Lock, and a signal handler
+    must not block on one. stderr is the journal, which is where anyone
+    looks after a shutdown that went wrong.
+    """
+    with _state_lock:
+        fault = STATE["fault"]
+        owed = STATE["fault_unsaved"]
+    if not owed or fault is None:
+        return False
+    try:
+        save_fault(fault)
+    except OSError as e:
+        print("SHUTDOWN WITH AN UNSAVED FAULT - it is being lost (%s). "
+              "The fan will NOT be held off on the next start; check the "
+              "draw before running it." % e, file=sys.stderr, flush=True)
+        return False
+    with _state_lock:
+        STATE["fault_unsaved"] = False
+    print("Unsaved fault written to disk on shutdown; it will survive "
+          "the restart.", file=sys.stderr, flush=True)
+    return True
+
+
 def flush_hist(signum=None, frame=None):
     """Persist on shutdown so batching never costs a restart's samples."""
+    if signum is not None:
+        # Before the history write, which can be 20,000 points against a
+        # shutdown deadline. The fault matters more than the graph.
+        _persist_fault_on_exit()
     with _state_lock:
         snapshot = list(STATE["history"])
     ok = maybe_save_hist(snapshot, force=True)
@@ -1861,10 +1909,16 @@ RESUME_ENV = "FAN_CONTROLLER_RESUME"
 
 
 def _n(v):
-    """A number or None. Anything else in a handover is not trusted."""
+    """A finite number or None. Anything else in a handover is not trusted.
+
+    json.loads accepts bare NaN and Infinity, and both pass an isinstance
+    check against float. A NaN lease is the worst of the three: every
+    comparison against it is False, so a minimum-run lease would neither
+    hold nor expire, and it would never look wrong in the state dump.
+    """
     if isinstance(v, bool) or not isinstance(v, (int, float)):
         return None
-    return float(v)
+    return float(v) if math.isfinite(v) else None
 
 
 def _resume_payload():
@@ -1922,7 +1976,10 @@ def _apply_resume():
     with _state_lock:
         if isinstance(latch, dict):
             for k in STATE["latch"]:
-                STATE["latch"][k] = bool(latch.get(k, False))
+                # A real bool, not anything truthy. bool("false") is
+                # True, and a latch is what keeps the fan running.
+                raw = latch.get(k)
+                STATE["latch"][k] = raw if isinstance(raw, bool) else False
         STATE["changed_at"] = _n(d.get("changed_at"))
         STATE["reading_at"] = _n(d.get("reading_at"))
         held = [k for k, v in sorted(STATE["latch"].items()) if v]
