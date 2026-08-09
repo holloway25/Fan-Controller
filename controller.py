@@ -466,16 +466,17 @@ class Protect:
         """
         s = self.sensor(sid)
         src = s.get("airQuality") or s
+        # A missing CO2 field is not fatal here. CO2 can be disabled,
+        # leaving temperature or humidity driving the fan, so refusing
+        # the whole payload would stop those working too. tick() decides
+        # whether the rules that ARE enabled have anything to act on.
         co2 = find_metric(src, CO2_HINTS)
-        if co2 is None:
-            raise ProtectError("No CO2 field in this sensor's payload. Open "
-                               "Debug to see what Protect is returning.")
-        out = {"co2": co2[0]}
+        out = {"co2": co2[0] if co2 else None}
         for name, hints in EXTRA_HINTS.items():
             hit = find_metric(src, hints)
             if hit is not None:
                 out[name] = hit[0]
-        return out, co2[1]
+        return out, (co2[1] if co2 else None)
 
     def co2(self, sid):
         """Current CO2 in ppm plus the payload path it came from."""
@@ -679,13 +680,16 @@ def _clients():
 # Unifying them would change how the fan behaves during a sensor
 # outage, so it is left alone here and noted in the handoff.
 RULES = (
-    {"key": "co2", "flag": "co2_enabled", "on": "on_at", "off": "off_at",
+    {"key": "co2", "reading": "co2", "flag": "co2_enabled",
+     "on": "on_at", "off": "off_at",
      "default": True, "clear_on_missing": False,
      "fmt": lambda v: "%d ppm" % round(v)},
-    {"key": "temp", "flag": "temp_enabled", "on": "temp_on",
+    {"key": "temp", "reading": "temperature", "flag": "temp_enabled",
+     "on": "temp_on",
      "off": "temp_off", "default": False, "clear_on_missing": True,
      "fmt": lambda v: "%.1f C" % v},
-    {"key": "humidity", "flag": "humidity_enabled", "on": "humidity_on",
+    {"key": "humidity", "reading": "humidity",
+     "flag": "humidity_enabled", "on": "humidity_on",
      "off": "humidity_off", "default": False, "clear_on_missing": True,
      "fmt": lambda v: "%.0f%% RH" % v},
 )
@@ -855,7 +859,17 @@ def tick():
     if not sid:
         raise ProtectError("No air-quality sensor selected yet")
     vals, path = p.readings(sid)
-    co2 = vals['co2']
+    co2 = vals.get('co2')
+    # Judged against the rules that are ENABLED, not against CO2. With
+    # CO2 disabled and humidity driving the fan, a payload carrying no
+    # CO2 field is perfectly usable. Nothing for any live rule means
+    # this poll told us nothing we act on, so it is an error and
+    # reading_at stays put - which is what arms the fail-safe.
+    live = active_rules(CFG["control"])
+    if live and not any(vals.get(r["reading"]) is not None for r in live):
+        raise ProtectError(
+            "No reading for any enabled trigger (%s). Open Debug to see "
+            "what Protect is returning." % ", ".join(r["key"] for r in live))
     now = time.time()
     actual = _fan_status(h)
     ext_msg = None
@@ -1015,21 +1029,60 @@ def _store_fault(value):
     return had
 
 
+def _clear_fault():
+    """Acknowledge a fault. Returns (had, ok).
+
+    Deletes from disk BEFORE clearing memory. The other order cleared
+    memory, reported success, and left the file behind when the delete
+    failed - so the fault came back at the next restart having been
+    told it was gone. If the delete fails the fault stays live and the
+    caller reports the failure.
+    """
+    with _fault_lock:
+        with _state_lock:
+            had = STATE["fault"]
+        if had is None:
+            return None, True
+        try:
+            save_fault(None)
+        except OSError:
+            return had, False
+        with _state_lock:
+            STATE["fault"] = None
+            STATE["fault_unsaved"] = False
+    return had, True
+
+
 def _confirm_fault_stopped():
     """Record that the plug confirmed the stop. True if this call did it.
 
     Re-reads the fault inside the lock rather than trusting a snapshot
     taken earlier: an acknowledgement may have landed in between, and
     writing the older value back would resurrect a cleared fault.
+
+    The disk write comes BEFORE the memory update. The other order set
+    stopped=True in memory, and if the write then failed the next call
+    saw stopped already true and returned early - so it was never
+    retried and disk and memory disagreed for good.
     """
     with _fault_lock:
         with _state_lock:
             cur = STATE["fault"]
             if not cur or cur.get("stopped"):
                 return False
-            cur["stopped"] = True
             snap = dict(cur)
-        save_fault(snap)
+            snap["stopped"] = True
+        try:
+            save_fault(snap)
+        except OSError:
+            # Not confirmed. Left for the next cycle to try again.
+            with _state_lock:
+                STATE["fault_unsaved"] = True
+            return False
+        with _state_lock:
+            if STATE["fault"] is not None:
+                STATE["fault"]["stopped"] = True
+                STATE["fault_unsaved"] = False
     return True
 
 
@@ -1123,25 +1176,25 @@ def _draw_check(plug):
 def _retry_fault_persist():
     """Re-attempt a fault write that failed. True if it saved this time.
 
-    Closes the only window the fail-safe cannot: a fault live in memory
-    but absent from disk, which a restart would silently drop.
+    The read happens INSIDE _fault_lock. Taking the snapshot first and
+    the lock afterwards let an acknowledgement land in between, so the
+    retry wrote the cleared fault back to disk and a restart resurrected
+    it: memory None, disk faulted.
     """
-    with _state_lock:
-        owed = STATE["fault_unsaved"]
-        pending = STATE["fault"]
-    if not owed or pending is None:
-        return False
     with _fault_lock:
+        with _state_lock:
+            owed = STATE["fault_unsaved"]
+            pending = copy.deepcopy(STATE["fault"])
+        if not owed or pending is None:
+            return False
         try:
             save_fault(pending)
-            with _state_lock:
-                STATE["fault_unsaved"] = False
-            saved = True
         except OSError:
-            saved = False
-    if saved:
-        _log("Fault saved on retry; it will survive a restart.")
-    return saved
+            return False
+        with _state_lock:
+            STATE["fault_unsaved"] = False
+    _log("Fault saved on retry; it will survive a restart.")
+    return True
 
 
 def watts_loop():
@@ -1436,7 +1489,10 @@ def index():
 def api_clienterror():
     """Surface browser-side JS failures in the server log, since a script
     that dies on load leaves no other trace."""
-    b = _json_body() or {}
+    b = _json_body()
+    if not isinstance(b, dict):
+        # A reporting endpoint should not 500 on a malformed report.
+        return jsonify(error="JSON body must be an object."), 400
     msg = str(b.get("msg", ""))[:300]
     where = "%s:%s" % (str(b.get("src", ""))[:120], b.get("line", "?"))
     app.logger.error("UI error: %s @ %s", msg, where)
@@ -1444,30 +1500,46 @@ def api_clienterror():
     return jsonify(ok=True)
 
 
+# Distinct from None, which is a valid JSON body ("null"). Without the
+# split, a truncated body like "{" parsed to None and was treated as an
+# empty request - so a malformed save answered 200 Saved.
+_NO_JSON = object()
+_BAD_JSON = object()
+
+
 def _json_body():
-    """Require a real JSON content type on state-changing requests.
+    """The parsed body, or a sentinel saying why there isn't one.
 
     get_json(force=True) parsed any content type, so a cross-origin form
     post - which needs no preflight - could drive these endpoints.
     """
     if not request.is_json:
-        return None
-    body = request.get_json(silent=True)
-    # A bare JSON scalar or array parses fine but is not a settings
-    # body; returning it unchecked turned "bad" into an AttributeError
-    # and a 500. Callers get {} for an absent body and check the rest.
-    return body if isinstance(body, dict) else (
-        {} if body is None else body)
+        return _NO_JSON
+    try:
+        return request.get_json()
+    except Exception:
+        return _BAD_JSON
+
+
+def _body_error(body):
+    """Response for a body that is missing, malformed or not an object,
+    or None when it is usable."""
+    if body is _NO_JSON:
+        return jsonify(error="Send JSON with Content-Type "
+                             "application/json."), 415
+    if body is _BAD_JSON:
+        return jsonify(error="Body is not valid JSON."), 400
+    if not isinstance(body, dict):
+        return jsonify(error="JSON body must be an object."), 400
+    return None
 
 
 @app.route("/api/ui/password", methods=["POST"])
 def api_ui_password():
     body = _json_body()
-    if body is None:
-        return jsonify(error="Send JSON with Content-Type "
-                             "application/json."), 415
-    if not isinstance(body, dict):
-        return jsonify(error="JSON body must be an object."), 400
+    bad = _body_error(body)
+    if bad:
+        return bad
     pw = body.get("password")
     if not isinstance(pw, str):
         return jsonify(error="Password must be a string."), 400
@@ -1534,7 +1606,14 @@ def api_fault_clear():
     global _oob_since
     # One transaction: clearing memory and deleting the file separately
     # let a concurrent confirmation write the old fault back afterwards.
-    had = _store_fault(None)
+    had, ok = _clear_fault()
+    if not ok:
+        # The fault is still live and still on disk. Saying "cleared"
+        # here would leave the operator believing the fan is available
+        # when the next restart brings the fault straight back.
+        return jsonify(error="Could not delete the stored fault, so it "
+                             "has been left in place. Check the disk and "
+                             "try again."), 503
     _oob_since = None
     if had:
         _log("Draw fault cleared")
@@ -1618,11 +1697,9 @@ def _api_config_locked():
     request did not touch looked like when the copy was taken.
     """
     body = _json_body()
-    if body is None:
-        return jsonify(error="Send JSON with Content-Type "
-                             "application/json."), 415
-    if not isinstance(body, dict):
-        return jsonify(error="JSON body must be an object."), 400
+    bad = _body_error(body)
+    if bad:
+        return bad
     cand = copy.deepcopy(CFG)
     for section in ("protect", "plug", "control"):
         raw_section = body.get(section)
