@@ -866,10 +866,20 @@ def tick():
     # this poll told us nothing we act on, so it is an error and
     # reading_at stays put - which is what arms the fail-safe.
     live = active_rules(CFG["control"])
-    if live and not any(vals.get(r["reading"]) is not None for r in live):
-        raise ProtectError(
-            "No reading for any enabled trigger (%s). Open Debug to see "
-            "what Protect is returning." % ", ".join(r["key"] for r in live))
+    if live:
+        usable = any(vals.get(r["reading"]) is not None for r in live)
+        why = "any enabled trigger (%s)" % ", ".join(r["key"] for r in live)
+    else:
+        # Nothing enabled, so the fail-safe is the only automatic action
+        # left - and it is armed by reading_at going stale. Accepting an
+        # empty payload here would keep reading_at fresh forever and
+        # quietly disable the last protection there is.
+        usable = any(vals.get(k) is not None
+                     for k in ("co2", "temperature", "humidity", "pm25"))
+        why = "any recognised metric"
+    if not usable:
+        raise ProtectError("No reading for %s. Open Debug to see what "
+                           "Protect is returning." % why)
     now = time.time()
     actual = _fan_status(h)
     ext_msg = None

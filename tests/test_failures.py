@@ -233,16 +233,72 @@ def test_poll_fails_only_when_no_enabled_trigger_has_a_reading():
     c = dict(C.CFG["control"])
 
     def usable(vals, **flags):
+        """Mirrors the guard in tick()."""
         c.update(flags)
         live = C.active_rules(c)
-        return bool(live) and any(
-            vals.get(r["reading"]) is not None for r in live)
+        if live:
+            return any(vals.get(r["reading"]) is not None for r in live)
+        return any(vals.get(k) is not None
+                   for k in ("co2", "temperature", "humidity", "pm25"))
 
     no_co2 = {"co2": None, "temperature": 21.5, "humidity": 72.0}
     assert usable(no_co2, co2_enabled=True, temp_enabled=True,
                   humidity_enabled=False), "temperature alone is enough"
     assert not usable({"co2": None}, co2_enabled=True, temp_enabled=False,
                       humidity_enabled=False), "nothing live had a reading"
-    return "judged per enabled rule"
+    # With NOTHING enabled the fail-safe is the only automatic action
+    # left, and it is armed by reading_at going stale. Accepting an
+    # empty payload kept reading_at fresh forever, so stale_minutes
+    # never expired and the last protection was silently disabled.
+    off = dict(co2_enabled=False, temp_enabled=False,
+               humidity_enabled=False)
+    assert not usable({"co2": None}, **off), \
+        "empty payload accepted with no triggers enabled"
+    assert usable({"co2": None, "humidity": 52.0}, **off), \
+        "a real reading still counts as a live sensor"
+    return "judged per enabled rule, and per any metric when none are"
+
+def test_empty_payload_never_refreshes_reading_at():
+    """Drives the real tick(), not a copy of its guard.
+
+    With no triggers enabled the fail-safe is the only automatic action
+    left, and it is armed by reading_at going stale. Accepting a payload
+    with nothing in it kept reading_at fresh forever, so stale_minutes
+    never expired and the last protection was silently disabled.
+    """
+    C = harness.load()
+
+    class Sensor:
+        def readings(self, sid):
+            return {"co2": None}, None
+
+    class Plug:
+        def state(self):
+            return False
+
+        def set(self, v):
+            return v
+
+        def power_w(self):
+            return 0.0
+
+    C._clients = lambda: (Sensor(), Plug())
+    C.CFG["protect"]["sensor_id"] = "x"
+    C.CFG["control"].update(mode="auto", co2_enabled=False,
+                            temp_enabled=False, humidity_enabled=False)
+    with C._state_lock:
+        C.STATE["reading_at"] = 123.0
+        C.STATE["fault"] = None
+
+    raised = None
+    try:
+        C.tick()
+    except C.ProtectError as exc:
+        raised = str(exc)
+
+    assert raised, "an empty payload was accepted as a reading"
+    assert C.STATE["reading_at"] == 123.0, \
+        "reading_at advanced, so stale_minutes would never expire"
+    return "fail-safe stays armed"
 if __name__ == "__main__":
     sys.exit(harness.run(dict(globals())))
