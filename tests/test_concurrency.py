@@ -242,5 +242,54 @@ def test_password_change_survives_a_concurrent_save():
     return "both changes survived"
 
 
+def test_events_on_disk_match_memory_under_concurrent_logs():
+    """An older snapshot must not overwrite a newer one.
+
+    _log built its snapshot under _state_lock but wrote outside it, and
+    save_events shares one events.json.tmp. Two threads could therefore
+    interleave so the earlier, shorter snapshot landed last, leaving the
+    activity log on disk behind memory - which is what a restart reloads.
+    """
+    import json
+
+    C = harness.load()
+    with C._state_lock:
+        C.STATE["events"] = []
+
+    entered = threading.Event()
+    release = threading.Event()
+    real = C.save_events
+    held = []
+
+    def gated(events):
+        if threading.current_thread().name == "slow" and not held:
+            held.append(True)
+            entered.set()
+            release.wait(5)
+        return real(events)
+
+    C.save_events = gated
+
+    slow = threading.Thread(target=C._log, args=("first",), name="slow")
+    slow.start()
+    entered.wait(5)                    # snapshot ["first"], mid-write
+
+    fast = threading.Thread(target=C._log, args=("second",), name="fast")
+    fast.start()
+    time.sleep(0.3)                    # queued on _events_lock, or racing
+    release.set()
+    slow.join(10)
+    fast.join(10)
+
+    with open(C.EVENTS_PATH) as f:
+        on_disk = json.load(f)
+    in_memory = C.STATE["events"]
+
+    assert [e["msg"] for e in in_memory] == ["second", "first"], in_memory
+    assert [e["msg"] for e in on_disk] == ["second", "first"], (
+        "disk is behind memory: %r" % ([e["msg"] for e in on_disk],))
+    return "disk matches memory"
+
+
 if __name__ == "__main__":
     sys.exit(harness.run(dict(globals())))

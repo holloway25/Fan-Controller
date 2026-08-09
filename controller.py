@@ -567,6 +567,11 @@ _act_lock = threading.Lock()
 # _state_lock inside it, and never together with _act_lock, so the two
 # stay independent and there is no ordering between them to get wrong.
 _fault_lock = threading.Lock()
+# Serialises the activity log: the poll thread, the draw thread and
+# Flask request threads all call _log, and save_events shares one
+# events.json.tmp. Held with _state_lock inside it, never the other
+# way round, so it composes with _act_lock and _cfg_lock above it.
+_events_lock = threading.Lock()
 # One settings write at a time, covering snapshot, validation, commit AND
 # the disk write. Flask is threaded, so two saves could otherwise each
 # deep-copy CFG, and the later commit would write back the earlier
@@ -602,12 +607,18 @@ def _redact(text):
 
 
 def _log(msg):
-    with _state_lock:
-        STATE["events"].insert(0, {"at": time.time(), "msg": msg})
-        del STATE["events"][EVENTS_MAX:]
-        snapshot = list(STATE["events"])
-    # Written outside the lock; entries survive a restart.
-    save_events(snapshot)
+    """Append an event and persist it. Safe from any thread."""
+    with _events_lock:
+        with _state_lock:
+            STATE["events"].insert(0, {"at": time.time(), "msg": msg})
+            del STATE["events"][EVENTS_MAX:]
+            snapshot = list(STATE["events"])
+        # Still outside _state_lock, so disk I/O never blocks a reader,
+        # but inside _events_lock so the write landing last is the
+        # newest. Without it two threads shared one events.json.tmp and
+        # an older snapshot could overwrite a newer one - or the replace
+        # could fail, which save_events swallows.
+        save_events(snapshot)
 
 
 _CLIENTS = {"key": None, "protect": None, "plug": None}
