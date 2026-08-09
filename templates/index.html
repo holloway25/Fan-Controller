@@ -152,8 +152,14 @@ header{flex-direction:column;align-items:stretch;gap:10px}
   <summary>Triggers</summary>
   <div class="body">
   <div class="warn" id="norules" style="display:none">No triggers are
-    enabled, so Auto will not start the fan. Only the fail-safe below
-    can still run it.</div>
+    enabled, so Auto will not start the fan. Only the stale-reading
+    fail-safe above can still run it.</div>
+  <div class="row"><label>Check every
+    <span class="hint">Seconds between readings.</span></label>
+    <input type="number" id="poll_seconds" min="5" max="600" step="5"></div>
+  <div class="row"><label>Ventilate if readings stop
+    <span class="hint">Minutes without a valid reading before the fan is turned on as a fail-safe. 0 disables it.</span></label>
+    <input type="number" id="stale_minutes" min="0" max="1440" step="5"></div>
   <div class="row"><label>Run on CO2
     <span class="hint">Ventilates when the air gets stale.</span></label>
     <input type="checkbox" id="co2_enabled" style="width:auto"></div>
@@ -181,12 +187,6 @@ header{flex-direction:column;align-items:stretch;gap:10px}
   <div class="row"><label>Turn the fan off below
     <span class="hint">Percent. Keep a gap below the on level so the fan does not short-cycle.</span></label>
     <input type="number" id="humidity_off" min="0" max="100" step="1"></div>
-  <div class="row"><label>Check every
-    <span class="hint">Seconds between readings.</span></label>
-    <input type="number" id="poll_seconds" min="5" max="600" step="5"></div>
-  <div class="row"><label>Ventilate if readings stop
-    <span class="hint">Minutes without a valid reading before the fan is turned on as a fail-safe. 0 disables it.</span></label>
-    <input type="number" id="stale_minutes" min="0" max="1440" step="5"></div>
   <div class="actions"><button class="primary" id="save">Save settings</button></div>
   <div class="msg" id="savemsg"></div>
   </div>
