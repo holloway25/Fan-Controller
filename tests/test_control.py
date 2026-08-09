@@ -43,7 +43,7 @@ def test_manual_clears_latches_and_acts_on_nothing():
     latch = {"co2": True, "temp": True}
     want, why = C.decide(2000, 30, True, cfg(mode="manual"), None, latch)
     assert want is None and why is None, (want, why)
-    assert latch == {"co2": False, "temp": False}, latch
+    assert not any(latch.values()), latch
 
 
 def test_co2_latches_on_and_holds_through_the_band():
@@ -112,6 +112,59 @@ def test_no_reading_is_reported_not_guessed():
     want, why = C.decide(None, None, True, cfg(), 9999, latch)
     assert want is False and why == "no reading", (want, why)
 
+def test_co2_rule_can_be_disabled():
+    latch = fresh()
+    want, _ = C.decide(2000, None, False, cfg(co2_enabled=False), None, latch)
+    assert latch["co2"] is False, "disabled rule must not latch"
+    assert want is False, (want, latch)
 
+
+def test_missing_co2_enabled_defaults_to_on():
+    """An upgraded config has no co2_enabled key. It must still ventilate."""
+    c = cfg()
+    c.pop("co2_enabled", None)
+    latch = fresh()
+    C.decide(1200, None, False, c, None, latch)
+    assert latch["co2"] is True, "absent flag must read as enabled"
+
+
+def test_humidity_latches_above_and_releases_below():
+    latch = fresh()
+    c = cfg(humidity_enabled=True, humidity_on=70.0, humidity_off=60.0)
+    want, why = C.decide(400, None, False, c, None, latch, humidity=72.0)
+    assert latch["humidity"] is True and want is True, (want, latch)
+    assert "72% RH" in why, why
+    C.decide(400, None, True, c, 9999, latch, humidity=65.0)
+    assert latch["humidity"] is True, "must hold inside the band"
+    want, _ = C.decide(400, None, True, c, 9999, latch, humidity=59.0)
+    assert latch["humidity"] is False and want is False
+
+
+def test_humidity_disabled_by_default():
+    latch = fresh()
+    C.decide(400, None, False, cfg(), None, latch, humidity=95.0)
+    assert latch["humidity"] is False, "humidity must be opt-in"
+
+
+def test_three_rules_are_independent():
+    """Any one rule holds the fan; none vetoes another's stop."""
+    latch = fresh()
+    c = cfg(temp_enabled=True, humidity_enabled=True,
+            humidity_on=70.0, humidity_off=60.0)
+    C.decide(1200, 20.0, False, c, None, latch, humidity=50.0)
+    assert (latch["co2"], latch["temp"], latch["humidity"]) == \
+        (True, False, False), latch
+    want, _ = C.decide(650, 20.0, True, c, 9999, latch, humidity=50.0)
+    assert want is False, "untriggered rules must not veto the stop"
+
+
+def test_every_rule_disabled_means_auto_never_starts():
+    """Allowed on purpose - the UI warns. The fan just never starts."""
+    latch = fresh()
+    c = cfg(co2_enabled=False, temp_enabled=False, humidity_enabled=False)
+    assert C.active_rules(c) == []
+    want, _ = C.decide(5000, 40.0, False, c, None, latch, humidity=99.0)
+    assert want is False, "nothing enabled must not start the fan"
+    assert not any(latch.values()), latch
 if __name__ == "__main__":
     sys.exit(harness.run(dict(globals())))

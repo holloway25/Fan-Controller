@@ -29,8 +29,16 @@ DEFAULTS = {
     "ui": {"password_hash": ""},
     "control": {"mode": "auto", "on_at": 1000, "off_at": 800,
                 "poll_seconds": 30, "min_run_minutes": 5,
+                # Must stay True: load_cfg fills missing keys from
+                # here, so this is what a config.json written before
+                # the flag existed picks up. False would stop every
+                # upgraded install ventilating, silently.
+                "co2_enabled": True,
                 "temp_enabled": False, "temp_on": 26.0,
                 "temp_off": 24.5,
+                # Off until thresholds are chosen deliberately.
+                "humidity_enabled": False, "humidity_on": 70.0,
+                "humidity_off": 60.0,
                 "stale_minutes": 0},
 }
 CO2_HINTS = ("co2", "carbondioxide")
@@ -46,9 +54,13 @@ CONTROL_SCHEMA = {
     "off_at": ("num", 300.0, 10000.0),
     "poll_seconds": ("int", 5, 3600),
     "min_run_minutes": ("int", 0, 240),
+    "co2_enabled": ("bool",),
     "temp_enabled": ("bool",),
     "temp_on": ("num", -20.0, 60.0),
     "temp_off": ("num", -20.0, 60.0),
+    "humidity_enabled": ("bool",),
+    "humidity_on": ("num", 0.0, 100.0),
+    "humidity_off": ("num", 0.0, 100.0),
     "stale_minutes": ("int", 0, 1440),
 }
 PROTECT_SCHEMA = {
@@ -556,7 +568,7 @@ STATE = {
     "changed_at": None, "error": None, "sensor_name": None,
     "temperature": None, "humidity": None, "pm25": None,
     "watts": None, "watts_at": None,
-    "latch": {"co2": False, "temp": False},
+    "latch": {"co2": False, "temp": False, "humidity": False},
     "manual_off_pending": False,
     "history": [], "events": [], "history_rev": 0, "fault": None,
     # True when the fault in memory could not be written to disk, so
@@ -653,14 +665,51 @@ def _clients():
         return _CLIENTS["protect"], _CLIENTS["plug"]
 
 
-def decide(co2, temp, fan_on, c, ran_for, latch, fault=None):
+# One entry per trigger. Adding a fourth means adding a row here and a
+# schema entry, not another branch in decide() and another special case
+# in the dashboard's "why is the fan running" logic.
+#
+# default is what an absent flag means, and it is load-bearing:
+# co2_enabled defaults True so an existing config.json written before
+# the flag existed keeps ventilating. A False default there would stop
+# every upgraded install silently.
+#
+# clear_on_missing records existing behaviour rather than choosing it.
+# CO2 keeps its latch when the reading drops out, temperature clears it.
+# Unifying them would change how the fan behaves during a sensor
+# outage, so it is left alone here and noted in the handoff.
+RULES = (
+    {"key": "co2", "flag": "co2_enabled", "on": "on_at", "off": "off_at",
+     "default": True, "clear_on_missing": False,
+     "fmt": lambda v: "%d ppm" % round(v)},
+    {"key": "temp", "flag": "temp_enabled", "on": "temp_on",
+     "off": "temp_off", "default": False, "clear_on_missing": True,
+     "fmt": lambda v: "%.1f C" % v},
+    {"key": "humidity", "flag": "humidity_enabled", "on": "humidity_on",
+     "off": "humidity_off", "default": False, "clear_on_missing": True,
+     "fmt": lambda v: "%.0f%% RH" % v},
+)
+
+
+def active_rules(c):
+    """The rules Auto is currently allowed to act on."""
+    return [r for r in RULES if bool(c.get(r["flag"], r["default"]))]
+
+
+def decide(co2, temp, fan_on, c, ran_for, latch, fault=None,
+           humidity=None):
     """Per-rule latching hysteresis. Mutates `latch` in place.
 
     Each input latches on above its own on-level and releases below its
     own off-level. The fan runs while any rule is latched. This matters:
     previously a rule that had never triggered could still veto the stop,
     so a CO2-driven run was held on by temperature indefinitely.
+
+    With every rule disabled there is nothing to latch, so Auto never
+    starts the fan. That is allowed - the UI warns rather than refusing -
+    and the stale-reading fail-safe still runs.
     """
+    readings = {"co2": co2, "temp": temp, "humidity": humidity}
     if c["mode"] == "on":
         return True, "forced on"
     # Force on is checked first on purpose: it overrides a fault so a
@@ -669,37 +718,33 @@ def decide(co2, temp, fan_on, c, ran_for, latch, fault=None):
     if fault:
         return False, "draw fault"
     if c["mode"] == "manual":
-        latch["co2"] = latch["temp"] = False
+        for r in RULES:
+            latch[r["key"]] = False
         return None, None
-    if co2 is not None:
-        if co2 >= c["on_at"]:
-            latch["co2"] = True
-        elif co2 <= c["off_at"]:
-            latch["co2"] = False
-    use_t = bool(c.get("temp_enabled")) and temp is not None
-    if not use_t:
-        latch["temp"] = False
-    elif temp >= c["temp_on"]:
-        latch["temp"] = True
-    elif temp <= c["temp_off"]:
-        latch["temp"] = False
-    want = latch["co2"] or latch["temp"]
+    for r in RULES:
+        key, val = r["key"], readings.get(r["key"])
+        if not bool(c.get(r["flag"], r["default"])):
+            latch[key] = False
+        elif val is None:
+            if r["clear_on_missing"]:
+                latch[key] = False
+        elif val >= c[r["on"]]:
+            latch[key] = True
+        elif val <= c[r["off"]]:
+            latch[key] = False
+    want = any(latch.get(r["key"]) for r in RULES)
     if want == bool(fan_on):
         return (True, None) if want else (False, None)
     if want:
-        why = []
-        if latch["co2"]:
-            why.append("%d ppm" % round(co2))
-        if latch["temp"]:
-            why.append("%.1f C" % temp)
+        why = [r["fmt"](readings[r["key"]]) for r in RULES
+               if latch.get(r["key"]) and readings.get(r["key"]) is not None]
         return True, " and ".join(why)
     if fan_on and ran_for is not None and \
             ran_for < c["min_run_minutes"] * 60:
         return None, None
-    why = "%d ppm" % round(co2) if co2 is not None else "no reading"
-    if use_t:
-        why += ", %.1f C" % temp
-    return False, why
+    parts = [r["fmt"](readings[r["key"]]) for r in active_rules(c)
+             if readings.get(r["key"]) is not None]
+    return False, ", ".join(parts) if parts else "no reading"
 
 
 def _fan_status(plug):
@@ -857,7 +902,8 @@ def tick():
         if cur["mode"] != "auto":
             return
         want, why = decide(co2, vals.get('temperature'), fan_on, cur,
-                           ran_for, STATE["latch"], STATE["fault"])
+                           ran_for, STATE["latch"], STATE["fault"],
+                           humidity=vals.get('humidity'))
         if want is None or want == fan_on:
             return
         h.set(want)
@@ -1609,6 +1655,14 @@ def _api_config_locked():
         if t_on <= t_off:
             return jsonify(error="Cool-to temperature must be below the "
                                  "turn-on temperature."), 400
+    if c.get("humidity_enabled"):
+        try:
+            h_on, h_off = float(c["humidity_on"]), float(c["humidity_off"])
+        except (TypeError, ValueError):
+            return jsonify(error="Humidity levels must be numbers."), 400
+        if h_on <= h_off:
+            return jsonify(error="The humidity turn-off level must be "
+                                 "below the turn-on level."), 400
     pg = cand["plug"]
     try:
         w_lo, w_hi = float(pg["watts_min"]), float(pg["watts_max"])
@@ -1652,6 +1706,13 @@ def _api_config_locked():
     if summary:
         _log(summary)
     _wake.set()
+    # Allowed, but never silently: with no rule enabled Auto has
+    # nothing to latch on and the fan will not start by itself.
+    if not active_rules(CFG["control"]) and \
+            CFG["control"].get("mode") == "auto":
+        warn = ("No triggers are enabled, so Auto will not start the fan. "
+                "Only the stale-reading fail-safe can still run it.")
+        notice = "%s %s" % (notice, warn) if notice else warn
     return jsonify(ok=True, config=_safe_cfg(), notice=notice)
 
 
