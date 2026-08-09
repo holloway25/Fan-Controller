@@ -1,39 +1,18 @@
 """Concurrency regression tests.
 
-Run with the project venv, from anywhere:
-
     ./venv/bin/python tests/test_concurrency.py
 
-The module is imported against a throwaway directory, so config.json,
-history.json, events.json and fault.json in the real install are never
-read or written. That also exercises the DIR-from-__file__ behaviour: if
-these paths ever stop deriving from the module's own location, the assert
-below fails rather than the tests quietly using live data.
-
-No plug and no Protect console are contacted; both clients are stubbed.
+Setup, isolation and the runner live in harness.py. These tests stub the
+plug and drive the real threading code; nothing here contacts a plug or
+a Protect console.
 """
 import os
-import shutil
 import sys
-import tempfile
 import threading
 import time
 
-SRC = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-
-def load():
-    """Import controller.py against a disposable data directory."""
-    tmp = tempfile.mkdtemp(prefix="fanctl-test-")
-    shutil.copy(os.path.join(SRC, "controller.py"), os.path.join(tmp, "controller.py"))
-    shutil.copy(os.path.join(SRC, "config.example.json"),
-                os.path.join(tmp, "config.json"))
-    os.makedirs(os.path.join(tmp, "templates"), exist_ok=True)
-    open(os.path.join(tmp, "templates", "index.html"), "w").close()
-    sys.path.insert(0, tmp)
-    import controller as C
-    assert C.DIR == tmp, "tests must not run against the live install"
-    return C
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import harness
 
 
 class GatedPlug:
@@ -85,7 +64,7 @@ def test_failsafe_cannot_undo_manual():
     the fail-safe switch the fan on - leaving it running with nothing left
     to correct it.
     """
-    C = load()
+    C = harness.load()
     plug = GatedPlug("failsafe")
     C._clients = lambda: (None, plug)
 
@@ -124,20 +103,5 @@ def test_failsafe_cannot_undo_manual():
     return "save blocked %.2fs, calls %r" % (blocked[0], plug.calls)
 
 
-def main():
-    failures = 0
-    for name, fn in sorted(globals().items()):
-        if not name.startswith("test_"):
-            continue
-        try:
-            detail = fn()
-            print("PASS  %s  (%s)" % (name, detail))
-        except AssertionError as exc:
-            failures += 1
-            print("FAIL  %s: %s" % (name, exc))
-    print("\n%d failed" % failures if failures else "\nall passed")
-    return 1 if failures else 0
-
-
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(harness.run(dict(globals())))

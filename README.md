@@ -125,6 +125,23 @@ instance - two processes driving the same plug and both writing
 Restarting is safe at any time: `history.json` is flushed on `SIGTERM`,
 and `config.json`, `events.json` and `fault.json` are untouched. A latched
 draw fault survives deliberately.
+
+## Tests
+
+    ./venv/bin/python tests/run_all.py
+
+No dependencies beyond the venv. Each module imports `controller.py`
+against a throwaway directory, so `config.json`, `history.json`,
+`events.json` and `fault.json` are never read or written, and no plug or
+Protect console is contacted. Safe to run against a live install.
+
+- `test_control.py` - `decide()`, the per-rule latches, the min-run lease
+- `test_data.py` - `_coerce` validation, `prune_hist`, `find_metric`
+- `test_concurrency.py` - the actuation paths under `_act_lock`
+
+The concurrency tests gate the interleaving with events rather than
+sleeping. Timing alone does not reproduce these races: `_manual_off` does
+its own plug read, which reorders the stop to land last and hides the bug.
 ## Serving it over HTTPS
 
 Flask binds `127.0.0.1`, so a reverse proxy on the same host is required
