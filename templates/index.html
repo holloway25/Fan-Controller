@@ -131,13 +131,21 @@ header{flex-direction:column;align-items:stretch;gap:10px}
     <div class="pill" id="tc">--&deg;C</div>
     <div class="pill" id="ppm">-- ppm</div>
     <div class="pill" id="rh">--%</div>
-    <div class="pill" id="pm">-- pm2.5</div>
   </div>
   <svg class="trace" id="trace" viewBox="0 0 700 216"></svg>
   <svg class="trace" id="trace2" viewBox="0 0 700 231"></svg>
   <div class="sub" id="sub">Waiting for a reading</div>
   <div class="msg" id="topmsg"></div>
 </div>
+
+<details class="card" id="c-measure">
+  <summary>Measurements</summary>
+  <div class="body">
+  <div class="now">
+    <div class="pill" id="pm">-- pm2.5</div>
+  </div>
+  </div>
+</details>
 
 <details class="card" id="c-activity" open>
   <summary>Activity</summary>
