@@ -91,6 +91,40 @@ setup with an SSH tunnel:
 
 then browse to http://127.0.0.1:8096 on your own machine.
 
+
+## Upgrading
+
+Pulling changes is not always enough. The installed unit at
+`/etc/systemd/system/office-fan-controller.service` is a **copy**, not a
+symlink to the one in the repo, so a change to `ExecStart` reaches the
+repo without reaching the running service. Nothing breaks immediately -
+the process already has its code loaded - and the failure appears at the
+next restart or reboot, which then will not start.
+
+After any pull that touches the unit file, reinstall it:
+
+    sudo cp office-fan-controller.service /etc/systemd/system/
+    sudo systemctl daemon-reload
+    sudo systemctl restart office-fan-controller
+
+The 2026-08 release renamed `co2fan.py` to `controller.py`, so upgrading
+across it requires exactly that. Verify with:
+
+    systemctl is-active office-fan-controller
+    journalctl -u office-fan-controller -n5
+
+The journal reports `Serving Flask app 'controller'`. The name comes from
+the module, so it is the quickest confirmation the new file is running.
+
+Do not run `./run.sh` until the unit is reinstalled. It guards against a
+double start by looking for the running process by name, and a stale unit
+means it will not recognise what is running and will start a second
+instance - two processes driving the same plug and both writing
+`config.json`.
+
+Restarting is safe at any time: `history.json` is flushed on `SIGTERM`,
+and `config.json`, `events.json` and `fault.json` are untouched. A latched
+draw fault survives deliberately.
 ## Serving it over HTTPS
 
 Flask binds `127.0.0.1`, so a reverse proxy on the same host is required

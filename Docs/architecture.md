@@ -68,10 +68,11 @@ revision changes rather than on every 5 second poll.
 
 ## Threads and locks
 
-Three things can drive the plug: the poll thread through `tick()`, the
-draw thread through the fault detector and the Force on re-assertion, and
-a settings save that changes the mode. Every actuation therefore follows
-one rule:
+Three threads can drive the plug: the poll thread, through `tick()`, the
+Manual stop and the stale-reading fail-safe; the draw thread, through the
+fault detector and the Force on re-assertion; and a settings save that
+changes the mode. That is five paths that touch the relay, and every one
+of them follows the same rule:
 
 > take `_act_lock`, re-check the mode, then touch the plug.
 
@@ -87,6 +88,14 @@ as long as the plug takes to answer - bounded by its 12s timeout, and only
 when the plug is already misbehaving. A slow save is visible and
 recoverable; a fan stuck on in Manual is neither.
 
+The ordinary control paths were converted later than the enforcement
+ones, and the fail-safe was the costly omission: it re-reads the plug
+before switching, so its window spans that call's 12s timeout. A Manual
+selected inside it could run its one-time stop and clear the flag before
+the fail-safe's switch-on landed, leaving the fan running in Manual with
+nothing left to correct it - the same latching failure the enforcement
+paths were fixed for, on a path that looked too simple to need it.
+
 The fault is a separate transaction. `_fault_lock` covers the in-memory
 value and `fault.json` together, because updating one and then the other
 let an acknowledgement land in the gap and be overwritten by a stale
@@ -94,7 +103,7 @@ snapshot - clearing the fault on screen while leaving it on disk, to
 reappear at the next restart.
 
 ```
-_act_lock   -> _state_lock      three actuation paths
+_act_lock   -> _state_lock      five actuation paths
 _fault_lock -> _state_lock      three fault writers
 _act_lock and _fault_lock are never held together
 ```

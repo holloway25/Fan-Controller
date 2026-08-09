@@ -816,10 +816,18 @@ def tick():
                        STATE["latch"], STATE["fault"])
     if want is None or want == fan_on:
         return
-    h.set(want)
-    with _state_lock:
-        STATE["fan"] = want
-        STATE["changed_at"] = now
+    # Same rule as the three enforcement paths: take _act_lock and
+    # re-check the mode before touching the plug. decide() reads the mode
+    # live, but a change can still land between that read and this switch,
+    # letting an automatic start undo a Manual stop that has already run
+    # its one-time correction.
+    with _act_lock:
+        if CFG["control"].get("mode") != "auto":
+            return
+        h.set(want)
+        with _state_lock:
+            STATE["fan"] = want
+            STATE["changed_at"] = now
     _log("Fan %s \u2014 %s" % ("on" if want else "off", why))
 
 
@@ -849,15 +857,25 @@ def _failsafe():
     # Ask the plug rather than trusting cached state: it may have rebooted
     # off, or been switched off while Protect was unreachable.
     _, h = _clients()
-    try:
-        if h.state() is True:
+    # Re-checked under _act_lock: the plug read below can take up to its
+    # 12s timeout, and a mode change landing in that window could leave
+    # this switching the fan on just after Manual ran its one-time stop -
+    # which is never repeated, so the fan would stay on in Manual.
+    with _act_lock:
+        if CFG["control"]["mode"] != "auto":
             return
-    except PlugError:
-        pass                         # unreadable: assert ON anyway
-    h.set(True)
-    with _state_lock:
-        STATE["fan"] = True
-        STATE["changed_at"] = time.time()
+        with _state_lock:
+            if STATE["fault"]:
+                return
+        try:
+            if h.state() is True:
+                return
+        except PlugError:
+            pass                 # unreadable: assert ON anyway
+        h.set(True)
+        with _state_lock:
+            STATE["fan"] = True
+            STATE["changed_at"] = time.time()
     _log("FAIL-SAFE: no reading for %d min, ventilating" % mins)
 
 
