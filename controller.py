@@ -218,18 +218,23 @@ def load_fault():
 
 
 def save_fault(f):
-    """Written atomically: a torn file must not read as no fault."""
-    try:
-        if f is None:
-            if os.path.exists(FAULT_PATH):
-                os.remove(FAULT_PATH)
-            return
-        tmp = FAULT_PATH + ".tmp"
-        with open(tmp, "w") as fh:
-            json.dump(f, fh)
-        os.replace(tmp, FAULT_PATH)
-    except OSError:
-        pass
+    """Write the fault atomically. Raises OSError if it cannot.
+
+    Deliberately does NOT swallow errors. A fault that stays in memory
+    but never reaches disk is lost at the next restart, and automatic
+    running then resumes on a fan already judged faulty. _store_fault
+    catches this, keeps the fault live, says so, and retries.
+    """
+    if f is None:
+        if os.path.exists(FAULT_PATH):
+            os.remove(FAULT_PATH)
+        return
+    tmp = FAULT_PATH + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(f, fh)
+    os.replace(tmp, FAULT_PATH)
+
+
 _oob_since = None
 
 
@@ -554,6 +559,9 @@ STATE = {
     "latch": {"co2": False, "temp": False},
     "manual_off_pending": False,
     "history": [], "events": [], "history_rev": 0, "fault": None,
+    # True when the fault in memory could not be written to disk, so
+    # a restart would lose it. Retried every draw cycle.
+    "fault_unsaved": False,
 }
 # RLock, not Lock: nested acquisition deadlocked the poll thread.
 _state_lock = threading.RLock()
@@ -935,11 +943,29 @@ def _store_fault(value):
 
     Returns the fault that was there before.
     """
+    warn = None
     with _fault_lock:
         with _state_lock:
             had = STATE["fault"]
             STATE["fault"] = value
-        save_fault(value)
+        try:
+            save_fault(value)
+            with _state_lock:
+                STATE["fault_unsaved"] = False
+        except OSError as e:
+            # Never re-raised. The caller's job after this is to stop
+            # the fan, and an unwritable disk must not skip that. The
+            # fault stays live in memory; only its survival of a restart
+            # is at risk, so flag it and let the draw loop retry.
+            with _state_lock:
+                STATE["fault_unsaved"] = value is not None
+            if value is not None:
+                warn = ("WARNING: fault could not be saved (%s). Active "
+                        "now but would be lost on restart." % e)
+    # Outside _fault_lock, like the stop-confirmed log: an event append
+    # must not extend a hold another writer may be waiting on.
+    if warn:
+        _log(warn)
     return had
 
 
@@ -1048,6 +1074,30 @@ def _draw_check(plug):
     _enforce_stop(plug)
 
 
+def _retry_fault_persist():
+    """Re-attempt a fault write that failed. True if it saved this time.
+
+    Closes the only window the fail-safe cannot: a fault live in memory
+    but absent from disk, which a restart would silently drop.
+    """
+    with _state_lock:
+        owed = STATE["fault_unsaved"]
+        pending = STATE["fault"]
+    if not owed or pending is None:
+        return False
+    with _fault_lock:
+        try:
+            save_fault(pending)
+            with _state_lock:
+                STATE["fault_unsaved"] = False
+            saved = True
+        except OSError:
+            saved = False
+    if saved:
+        _log("Fault saved on retry; it will survive a restart.")
+    return saved
+
+
 def watts_loop():
     """Poll the plug's meter on its own short cadence.
 
@@ -1057,6 +1107,7 @@ def watts_loop():
     a plug hiccup cannot overwrite the control loop's error.
     """
     while True:
+        _retry_fault_persist()
         plug = None
         try:
             _, plug = _clients()
@@ -1355,7 +1406,12 @@ def _json_body():
     """
     if not request.is_json:
         return None
-    return request.get_json(silent=True) or {}
+    body = request.get_json(silent=True)
+    # A bare JSON scalar or array parses fine but is not a settings
+    # body; returning it unchecked turned "bad" into an AttributeError
+    # and a 500. Callers get {} for an absent body and check the rest.
+    return body if isinstance(body, dict) else (
+        {} if body is None else body)
 
 
 @app.route("/api/ui/password", methods=["POST"])
@@ -1364,15 +1420,27 @@ def api_ui_password():
     if body is None:
         return jsonify(error="Send JSON with Content-Type "
                              "application/json."), 415
+    if not isinstance(body, dict):
+        return jsonify(error="JSON body must be an object."), 400
     pw = body.get("password")
-    if pw is None or (pw != "" and len(pw) < 8):
+    if not isinstance(pw, str):
+        return jsonify(error="Password must be a string."), 400
+    if pw != "" and len(pw) < 8:
         return jsonify(error="Password must be at least 8 characters, or "
                              "empty to disable authentication."), 400
     # Same lock as /api/config: without it a settings save that had
     # already copied CFG would commit its stale "ui" section over this.
     with _cfg_lock:
-        CFG["ui"]["password_hash"] = set_ui_password(pw) if pw else ""
-        save_cfg(CFG)
+        cand = copy.deepcopy(CFG)
+        cand["ui"]["password_hash"] = set_ui_password(pw) if pw else ""
+        # Persisted before it goes live, so a failed write cannot leave
+        # authentication changed only in memory.
+        try:
+            save_cfg(cand)
+        except OSError as e:
+            return jsonify(error="Could not save the password (%s). "
+                                 "Nothing was changed." % e), 500
+        CFG["ui"] = cand["ui"]
     _log("UI password %s" % ("set" if pw else "cleared"))
     return jsonify(ok=True, enabled=bool(pw))
 
@@ -1507,10 +1575,17 @@ def _api_config_locked():
     if body is None:
         return jsonify(error="Send JSON with Content-Type "
                              "application/json."), 415
+    if not isinstance(body, dict):
+        return jsonify(error="JSON body must be an object."), 400
     cand = copy.deepcopy(CFG)
     for section in ("protect", "plug", "control"):
-        raw = {k: v for k, v in (body.get(section) or {}).items()
-               if v != "SET"}
+        raw_section = body.get(section)
+        if raw_section is None:
+            raw_section = {}
+        if not isinstance(raw_section, dict):
+            return jsonify(
+                error="%s must be an object." % section), 400
+        raw = {k: v for k, v in raw_section.items() if v != "SET"}
         try:
             cand[section].update(normalise(section, raw))
         except ValueError as e:
@@ -1542,6 +1617,16 @@ def _api_config_locked():
     if w_lo >= w_hi:
         return jsonify(error="Expected draw low must be below high."), 400
     summary = _describe_changes(cand)
+    # Persist BEFORE committing. The reverse order left a failed write
+    # returning 500 while the controller ran on settings that never
+    # reached disk - live behaviour and stored behaviour disagreeing
+    # until the next restart silently reverted it. cand is a complete
+    # config, so writing it is equivalent to writing the merged CFG.
+    try:
+        save_cfg(cand)
+    except OSError as e:
+        return jsonify(error="Could not save settings (%s). Nothing "
+                             "was changed." % e), 500
     # Committed under _act_lock so the mode cannot change midway through
     # an actuation. Without it, a Force on that had already passed its
     # mode check could land after manual's one-time stop had run and
@@ -1564,7 +1649,6 @@ def _api_config_locked():
             # from the forced switch hold the fan on once auto resumes.
             with _state_lock:
                 STATE["changed_at"] = None
-    save_cfg(CFG)
     if summary:
         _log(summary)
     _wake.set()

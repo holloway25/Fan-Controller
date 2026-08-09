@@ -57,5 +57,12 @@ def run(namespace):
         except AssertionError as exc:
             failures += 1
             print("FAIL  %s: %s" % (name, exc))
+        except Exception as exc:
+            # Anything else is still a failure, not a reason to abandon
+            # the rest of the module. A missing attribute or a KeyError
+            # is exactly what a regression looks like when a test is run
+            # against older code.
+            failures += 1
+            print("ERROR %s: %s: %s" % (name, type(exc).__name__, exc))
     print("\n%d failed" % failures if failures else "\nall passed")
     return 1 if failures else 0
