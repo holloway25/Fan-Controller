@@ -328,11 +328,15 @@ setInterval(paintSub,1000);
 function drawTrace(hist,c){
   const svg=$("trace");
   while(svg.firstChild)svg.removeChild(svg.firstChild);
-  // Finite points only. CO2 is optional now, so v can be null, and a
-  // null coerced to 0 through Math.min - dragging the axis to -40 and
-  // printing a false 0 ppm in the gutter.
-  const pts=(hist||[]).filter(p=>Number.isFinite(p.v));
-  if(pts.length<2)return;
+  // Two sets, deliberately. `all` is every point with a usable
+  // timestamp and fixes the TIME domain; `pts` is the subset that has a
+  // CO2 value and fixes the SCALE. Taking the time domain from pts
+  // scaled this chart to the window where CO2 happened to exist, so a
+  // gap at either end slid the trace sideways under time labels that
+  // describe the whole history. Both charts must span `all`.
+  const all=(hist||[]).filter(p=>Number.isFinite(p.t));
+  const pts=all.filter(p=>Number.isFinite(p.v));
+  if(pts.length<2||all.length<2)return;
   const NS="http://www.w3.org/2000/svg";
   // Derive geometry from the viewBox so the card can be resized.
   const vb=svg.viewBox.baseVal,W=vb.width||700,H=vb.height||140;
@@ -350,7 +354,7 @@ function drawTrace(hist,c){
   const vs=pts.map(p=>p.v);
   const lo=Math.min(...vs,guides?off_at:Infinity)-40;
   const hi=Math.max(...vs,guides?on_at:-Infinity)+40;
-  const t0=pts[0].t, t1=pts[pts.length-1].t;
+  const t0=all[0].t, t1=all[all.length-1].t;
   const span=Math.max(1,t1-t0);
   const y=v=>TOP+(1-(v-lo)/(hi-lo))*(BOT-TOP);
   const x=t=>L+((t-t0)/span)*(W-L);
@@ -397,7 +401,11 @@ function drawMini(hist,c){
   const mk=(n,a)=>{const e=document.createElementNS(NS,n);
     for(const k in a)e.setAttribute(k,a[k]);return e};
   const txt=(s,a)=>{const e=mk("text",a);e.textContent=s;return e};
-  const t0=hist[0].t,t1=hist[hist.length-1].t,span=Math.max(1,t1-t0);
+  // Derived exactly as drawTrace does, so the two cannot drift apart:
+  // these charts share one set of time labels.
+  const all=hist.filter(p=>Number.isFinite(p.t));
+  if(all.length<2)return;
+  const t0=all[0].t,t1=all[all.length-1].t,span=Math.max(1,t1-t0);
   const x=t=>L+((t-t0)/span)*(W-L);
   const MONO="ui-monospace,monospace";
   // Each metric keeps its own scale; degrees, percent and ug/m3 do not
