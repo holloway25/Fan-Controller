@@ -85,6 +85,9 @@ color:var(--dim)}
 margin-top:12px;display:none;line-height:1.5}
 .msg.err{display:block;background:rgba(248,113,113,.12);color:var(--warn);
 border:1px solid rgba(248,113,113,.35)}
+.warn{background:rgba(248,113,113,.12);color:var(--warn);
+border:1px solid rgba(248,113,113,.35);border-radius:9px;
+padding:9px 11px;margin-bottom:12px;font-size:13px;line-height:1.5}
 .msg.ok{display:block;background:rgba(52,211,153,.12);color:var(--ok);
 border:1px solid rgba(52,211,153,.35)}
 .lights{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
@@ -113,7 +116,7 @@ header{flex-direction:column;align-items:stretch;gap:10px}
 <header>
   <h1><span class="dot" id="dot"></span>Office Fan Controller</h1>
   <div class="seg" id="mode">
-    <button data-mode="auto" title="Switch on the thresholds below">Auto</button>
+    <button data-mode="auto" title="Run the fan automatically on the triggers below">Auto</button>
     <button data-mode="manual" title="Switch off once, then leave the fan to the plug alone">Manual</button>
     <button data-mode="on">Force on</button>
   </div>
@@ -145,19 +148,22 @@ header{flex-direction:column;align-items:stretch;gap:10px}
   </div>
 </details>
 
-<details class="card" id="c-thresholds">
-  <summary>Thresholds</summary>
+<details class="card" id="c-triggers">
+  <summary>Triggers</summary>
   <div class="body">
+  <div class="warn" id="norules" style="display:none">No triggers are
+    enabled, so Auto will not start the fan. Only the fail-safe below
+    can still run it.</div>
+  <div class="row"><label>Run on CO2
+    <span class="hint">Ventilates when the air gets stale.</span></label>
+    <input type="checkbox" id="co2_enabled" style="width:auto"></div>
   <div class="row"><label>Turn the fan on above
     <span class="hint">Parts per million.</span></label>
     <input type="number" id="on_at" min="400" max="5000" step="25"></div>
   <div class="row"><label>Turn the fan off below
     <span class="hint">Keep a gap of at least 150 ppm below the on level so the fan does not short-cycle.</span></label>
     <input type="number" id="off_at" min="400" max="5000" step="25"></div>
-  <div class="row"><label>Check every
-    <span class="hint">Seconds between readings.</span></label>
-    <input type="number" id="poll_seconds" min="5" max="600" step="5"></div>
-  <div class="row"><label>Also run on temperature
+  <div class="row"><label>Run on temperature
     <span class="hint">Sheds heat with the fan before the AC needs to start.</span></label>
     <input type="checkbox" id="temp_enabled" style="width:auto"></div>
   <div class="row"><label>Turn the fan on above
@@ -166,6 +172,18 @@ header{flex-direction:column;align-items:stretch;gap:10px}
   <div class="row"><label>Turn the fan off below
     <span class="hint">Degrees C.</span></label>
     <input type="number" id="temp_off" min="10" max="40" step="0.5"></div>
+  <div class="row"><label>Run on humidity
+    <span class="hint">Clears damp air. Off unless you have set levels that suit the room.</span></label>
+    <input type="checkbox" id="humidity_enabled" style="width:auto"></div>
+  <div class="row"><label>Turn the fan on above
+    <span class="hint">Percent relative humidity.</span></label>
+    <input type="number" id="humidity_on" min="0" max="100" step="1"></div>
+  <div class="row"><label>Turn the fan off below
+    <span class="hint">Percent. Keep a gap below the on level so the fan does not short-cycle.</span></label>
+    <input type="number" id="humidity_off" min="0" max="100" step="1"></div>
+  <div class="row"><label>Check every
+    <span class="hint">Seconds between readings.</span></label>
+    <input type="number" id="poll_seconds" min="5" max="600" step="5"></div>
   <div class="row"><label>Ventilate if readings stop
     <span class="hint">Minutes without a valid reading before the fan is turned on as a fail-safe. 0 disables it.</span></label>
     <input type="number" id="stale_minutes" min="0" max="1440" step="5"></div>
@@ -386,10 +404,13 @@ function drawMini(hist,c){
   const rows=defs.map((d,i)=>d.concat([i*(BH+GAP),i*(BH+GAP)+BH]));
   rows.forEach(([key,col,name,top,bot])=>{
     const pts=hist.filter(p=>p[key]!=null);
-    // Thresholds exist only for temperature, and only while it drives
-    // the fan. Disabled triggers must not imply the fan reacts to them.
-    const thr=(key==="tc"&&c&&c.temp_enabled&&c.temp_on!=null
-      &&c.temp_off!=null)?[c.temp_on,c.temp_off]:null;
+    // Guides are drawn only while that rule actually drives the fan.
+    // A disabled trigger must not imply the fan reacts to it.
+    const GUIDES={tc:["temp_enabled","temp_on","temp_off"],
+                  rh:["humidity_enabled","humidity_on","humidity_off"]};
+    const g=GUIDES[key];
+    const thr=(g&&c&&c[g[0]]&&c[g[1]]!=null&&c[g[2]]!=null)
+      ?[c[g[1]],c[g[2]]]:null;
     const nameEl=txt(name,{x:L+4,y:top+11,fill:col,"font-size":12,
       opacity:.85,"font-family":MONO});
     svg.appendChild(nameEl);
@@ -477,7 +498,8 @@ function render(s){
   const mr=(+c.min_run_minutes||0)*60;
   // Auto only: in Force on the latches are also clear, but the mode is
   // what holds the fan, not the lease.
-  const idle=s.fan===true&&c.mode==="auto"&&!s.latch.co2&&!s.latch.temp;
+  const idle=s.fan===true&&c.mode==="auto"&&!s.latch.co2
+    &&!s.latch.temp&&!s.latch.humidity;
   SUB={read:s.reading_at,poll:Number(c.poll_seconds)||30,
        changed:s.changed_at, mins:(+c.min_run_minutes||0)+"m",
        hold:(idle&&mr>0&&s.changed_at)?s.changed_at+mr:null};
@@ -502,11 +524,15 @@ function render(s){
   // amber branch, so a stale sensor or Manual still showed green.
   const auto=c.mode==="auto";
   $("ppm").className="pill"+
-    (auto&&s.co2!=null?(s.latch.co2?" trig":" on"):"");
+    (auto&&c.co2_enabled!==false&&s.co2!=null
+      ?(s.latch.co2?" trig":" on"):"");
   $("tc").className="pill"+
     (auto&&c.temp_enabled&&s.temperature!=null
       ?(s.latch.temp?" trig":" on"):"");
   $("rh").textContent=s.humidity==null?"--%":s.humidity.toFixed(1)+"%";
+  $("rh").className="pill"+
+    (auto&&c.humidity_enabled&&s.humidity!=null
+      ?(s.latch.humidity?" trig":" on"):"");
   $("w").textContent=s.watts==null?"-- W":fmtW(s.watts)+" W";
   // Draw is only meaningful while the fan is meant to be running, and only
   // once settled: a motor spinning up would otherwise flash red every start.
@@ -562,9 +588,15 @@ function render(s){
   if(touched)return;
   CFG=s.config;
   ["on_at","off_at","min_run_minutes","poll_seconds","temp_on","temp_off",
-   "stale_minutes"]
+   "humidity_on","humidity_off","stale_minutes"]
     .forEach(k=>$(k).value=c[k]);
+  // Absent means enabled, matching the backend default, so a config
+  // written before the flag existed does not show as switched off.
+  $("co2_enabled").checked=c.co2_enabled!==false;
   $("temp_enabled").checked=!!c.temp_enabled;
+  $("humidity_enabled").checked=!!c.humidity_enabled;
+  $("norules").style.display=
+    (c.co2_enabled!==false||c.temp_enabled||c.humidity_enabled)?"none":"";
   $("p_host").value=s.config.protect.host;
   $("p_verify").checked=!!s.config.protect.verify_tls;
   $("p_user").value=s.config.protect.username;
@@ -581,9 +613,17 @@ function render(s){
 // Checkboxes and selects fire "change", not "input". Listening for both
 // stops the 5s refresh from overwriting a control the user just touched.
 ["on_at","off_at","min_run_minutes","poll_seconds","p_host",
- "p_user","p_pass","g_host","g_user","g_pass","p_sensor","temp_enabled","temp_on","temp_off","p_verify","stale_minutes","watts_min","watts_max","watts_enabled","watts_fault_seconds"].forEach(id=>{
+ "p_user","p_pass","g_host","g_user","g_pass","p_sensor","co2_enabled","temp_enabled","temp_on","temp_off","humidity_enabled","humidity_on","humidity_off","p_verify","stale_minutes","watts_min","watts_max","watts_enabled","watts_fault_seconds"].forEach(id=>{
   $(id).addEventListener("input",dirty);
   $(id).addEventListener("change",dirty);});
+// The warning answers the tickboxes, not the 5s poll: turning the last
+// trigger off would otherwise look accepted until the next refresh.
+["co2_enabled","temp_enabled","humidity_enabled"].forEach(id=>{
+  $(id).addEventListener("change",()=>{
+    $("norules").style.display=
+      ($("co2_enabled").checked||$("temp_enabled").checked
+        ||$("humidity_enabled").checked)?"none":"";});});
+
 // Light checkboxes are created after load, so delegate.
 document.addEventListener("change",e=>{
   if(e.target&&e.target.closest&&e.target.closest(".lights"))dirty();});
@@ -593,7 +633,11 @@ async function saveAll(msgEl){
       on_at:+$("on_at").value, off_at:+$("off_at").value,
       min_run_minutes:+$("min_run_minutes").value,
       poll_seconds:+$("poll_seconds").value,
+      co2_enabled:$("co2_enabled").checked,
       temp_enabled:$("temp_enabled").checked,
+      humidity_enabled:$("humidity_enabled").checked,
+      humidity_on:+$("humidity_on").value,
+      humidity_off:+$("humidity_off").value,
       temp_on:+$("temp_on").value, temp_off:+$("temp_off").value,
       stale_minutes:+$("stale_minutes").value},
     protect:{host:$("p_host").value.trim(),
