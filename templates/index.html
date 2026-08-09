@@ -139,6 +139,7 @@ header{flex-direction:column;align-items:stretch;gap:10px}
   <svg class="trace" id="trace2" viewBox="0 0 700 159"></svg>
   <div class="sub" id="sub">Waiting for a reading</div>
   <div class="msg" id="topmsg"></div>
+  <div class="msg" id="unsavedmsg"></div>
 </div>
 
 <details class="card" id="c-activity" open>
@@ -517,6 +518,18 @@ function render(s){
   const fmsg=s.fault?(s.fault.msg+(s.fault.stopped?"":
     " — stop unconfirmed, retrying")):"";
   say("topmsg",fmsg||s.error||"", "err");
+  // fault_unsaved: the fault is live in memory and the fan is stopped,
+  // but it could not be written, so a restart would forget it and
+  // resume on a fan already judged faulty. It gets its own line rather
+  // than being folded into topmsg, which a fault message or a poll
+  // error would otherwise crowd out - this is the one state the fan
+  // cannot recover from on its own, so it must not be the thing that
+  // gets dropped. Driven off the flag directly rather than off
+  // s.fault, so it still shows if the two ever disagree.
+  say("unsavedmsg",s.fault_unsaved?
+    "Fault not saved to disk \u2014 in force now, but a restart would "+
+    "clear it and the fan would resume. Check free space and "+
+    "permissions on fault.json.":"", "err");
   // Held on by the minimum-run lease rather than by demand: fan running,
   // neither rule latched, and the lease not yet expired. decide() returns
   // None in exactly this case, which is otherwise invisible.
