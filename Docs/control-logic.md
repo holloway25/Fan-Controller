@@ -24,17 +24,43 @@ control. Configs still holding the old `off` value migrate to `manual`.
 
 ## Per-rule latching
 
-CO2 and temperature latch independently:
+Three rules latch independently, each with its own enable flag and its
+own on and off levels:
 
-- CO2 latches on at `on_at`, releases at `off_at`
-- Temperature latches on at `temp_on`, releases at `temp_off`
+| Rule | Enabled by | Latches on at | Releases at |
+| --- | --- | --- | --- |
+| CO2 | `co2_enabled` (default true) | `on_at` | `off_at` |
+| Temperature | `temp_enabled` (default false) | `temp_on` | `temp_off` |
+| Humidity | `humidity_enabled` (default false) | `humidity_on` | `humidity_off` |
 
-The fan runs while **any** rule is latched.
+The fan runs while **any** enabled rule is latched. All three run the fan
+when the reading is HIGH: humidity ventilates damp air out rather than
+holding it in.
+
+They live in a table in `controller.py`, not as branches in `decide()`, so
+a fourth trigger is a row plus a schema entry rather than another copy of
+the same block.
 
 Independence matters. An earlier version required *both* inputs to be below
 their off levels before stopping, so a rule that had never triggered could
 still veto the stop. In practice a CO2-driven run was held on for hours by
 a temperature condition that had never been met.
+
+Every rule can be disabled, including the last one. Auto then has nothing
+to latch on and never starts the fan; only the stale-reading fail-safe
+can. That is allowed rather than refused, because Manual already exists
+for "do not run automatically" - but it is never silent, and the UI warns
+as soon as the last trigger is unticked.
+
+`co2_enabled` defaults to **true** and must stay that way. `load_cfg`
+fills missing keys from `DEFAULTS`, so this is what a `config.json`
+written before the flag existed reads as. A false default would have
+stopped every upgraded install ventilating, with nothing in the log.
+
+A missing reading is not a release. CO2 keeps its latch when its reading
+drops out; temperature and humidity clear theirs. That inconsistency
+predates the rules table and is recorded in it rather than fixed, since
+changing it would alter what the fan does during a sensor outage.
 
 A latch is held in memory, not derived from the current thresholds, so
 changing a threshold does not release one that is already set. Lowering
@@ -71,7 +97,7 @@ clear, to prevent short-cycling. Two exceptions:
 
 The dashboard always shows a "Min run" pill: its configured length when
 idle, and a green countdown while this is the only reason the fan is
-running - fan on, in Auto, with neither rule latched. Without it a fan
+running - fan on, in Auto, with no rule latched. Without it a fan
 running below the off level looks like a fault rather than the
 anti-short-cycling working. The countdown is deliberately not shown in
 Force on, where the mode holds the fan rather than the lease. See

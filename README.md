@@ -2,8 +2,9 @@
 
 Reads CO2, temperature, humidity and PM2.5 from a UniFi Protect
 UP-AirQuality sensor and switches a fan through a Tasmota smart plug,
-with hysteresis on CO2 and optionally temperature. The plug's energy
-meter confirms the fan is actually drawing current. Web UI is served over
+with hysteresis on CO2, temperature or humidity - each an independent
+trigger you can enable on its own. The plug's energy meter confirms the
+fan is actually drawing current. Web UI is served over
 HTTPS by nginx on the same host; Flask itself listens on 127.0.0.1 only.
 
     sudo systemctl status office-fan-controller
@@ -24,8 +25,9 @@ HTTPS by nginx on the same host; Flask itself listens on 127.0.0.1 only.
 
 ## How it switches
 
-Above the on level the fan starts. It keeps running until CO2 falls to the
-off level, so the gap between the two prevents short-cycling. A freshly
+Each enabled trigger latches on above its own on level and releases
+below its own off level, and the fan runs while any of them is latched.
+The gap between a rule's two levels prevents short-cycling. A freshly
 started fan is also held on for the minimum run time. Force on overrides
 the thresholds entirely; Manual switches the fan off once and then leaves
 it to Google Home or the plug itself.

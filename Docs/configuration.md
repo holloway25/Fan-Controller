@@ -12,14 +12,23 @@ All settings are editable in the web UI and stored in `config.json`
 | `off_at` | 700 | CO2 ppm that releases it |
 | `poll_seconds` | 30 | Seconds between readings |
 | `min_run_minutes` | 10 | Minimum run once started |
-| `temp_enabled` | false | Use temperature as a second trigger |
+| `co2_enabled` | true | Use CO2 as a trigger. Absent in configs written before this existed, and read as true |
+| `temp_enabled` | false | Use temperature as a trigger |
 | `temp_on` | 26.0 | Degrees C that starts the fan |
 | `temp_off` | 24.5 | Degrees C that releases it |
+| `humidity_enabled` | false | Use humidity as a trigger |
+| `humidity_on` | 70.0 | Percent RH that starts the fan |
+| `humidity_off` | 60.0 | Percent RH that releases it |
 | `stale_minutes` | 0 | Minutes without a reading before the fan is turned on as a fail-safe; 0 disables it |
 
-`on_at` must be above `off_at` and `temp_on` above `temp_off`; the API
-rejects a save otherwise, since equal or inverted values leave the fan
-running permanently.
+Every rule's on level must be above its off level - `on_at` over
+`off_at`, `temp_on` over `temp_off`, `humidity_on` over `humidity_off`.
+The API rejects a save otherwise, since equal or inverted values leave
+the fan running permanently. Only enabled rules are checked.
+
+Disabling every rule is allowed. Auto then has nothing to act on and
+never starts the fan; the save returns a notice saying so, and only the
+stale-reading fail-safe can still run it.
 
 ## protect
 

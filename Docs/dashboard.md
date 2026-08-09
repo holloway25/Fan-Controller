@@ -6,8 +6,8 @@ changes behaviour; it is all read from `/api/state`.
 ## Layout
 
 Two rows. Fan state first - mode, running state, draw, and the
-minimum-run lease - then the readings: temperature, CO2, humidity,
-PM2.5. Everything is a pill of the same size, on one 10px grid.
+minimum-run lease - then the readings: temperature, CO2 and humidity.
+Everything is a pill of the same size, on one 10px grid.
 
 CO2 sits with the other readings rather than as a headline number. The
 charts below carry the same values over 24 hours, each with its current
@@ -31,8 +31,10 @@ on, where nothing is acting on it, and greys out when its sensor stops
 reporting - green must never claim a sensor is fine while nothing is
 arriving from it.
 
-Humidity and PM2.5 are always neutral: recorded and charted, but nothing
-switches on them. A glance at the pills answers which inputs are live.
+Humidity colours the same way once its trigger is enabled, and stays
+neutral while it is off. A glance at the pills answers which inputs are
+live. PM2.5 is recorded and charted but not shown: it drives nothing, so
+a pill for it read as a trigger it is not.
 
 The wattage pill is the one exception to green meaning monitored. It
 colours by band whenever the fan is running and settled, whether or not
@@ -96,8 +98,8 @@ The CO2 trace shows its thresholds as dashed lines with the band between
 them shaded, and the current reading in the gutter at the height of the
 latest point, nudged clear of the threshold labels sharing that gutter.
 
-Temperature does the same when its trigger is enabled, so a disabled
-trigger cannot imply the fan responds to it. Thresholds join the row
+Temperature and humidity do the same when their triggers are enabled, so
+a disabled trigger cannot imply the fan responds to it. Thresholds join the row
 scale, so a level the room never reaches is still drawn.
 
 One time axis under both charts: they plot the same window.
