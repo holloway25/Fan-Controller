@@ -6,6 +6,7 @@ restart, not the exec. The exec path is four lines and is exercised for
 real every time the trigger is used.
 """
 import os
+import socket
 import sys
 import time
 
@@ -93,6 +94,31 @@ def test_watcher_is_started():
     assert "target=restart_loop" in src, \
         "restart_loop is never started, so the trigger is never read"
     return "watcher thread is wired up"
+
+
+def test_open_sockets_do_not_survive_the_exec():
+    """The bug that made the first live restart a crash.
+
+    werkzeug marks its listening socket inheritable, so without this
+    the replacement process inherits a socket already bound to 8096
+    and dies with "Address already in use".
+    """
+    C = harness.load()
+    s = socket.socket()
+    try:
+        s.set_inheritable(True)
+        assert s.get_inheritable() is True, "test set-up did not take"
+        before = (os.get_inheritable(1), os.get_inheritable(2))
+
+        C._mark_fds_close_on_exec()
+
+        assert s.get_inheritable() is False, \
+            "an open socket would survive the exec and hold the port"
+        assert (os.get_inheritable(1), os.get_inheritable(2)) == before, \
+            "stdout/stderr were altered, so the replacement loses logging"
+    finally:
+        s.close()
+    return "socket closed on exec, journal kept"
 
 
 if __name__ == "__main__":

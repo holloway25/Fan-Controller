@@ -1875,6 +1875,43 @@ def _consume_restart_request():
     return fresh
 
 
+def _mark_fds_close_on_exec():
+    """Stop open descriptors surviving into the replacement process.
+
+    Werkzeug marks its listening socket inheritable so the reloader can
+    hand the fd to a child, and nothing clears that on the way into
+    execv. The replacement therefore inherited a socket already bound
+    to 8096, died with "Address already in use", and the service only
+    came back because Restart=on-failure caught the non-zero exit ten
+    seconds later. Observed in the journal on 08-10, not theorised:
+    PEP 446 makes Python's own descriptors non-inheritable, but
+    werkzeug opts this one back in.
+
+    0, 1 and 2 are deliberately left alone. stdout and stderr are the
+    journal, and closing them would cost the replacement its own
+    startup logging - the first thing anyone reads when a restart goes
+    wrong.
+
+    Setting the flag is not destructive. If the exec then fails, this
+    process carries on with every descriptor still open and usable.
+    """
+    try:
+        fds = sorted(int(n) for n in os.listdir("/proc/self/fd"))
+    except (OSError, ValueError) as e:
+        _log("Restart - could not enumerate descriptors (%s)" % e)
+        return
+    for fd in fds:
+        if fd <= 2:
+            continue
+        try:
+            os.set_inheritable(fd, False)
+        except OSError:
+            # The listing is a snapshot taken a moment ago: a descriptor
+            # closed since is not a problem, and one that refuses the
+            # flag is better skipped than made fatal.
+            pass
+
+
 def _restart_now():
     """Replace this process with a fresh one. Same PID, same unit.
 
@@ -1906,6 +1943,9 @@ def _restart_now():
         sys.stderr.flush()
     except Exception:
         pass
+    # Must come after the flush and immediately before the exec: it is
+    # what stops the replacement inheriting the bound listening socket.
+    _mark_fds_close_on_exec()
     os.chdir(DIR)
     os.execv(sys.executable, [sys.executable] + sys.argv)
 
