@@ -92,6 +92,17 @@ list against the server's point for point.
 | `history_rev` | the revision this response was taken at |
 | `history_generation` | which process answered. Send it back as `gen` |
 
+`/api/state` carries `history_generation` as well, and that is what the
+dashboard compares to decide whether to fetch at all. The server refusing
+a cross-generation delta only helps if a request is made, and a tab
+holding a revision the replacement has climbed back to would otherwise
+never make one.
+
+`/api/state` also carries `process_started_at`, which `restart.sh` uses
+to prove a restart happened. Both derive from the same instant but are
+formatted differently - a float and a six-decimal string - so compare
+each only against its own kind, never one to the other.
+
 Removals are not listed. `first_t` is the oldest point still held, and
 the caller drops anything older - which describes a prune of any size,
 including one that happened while the caller was away, in one number.

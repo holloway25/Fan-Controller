@@ -246,5 +246,44 @@ def test_a_tab_that_slept_through_a_restart_does_not_splice():
     return "spliced trace prevented"
 
 
+def test_state_carries_the_generation_too():
+    """So a client can notice a new process WITHOUT asking for history.
+
+    The server refuses a cross-generation delta, but that refusal only
+    fires if a request is made. The dashboard decides whether to ask by
+    comparing what /api/state reports, so if the generation is not there
+    a tab holding a matching revision never asks, and never finds out.
+    """
+    C = harness.load()
+    seed(C, 5)
+    body = C.app.test_client().get("/api/state").get_json()
+
+    assert body.get("history_generation") == C.PROC_GENERATION, (
+        "/api/state does not identify the process, so a stale tab has "
+        "nothing to compare against")
+    return "state and history agree on the generation"
+
+
+def test_the_dashboard_asks_when_only_the_generation_differs():
+    """The revision alone is not enough to decide whether to fetch."""
+    C = harness.load()
+    seed(C, 5)
+    app = C.app.test_client()
+
+    state = app.get("/api/state").get_json()
+    # A tab that slept through a restart: same revision, older process.
+    held_rev, held_gen = state["history_rev"], "1000.000000"
+
+    assert state["history_rev"] == held_rev, "set-up wrong"
+    assert state["history_generation"] != held_gen, (
+        "the two generations match, so this proves nothing")
+
+    # Having noticed, it asks - and is given a full copy, not a delta.
+    body = app.get("/api/history?since=%d&gen=%s"
+                   % (held_rev, held_gen)).get_json()
+    assert body["full"] is True, "the stale tab was handed a delta"
+    return "matching revision, different process, still refetched"
+
+
 if __name__ == "__main__":
     sys.exit(harness.run(dict(globals())))

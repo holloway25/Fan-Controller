@@ -203,6 +203,42 @@ class GatedPlug(Plug):
         return Plug.state(self)
 
 
+class WatchedLock:
+    """The real lock, which announces when someone has to wait for it.
+
+    The previous version of this test created an Event, waited 0.2s on
+    it, and never set it - a sleep with extra steps, and worse than an
+    honest sleep because it read as synchronisation. On a loaded Pi the
+    second thread might not reach the lock inside that window, and a
+    removed lock would pass.
+
+    Signalling from inside the lock removes the guess: the test waits
+    for the second caller to actually be blocked, not for a duration.
+    """
+
+    def __init__(self, real):
+        self.real = real
+        self.contended = threading.Event()
+
+    def __enter__(self):
+        if not self.real.acquire(blocking=False):
+            # Someone holds it, so this caller is about to block. Said
+            # before blocking, or it could not be said at all.
+            self.contended.set()
+            self.real.acquire()
+        return self
+
+    def __exit__(self, *a):
+        self.real.release()
+        return False
+
+    def acquire(self, *a, **k):
+        return self.real.acquire(*a, **k)
+
+    def release(self):
+        return self.real.release()
+
+
 def test_two_callers_cannot_both_switch_and_both_log():
     """tick() and the draw thread both call this. _act_lock is what
     stops them both acting on the same off fan."""
@@ -210,21 +246,36 @@ def test_two_callers_cannot_both_switch_and_both_log():
     setup(C, mode="on", fan=True)
     plug = GatedPlug(on=False)
 
-    first = threading.Thread(target=C._force_on, args=(plug,), name="first")
-    first.start()
-    assert plug.entered.wait(10), "the first caller never reached the read"
+    watched = WatchedLock(C._act_lock)
+    C._act_lock = watched
+    try:
+        first = threading.Thread(target=C._force_on, args=(plug,),
+                                 name="first")
+        first.start()
+        assert plug.entered.wait(10), \
+            "the first caller never reached the read"
 
-    # Started only once the first caller is provably inside the read and
-    # holding _act_lock, so the second has to contend for it.
-    second = threading.Thread(target=C._force_on, args=(plug,), name="second")
-    second.start()
-    second_ready = threading.Event()
-    second_ready.wait(0.2)      # let it reach the lock; correctness does
-                                # not depend on this having been enough
-    plug.gate.set()
+        # Started only once the first caller is provably inside the read
+        # and holding _act_lock, so the second has to contend for it.
+        second = threading.Thread(target=C._force_on, args=(plug,),
+                                  name="second")
+        second.start()
 
-    first.join(10)
-    second.join(10)
+        # Wait for the lock itself to report contention rather than
+        # sleeping and hoping. If it never reports any - which is what a
+        # removed lock looks like - carry on anyway after a bounded wait
+        # and let the assertions below say so.
+        contended = watched.contended.wait(5)
+
+        plug.gate.set()
+        first.join(10)
+        second.join(10)
+    finally:
+        C._act_lock = watched.real
+
+    assert contended, (
+        "nobody ever had to wait for _act_lock, so the two callers were "
+        "never serialised")
 
     assert plug.calls == [True], (
         "both callers switched the fan: %r" % plug.calls)

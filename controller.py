@@ -1720,6 +1720,12 @@ def api_state():
     # answering proves nothing, because a failed exec leaves the original
     # process serving on it.
     s["process_started_at"] = _PROC_START
+    # The same token /api/history uses. It is here so a client can tell
+    # it is talking to a different process WITHOUT making a history
+    # request first: revisions restart with the process, so a dashboard
+    # holding revision 100 from a process that is gone would otherwise
+    # see a matching revision, never fetch, and never learn.
+    s["history_generation"] = PROC_GENERATION
     return jsonify(s)
 
 

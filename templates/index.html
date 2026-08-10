@@ -544,7 +544,16 @@ function render(s){
   paintSub();
   // History is fetched separately and only when it actually changed:
   // it is ~99% of the old /api/state payload but only moves once per poll.
-  if(s.history_rev!==HIST_REV&&!HIST_BUSY){
+  // A changed generation counts as changed history even when the
+  // revision matches. It restarts with the process, so a tab that slept
+  // through a restart can hold a revision the replacement has climbed
+  // back to - matching numbers, different trace. Without this the
+  // server's refusal never gets a chance to fire, because no request is
+  // made at all, and the stale chart sits there until the next poll
+  // moves the counter. At a long poll_seconds, or with Protect down,
+  // that is a long time.
+  if((s.history_rev!==HIST_REV||s.history_generation!==HIST_GEN)
+     &&!HIST_BUSY){
     HIST_BUSY=true;
     // Ask only for what we are missing. The server sends a delta when it
     // can and a full copy when it cannot, and says which it sent rather
