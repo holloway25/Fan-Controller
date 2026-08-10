@@ -145,6 +145,27 @@ the poll. Check the browser network tab for `/api/history`, and confirm
 `history_rev` is incrementing once per poll interval - if it is frozen, the
 poll thread is not appending and the readings on screen are stale too.
 
+## Nothing told me the fan had stopped
+
+Expected, for now. There is no alerting of any kind: a draw fault stops
+the fan, leaves it stopped until someone acknowledges it, and says so
+only on the dashboard and in the activity log. Nothing is emailed, and
+nothing is pushed. If the fan stops at 2am the first sign is the room
+being stale in the morning.
+
+Until that changes, the ways to find out are:
+
+- the dashboard, which shows the fault banner and, separately, `Fault
+  not saved to disk` when a fault could not be persisted
+- `curl -s localhost:8096/api/state` and look at `fault` and
+  `fault_unsaved`
+- `journalctl -u office-fan-controller`, which is also where a fault
+  lost during a signalled stop is reported
+
+Email on fault is designed but not built. The design, the relay it will
+use and what remains to be settled are in the handoff notes, which are
+deliberately outside this repository.
+
 ## Fan stopped with a draw fault
 
 Power monitoring was enabled and the draw sat outside `watts_min` to

@@ -126,6 +126,16 @@ ventilation is measurably inadequate. A gap of at least 150-200 ppm between
 on and off avoids short-cycling; 300 works well if the fan can shift that
 much within a reasonable run.
 
+## Notifications
+
+Not implemented. There is no notification configuration, and no section
+for it in `config.json`. A fault is visible on the dashboard and in the
+activity log and nowhere else.
+
+When it is added it will be its own section rather than more keys under
+`control`, and its `enabled` flag will default to false so that an
+unconfigured install sends nothing.
+
 ## ui
 
 `password_hash` holds a salted PBKDF2-SHA256 hash; the plaintext is never
