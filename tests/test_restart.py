@@ -472,5 +472,139 @@ def test_the_last_chance_write_holds_the_fault_lock():
     return "lock held across read and write"
 
 
+def test_a_restart_cannot_land_in_the_middle_of_raising_a_fault():
+    """The window _fault_lock closes.
+
+    _store_fault holds the lock across both the memory update and the
+    write. Checking fault_unsaved under _state_lock alone let a restart
+    read False - because the write had not failed YET - and exec away
+    the only copy of a live fault. The replacement would load nothing
+    and Auto would be free to start a fan judged faulty.
+
+    Driven with an event rather than a sleep: the writer is provably
+    inside save_fault, holding the lock, before the restart is tried.
+    """
+    C = harness.load()
+    real = C.os.execv
+    calls = _stub_exec(C)
+
+    inside = threading.Event()
+    release = threading.Event()
+
+    def blocking_save(value):
+        if value is not None:
+            inside.set()
+            release.wait(10)
+            raise OSError(28, "No space left on device")
+
+    C.save_fault = blocking_save
+
+    def raise_fault():
+        C._store_fault({"msg": "draw fault", "stopped": False})
+
+    writer = threading.Thread(target=raise_fault, name="draw")
+    writer.start()
+    try:
+        assert inside.wait(10), "the writer never reached save_fault"
+
+        # The fault is live in memory and the flag is still False, which
+        # is exactly the state the old check would have restarted on.
+        with C._state_lock:
+            assert C.STATE["fault"] is not None, "no fault in memory"
+            assert C.STATE["fault_unsaved"] is False, (
+                "the flag was already set, so this is not the window "
+                "being tested")
+
+        result = C._restart_now()
+    finally:
+        release.set()
+        writer.join(10)
+        C.os.execv = real
+
+    assert not calls, (
+        "exec was reached while a fault was mid-write - the fault would "
+        "have been lost")
+    assert result is False, "did not report the restart as refused"
+    logged = " ".join(e["msg"] for e in C.STATE["events"])
+    assert "Restart refused" in logged, "the refusal was not logged"
+    return "refused while the write was in flight"
+
+
+def test_the_restart_check_is_not_just_a_flag_read():
+    """Pins the lock, not the symptom.
+
+    A future edit could restore the cheap check and this suite would
+    otherwise only notice through the timing test above.
+    """
+    C = harness.load()
+    real = C.os.execv
+    _stub_exec(C)
+    seen = {}
+    real_flush = C.flush_hist
+
+    def watched():
+        # Reached only on the path to the exec, and only with the lock
+        # held, or the window above is open again.
+        seen["fault_lock_free"] = C._fault_lock.acquire(blocking=False)
+        if seen["fault_lock_free"]:
+            C._fault_lock.release()
+        return real_flush()
+
+    C.flush_hist = watched
+    try:
+        with C._state_lock:
+            C.STATE["fault"] = None
+            C.STATE["fault_unsaved"] = False
+        try:
+            C._restart_now()
+        except ExecCalled:
+            pass
+    finally:
+        C.flush_hist = real_flush
+        C.os.execv = real
+        C.os.environ.pop(C.RESUME_ENV, None)
+
+    assert seen.get("fault_lock_free") is False, (
+        "the restart ran without _fault_lock held, so a fault being "
+        "written could be exec'd away")
+    return "lock held on the way to the exec"
+
+
+def test_a_promised_manual_stop_survives_a_requested_restart():
+    """Manual switches the fan off once and then hands over.
+
+    A restart between selecting Manual and the stop landing used to drop
+    the promise, leaving the fan running in the one mode whose whole
+    purpose is to stop touching it.
+    """
+    C = harness.load()
+    with C._state_lock:
+        C.STATE["manual_off_pending"] = True
+    carried = json.dumps(C._resume_payload())
+
+    with C._state_lock:
+        C.STATE["manual_off_pending"] = False
+    C.os.environ[C.RESUME_ENV] = carried
+
+    assert C._apply_resume() is True, "the handover was not taken"
+    assert C.STATE["manual_off_pending"] is True, (
+        "the promised stop was dropped, so the fan keeps running in "
+        "Manual with nothing left to correct it")
+    return "the promise is kept across the exec"
+
+
+def test_a_manual_stop_that_is_not_owed_is_not_invented():
+    C = harness.load()
+    C.os.environ[C.RESUME_ENV] = json.dumps({
+        "v": 1, "latch": {}, "changed_at": None, "reading_at": None,
+        "manual_off_pending": "yes", "oob_since": None,
+        "start_time": None})
+    C._apply_resume()
+
+    assert C.STATE["manual_off_pending"] is False, (
+        "a non-boolean promised a stop that was never owed")
+    return "truthy is not a promise"
+
+
 if __name__ == "__main__":
     sys.exit(harness.run(dict(globals())))

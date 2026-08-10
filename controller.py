@@ -183,6 +183,67 @@ def load_cfg():
 
 
 
+def _fsync_dir(path):
+    """Make a rename in this directory survive power loss.
+
+    os.replace is atomic - no reader ever sees half a file - but atomic
+    is not durable. The rename can sit in the page cache for the
+    filesystem's commit interval, so a fault written a second before the
+    power goes can simply not be there afterwards. Syncing the directory
+    is what commits the name.
+
+    Failure is swallowed. Some filesystems refuse to open a directory
+    for reading, and a controller that will not start because it cannot
+    fsync a directory is worse than one whose last write might not
+    survive a power cut.
+    """
+    try:
+        fd = os.open(path or ".", os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def write_json_durable(path, value, mode=0o600, **dump_args):
+    """Write JSON so it survives a power cut, not merely a crash.
+
+    Used for config.json and fault.json ONLY. Both are small, written
+    rarely, and losing either has consequences a user cannot see: a
+    fault that vanishes lets Auto start a fan already judged faulty, and
+    a lost config silently reverts thresholds.
+
+    NOT used for history.json or events.json. They are written far more
+    often - history every HIST_FLUSH_SECONDS - and an fsync of 190KB on
+    a Pi's SD card every five minutes buys nothing worth having: the
+    cost of losing the last few minutes of a graph is a gap in a graph.
+
+    Raises OSError if it cannot write. Callers decide what that means.
+    """
+    tmp = path + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+    try:
+        with os.fdopen(fd, "w") as fh:
+            json.dump(value, fh, **dump_args)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        # Leaving a stale .tmp behind would be harmless - the next write
+        # truncates it - but it looks like a crash to anyone reading the
+        # directory, so tidy up.
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    _fsync_dir(os.path.dirname(path))
+
+
 def save_cfg(cfg):
     """Write config.json atomically. CALLERS MUST HOLD _cfg_lock.
 
@@ -191,17 +252,10 @@ def save_cfg(cfg):
     already moved. The lock is what makes that impossible; this function
     does not defend itself.
     """
-    tmp = CFG_PATH + ".tmp"
-    # Created 0600 up front: the temp file holds the UniFi and plug
-    # key, and chmod after the rename left a window at the process umask.
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    try:
-        with os.fdopen(fd, "w") as f:
-            json.dump(cfg, f, indent=2)
-    except BaseException:
-        os.unlink(tmp)
-        raise
-    os.replace(tmp, CFG_PATH)
+    # 0600 from creation, not chmod after the rename: the temp file holds
+    # the UniFi and plug passwords, and chmod afterwards left a window at
+    # the process umask.
+    write_json_durable(CFG_PATH, cfg, mode=0o600, indent=2)
     os.chmod(CFG_PATH, 0o600)
 
 
@@ -250,11 +304,12 @@ def save_fault(f):
     if f is None:
         if os.path.exists(FAULT_PATH):
             os.remove(FAULT_PATH)
+            # The unlink needs committing too, or a fault acknowledged
+            # just before a power cut comes back on the next start and
+            # holds the fan off with nothing to explain why.
+            _fsync_dir(os.path.dirname(FAULT_PATH))
         return
-    tmp = FAULT_PATH + ".tmp"
-    with open(tmp, "w") as fh:
-        json.dump(f, fh)
-    os.replace(tmp, FAULT_PATH)
+    write_json_durable(FAULT_PATH, f, mode=0o600)
 
 
 _oob_since = None
@@ -1528,6 +1583,15 @@ def loop():
 
 
 app = Flask(__name__)
+# Every request body. Nothing here legitimately posts more than a few
+# hundred bytes - the largest is a settings save - and /api/clienterror
+# stays open even once auth is on, so without a cap one LAN device can
+# push arbitrary volume into the journal and events.json.
+app.config["MAX_CONTENT_LENGTH"] = 8192
+# The last client error and when, so a script erroring in a render loop
+# cannot evict the 300 entries of real activity history behind it.
+_last_ui_error = (None, 0.0)
+UI_ERROR_QUIET_SECONDS = 60
 
 # One reverse proxy fronts this service, so the peer address is always
 # the proxy and every request logged as the same client. Trust a single
@@ -1617,10 +1681,18 @@ def api_clienterror():
     if not isinstance(b, dict):
         # A reporting endpoint should not 500 on a malformed report.
         return jsonify(error="JSON body must be an object."), 400
+    global _last_ui_error
     msg = str(b.get("msg", ""))[:300]
     where = "%s:%s" % (str(b.get("src", ""))[:120], b.get("line", "?"))
+    # The journal gets every report: it rotates, and a repeat count is
+    # useful when diagnosing. The activity log does not, because it is
+    # 300 entries deep and shared with the fan events that matter.
     app.logger.error("UI error: %s @ %s", msg, where)
-    _log("UI error: %s" % msg[:120])
+    last, at = _last_ui_error
+    now = time.time()
+    if msg != last or now - at >= UI_ERROR_QUIET_SECONDS:
+        _last_ui_error = (msg, now)
+        _log("UI error: %s" % msg[:120])
     return jsonify(ok=True)
 
 
@@ -2038,6 +2110,14 @@ def _resume_payload():
     developing fault does not restart its clock. reading_at carries the
     stale-reading fail-safe, and START_TIME the grace periods that fall
     back to it when nothing has been read yet.
+
+    manual_off_pending carries a one-time stop that has been promised
+    and not yet made. Manual switches the fan off once and then hands
+    over; a restart in the gap between selecting Manual and the stop
+    landing would otherwise drop the promise, leaving the fan running in
+    the one mode whose purpose is to stop touching it. Note this covers
+    a REQUESTED restart only - a crash in the same window still loses
+    it, which is recorded as open in the handoff notes.
     """
     with _state_lock:
         return {
@@ -2045,6 +2125,7 @@ def _resume_payload():
             "latch": dict(STATE["latch"]),
             "changed_at": STATE["changed_at"],
             "reading_at": STATE["reading_at"],
+            "manual_off_pending": bool(STATE["manual_off_pending"]),
             "oob_since": _oob_since,
             "start_time": START_TIME,
         }
@@ -2087,6 +2168,10 @@ def _apply_resume():
                 STATE["latch"][k] = raw if isinstance(raw, bool) else False
         STATE["changed_at"] = _n(d.get("changed_at"))
         STATE["reading_at"] = _n(d.get("reading_at"))
+        # A real bool, like the latches: anything truthy would promise a
+        # stop that was never owed.
+        owed = d.get("manual_off_pending")
+        STATE["manual_off_pending"] = owed if isinstance(owed, bool) else False
         held = [k for k, v in sorted(STATE["latch"].items()) if v]
         lease = STATE["changed_at"] is not None
     _oob_since = _n(d.get("oob_since"))
@@ -2185,25 +2270,56 @@ def _restart_now():
     config, fault and events are each written atomically as they
     change, so they need nothing here.
 
-    The relay is not touched. The fan keeps doing whatever it was
-    doing, and the fault survives in fault.json; the in-memory latches
-    and the minimum-run lease do not, so a restart re-decides from the
-    current readings.
+    The relay is not touched, and the fan keeps doing whatever it was
+    doing. The fault survives in fault.json. The in-memory timing state
+    - latches, the minimum-run lease, the draw-fault and stale-reading
+    clocks - is handed to the replacement through the environment, so a
+    requested restart does not release a latched fan or short-cycle the
+    motor. See _resume_payload. A crash or a systemd restart carries
+    none of it and correctly starts clean.
     """
-    # A fault that never reached disk exists only in this process.
-    # The replacement loads fault.json, finds nothing, and Auto is then
-    # free to start a fan that was stopped for drawing wrong - the
-    # exact failure fault.json exists to prevent. Refuse, and let the
-    # draw loop's retry clear the flag before a later request tries
-    # again. Returns False rather than raising: the caller is a watch
-    # loop, and a refused restart is a decision, not an error.
-    with _state_lock:
-        unsaved = STATE["fault_unsaved"]
-    if unsaved:
-        _log("Restart refused - the active fault is not saved to disk "
-             "and would be lost")
+    # _fault_lock is held from the check right through the exec.
+    #
+    # Reading the flag under _state_lock alone was not enough.
+    # _store_fault holds _fault_lock across BOTH the memory update and
+    # the write, so a restart could land in the middle of raising a
+    # fault: live in memory, flag still False because the write had not
+    # failed yet, and the exec then discards the only copy. The
+    # replacement loads nothing and Auto is free to start a fan that was
+    # stopped for drawing wrong.
+    #
+    # Holding a lock across execv costs nothing, because the process
+    # image goes and the lock with it. For the same reason the rule in
+    # _store_fault - never extend a _fault_lock hold with an event write
+    # - does not apply here: there is no later contender to starve. If
+    # the exec fails, the finally releases it on the way out.
+    #
+    # Bounded, like _persist_fault_on_exit. If a fault transaction is
+    # already in flight, refusing and being asked again is better than
+    # queueing behind a disk that may be failing.
+    if not _fault_lock.acquire(timeout=2):
+        _log("Restart refused - a fault is being written right now; "
+             "try again in a moment")
         return False
 
+    unsaved = True
+    try:
+        with _state_lock:
+            unsaved = STATE["fault_unsaved"]
+        if not unsaved:
+            _restart_from_here()
+    finally:
+        _fault_lock.release()
+
+    # Only reachable when the restart was refused. A failed exec raises
+    # instead, and restart_loop logs it.
+    _log("Restart refused - the active fault is not saved to disk "
+         "and would be lost")
+    return False
+
+
+def _restart_from_here():
+    """The exec itself. CALLERS MUST HOLD _fault_lock. Does not return."""
     _log("Restarting on request")
     if not flush_hist():
         # Worth saying, not worth refusing over: the graph loses at
@@ -2232,10 +2348,11 @@ def restart_loop():
 
     A file rather than an endpoint on purpose. Basic auth is inactive
     until a UI password is set, so an HTTP route would let anything on
-    the VLAN bounce the controller - and since a restart clears the
-    latches and the lease, repeatedly is a way to stop the room being
-    ventilated. Writing this file needs shell access as the service
-    user, which is already total control.
+    the VLAN bounce the controller. A single restart is now cheap - the
+    timing state is handed over, so it no longer releases latches or the
+    lease - but it still costs a short outage, and nothing rate limits
+    it. Writing this file needs shell access as the service user, which
+    is already total control.
     """
     while True:
         try:

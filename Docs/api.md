@@ -18,6 +18,15 @@ All responses are JSON except `/` and `/signin`.
 | POST | `/api/ui/password` | required | Set or clear the UI password |
 | GET | `/api/debug/sensor` | required | Raw Protect payload for the selected sensor |
 
+Every request body is capped at 8KB and a larger one is rejected with
+413. Nothing here legitimately posts more than a few hundred bytes, and
+`/api/clienterror` stays open even once auth is on, so without a cap one
+LAN device could push arbitrary volume into the journal and
+`events.json`. Repeated identical client errors are also written to the
+activity log at most once a minute, so a script failing in a render loop
+cannot evict the 300 entries of real fan history behind it. The journal
+still gets every report.
+
 "Auth" applies only once a UI password is set; until then every endpoint
 is open. Reading stays open even when auth is on, so a wall display needs
 no credentials. `/api/debug/sensor` is protected because it returns the

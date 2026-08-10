@@ -6,7 +6,10 @@ server {
     listen 80;
     listen [::]:80;
     server_name example.com;
-    return 301 https://$host$request_uri;
+    # The literal name, not $host. $host comes from the request, so a
+    # forged Host header would be handed straight back as a redirect
+    # target. Replace it along with server_name above.
+    return 301 https://example.com$request_uri;
 }
 
 server {

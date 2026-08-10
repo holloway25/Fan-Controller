@@ -3,22 +3,31 @@
     "host": "192.168.1.1",
     "username": "local-unifi-user",
     "password": "",
-    "sensor_id": ""
+    "sensor_id": "",
+    "verify_tls": false
   },
   "plug": {
     "host": "192.168.1.10",
     "user": "admin",
-    "password": ""
+    "password": "",
+    "watts_enabled": false,
+    "watts_min": 15.0,
+    "watts_max": 25.0,
+    "watts_fault_seconds": 60
   },
   "control": {
     "mode": "manual",
     "on_at": 1000,
     "off_at": 700,
-    "poll_seconds": 30,
-    "min_run_minutes": 10,
+    "co2_enabled": true,
     "temp_enabled": false,
     "temp_on": 26.0,
     "temp_off": 24.5,
+    "humidity_enabled": false,
+    "humidity_on": 70.0,
+    "humidity_off": 60.0,
+    "poll_seconds": 30,
+    "min_run_minutes": 10,
     "stale_minutes": 0
   },
   "ui": {

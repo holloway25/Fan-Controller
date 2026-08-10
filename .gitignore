@@ -3,10 +3,10 @@ config.json
 
 # Runtime state and vendored dependencies
 history.json
-history.json.tmp
 events.json
-events.json.tmp
-config.json.tmp
+# Every persister writes through one of these; naming them individually
+# meant fault.json.tmp was missed when the fault file was added.
+*.json.tmp
 *.log
 libs/
 __pycache__/
