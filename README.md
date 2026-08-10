@@ -1,149 +1,15 @@
 # Office Fan Controller
 
 Reads CO2, temperature, humidity and PM2.5 from a UniFi Protect
-UP-AirQuality sensor and switches a fan through a Tasmota smart plug,
-with hysteresis on CO2, temperature or humidity - each an independent
-trigger you can enable on its own. The plug's energy meter confirms the
-fan is actually drawing current. Web UI is served over
-HTTPS by nginx on the same host; Flask itself listens on 127.0.0.1 only.
+UP-AirQuality sensor and switches a fan through a Tasmota smart plug.
+CO2, temperature and humidity are independent triggers, each with its own
+hysteresis, and each can be enabled on its own. The plug's energy meter
+confirms the fan is actually drawing current. Flask listens on
+`127.0.0.1` only; nginx on the same host serves the UI over HTTPS.
 
-    sudo systemctl status office-fan-controller
-    sudo systemctl restart office-fan-controller
+    systemctl status office-fan-controller
     journalctl -u office-fan-controller -f
-
-## Setup
-
-1. In UniFi, create a **local** user with no two-factor. Cloud SSO logins
-   will not work against the private Protect API.
-2. Open the dashboard and fill in the sensor card, then
-   **Find sensors**. Each sensor is listed with its CO2 reading, or
-   "no CO2 field" if Protect is not publishing one.
-3. Open **Fan plug**, enter the plug's address and web password,
-   then **Test plug**. It reports relay state and current draw.
-   The plug's HTTP command API must be enabled.
-4. Set thresholds, then select **Auto** to hand control to them.
-
-## How it switches
-
-Each enabled trigger latches on above its own on level and releases
-below its own off level, and the fan runs while any of them is latched.
-The gap between a rule's two levels prevents short-cycling. A freshly
-started fan is also held on for the minimum run time. Force on overrides
-the thresholds entirely; Manual switches the fan off once and then leaves
-it to Google Home or the plug itself.
-
-Manual and Force on are applied before the sensor is read, so both work
-when the console is down, the payload has stopped resolving, or no sensor
-has been chosen yet - Force on is the override reached for precisely when
-the reading cannot be trusted.
-
-The API refuses any save where the on level is not above the off level,
-since that leaves the fan running forever, and refuses the whole request
-rather than the offending field.
-
-## When it breaks
-
-Protect 7.1's documented API omits air-quality metrics entirely, so this
-reads the private /proxy/protect/api/bootstrap endpoint. That is
-undocumented and can change on any firmware update.
-
-CO2 is found by searching the payload for a numeric field whose key looks
-like CO2, rather than a fixed path, so a rename survives. If it stops
-resolving, open /api/debug/sensor to see the live payload and adjust
-CO2_HINTS in controller.py.
-
-Once Ubiquiti publishes these fields properly, this can be replaced with a
-few lines against the documented API.
-
-## What it does not do
-
-It does not tell you anything. A draw fault stops the fan and keeps it
-stopped until acknowledged, and the only places that is visible are the
-dashboard and the activity log. No email, no push, no alert of any
-kind. Plan to look at it, or plan for the room to be stale by morning.
-
-Email on fault is designed but not built.
-
-## Documentation
-
-- [Docs/architecture.md](Docs/architecture.md) - design, and why the
-  private Protect API is used
-- [Docs/control-logic.md](Docs/control-logic.md) - modes, latching,
-  minimum run time
-- [Docs/configuration.md](Docs/configuration.md) - every setting
-- [Docs/dashboard.md](Docs/dashboard.md) - what the screen shows, and what
-  each colour means
-- [Docs/api.md](Docs/api.md) - HTTP endpoints
-- [Docs/troubleshooting.md](Docs/troubleshooting.md) - known failure modes
-- [deploy/nginx.conf.example](deploy/nginx.conf.example) - reference nginx
-  site config, since Flask binds loopback and needs a proxy
-
-## Hardware
-
-Two targets, both first class:
-
-- **x86-64 Debian or Ubuntu.** What it is developed and run on. The
-  current host is an Ubuntu 26.04 VM with one core and 512MB.
-- **A Raspberry Pi 3B+ on the 64-bit image.** 1.4GHz quad-core
-  Cortex-A53, 1GB. A plain 3B is the same design a little slower and
-  works fine. A 4 or a 5 is more machine than this needs and will run
-  it without complaint - use one if you already have it.
-
-Neither covers the other, and they are tight in different ways:
-
-- **Memory quantity: the VM is smaller.** 512MB against the Pi's 1GB.
-  That is the ceiling to respect.
-- **Speed of every kind: the Pi is slower, and not marginally.** One
-  i5-12500T core is far quicker than a 1.4GHz Cortex-A53, the VM's
-  memory is much faster than LPDDR2 shared with the GPU, and its
-  storage is much faster than an SD card. The Pi's four cores do not
-  close that gap here: this is one process whose threads are mostly
-  idle or blocked on I/O, not parallel work.
-
-So size **memory** against the VM and **time** against the Pi. Startup,
-JSON parsing and anything CPU-bound should be judged on ARM; resident
-memory on the VM. For reference the service sits around 45MB resident
-with four threads, so there is room either way.
-
-None of the timings in this file have been measured on ARM.
-
-On ARM prefer the 64-bit image over the 32-bit one. Both boards are
-ARMv8 so either boots, but arm64 has much better wheel coverage on
-PyPI, which is what you will care about the first time someone adds a
-dependency.
-
-Nothing in the code is architecture specific.
-
-What that target buys you, and what it costs:
-
-- **Python 3.9 to 3.14.** It runs on 3.14 in production today and the
-  source parses cleanly against 3.9, so that is the tested span.
-  Bullseye is 3.9 and Bookworm 3.11, so the Debian floor is the binding
-  one. Adding syntax newer than 3.9 means choosing to drop a Debian
-  release, so do it deliberately.
-- **Four third-party imports** - Flask, Werkzeug, requests, urllib3.
-  All install on ARM without compiling anything. A dependency that
-  needs a toolchain is a much bigger ask here than it looks on a
-  laptop.
-- **A restart is not expensive.** Measured on the x86-64 host,
-  `/api/state` was unavailable for 0.10s and a new process was
-  answering 0.26s after the trigger. A 3B+ is slower to start an
-  interpreter and import Flask, so expect a few seconds there - still
-  an order of magnitude inside `restart.sh`'s 60s timeout. That number
-  has not been measured on ARM.
-- **Disk writes are not a concern.** `history.json` is rewritten whole
-  every 5 minutes: about 55 MB a day, 20 GB a year. That is orders of
-  magnitude below what any current SD card is rated for, high-endurance
-  or otherwise. The SD failure that is worth designing against is
-  corruption from power loss mid-write, and every file here is written
-  to a temporary and renamed over, so a power cut leaves the old file
-  or the new one and never a torn one.
-
-One coupling to remember: `history.json` is parsed at startup, so the
-retention window sets how long starting takes. At the default 24 hours
-and a 30s poll it is around 2,900 points and 190 KB. A week would be
-roughly 1.3 MB, which is still fine on a 3B, but it is the only part of
-startup that grows.
+    ./restart.sh
 
 ## Install
 
@@ -158,17 +24,146 @@ Run it under systemd, editing the paths and user in the unit first:
     sudo cp office-fan-controller.service /etc/systemd/system/
     sudo systemctl enable --now office-fan-controller
 
-`./run.sh` starts it without systemd, using `setsid --fork` so it survives
-an SSH session ending.
+`./run.sh` starts it without systemd, using `setsid --fork` so it
+survives an SSH session ending.
 
-Flask binds `127.0.0.1` only, so nothing reaches it except a reverse proxy
-on the same host. Before that proxy exists, reach the UI for first-time
-setup with an SSH tunnel:
+Flask binds `127.0.0.1` only, so nothing reaches it except a reverse
+proxy on the same host. Before that proxy exists, reach the UI for
+first-time setup with an SSH tunnel:
 
     ssh -L 8096:127.0.0.1:8096 <user>@<server>
 
 then browse to http://127.0.0.1:8096 on your own machine.
 
+## Setup
+
+1. In UniFi, create a **local** user with no two-factor. Cloud SSO
+   logins will not work against the private Protect API.
+2. Open the dashboard, fill in the sensor card, then **Find sensors**.
+   Each sensor is listed with its CO2 reading, or "no CO2 field" if
+   Protect is not publishing one.
+3. Open **Fan plug**, enter the plug's address and web password, then
+   **Test plug**. It reports relay state and current draw. The plug's
+   HTTP command API must be enabled.
+4. Set thresholds, then select **Auto** to hand control to them.
+
+## How it switches
+
+Each enabled trigger latches on above its own on level and releases
+below its own off level, and the fan runs while any of them is latched.
+The gap between a rule's two levels prevents short-cycling, and a
+freshly started fan is held on for the minimum run time. Force on
+overrides the thresholds entirely; Manual switches the fan off once and
+then leaves it to Google Home or the plug itself.
+
+Manual and Force on are applied before the sensor is read, so both work
+when the console is down, the payload has stopped resolving, or no
+sensor has been chosen yet - Force on is the override reached for
+precisely when the reading cannot be trusted.
+
+A missing reading does not release a latch. The room was hot, the sensor
+went quiet, and nothing since suggests it cooled, so releasing would
+stop the fan on the strength of not knowing. A reading that returns
+below the off level releases normally, and a rule that is switched off
+releases immediately either way.
+
+The API refuses any save where the on level is not above the off level,
+since that leaves the fan running forever, and refuses the whole request
+rather than the offending field.
+
+## When it breaks
+
+Protect 7.1's documented API omits air-quality metrics entirely, so this
+reads the private `/proxy/protect/api/bootstrap` endpoint. That is
+undocumented and can change on any firmware update.
+
+CO2 is found by searching the payload for a numeric field whose key
+looks like CO2, rather than a fixed path, so a rename survives. If it
+stops resolving, open `/api/debug/sensor` to see the live payload and
+adjust `CO2_HINTS` in `controller.py`.
+
+Once Ubiquiti publishes these fields properly, this can be replaced with
+a few lines against the documented API.
+
+## What it does not do
+
+It does not tell you anything. A draw fault stops the fan and keeps it
+stopped until acknowledged, and the only places that is visible are the
+dashboard and the activity log. No email, no push, no alert of any kind.
+Plan to look at it, or plan for the room to be stale by morning.
+
+Email on fault is designed but not built.
+
+## Documentation
+
+- [Docs/architecture.md](Docs/architecture.md) - design, and why the
+  private Protect API is used
+- [Docs/control-logic.md](Docs/control-logic.md) - modes, latching,
+  minimum run time
+- [Docs/configuration.md](Docs/configuration.md) - every setting
+- [Docs/dashboard.md](Docs/dashboard.md) - what the screen shows, and
+  what each colour means
+- [Docs/api.md](Docs/api.md) - HTTP endpoints
+- [Docs/troubleshooting.md](Docs/troubleshooting.md) - known failure
+  modes
+- [deploy/nginx.conf.example](deploy/nginx.conf.example) - reference
+  nginx site config, since Flask binds loopback and needs a proxy
+
+## Hardware
+
+Two targets, both first class:
+
+- **x86-64 Debian or Ubuntu.** What it is developed and run on. The
+  current host is an Ubuntu 26.04 VM with one core and 512MB.
+- **A Raspberry Pi 3B+ on the 64-bit image.** 1.4GHz quad-core
+  Cortex-A53, 1GB. A plain 3B is the same design a little slower and
+  works fine; a 4 or a 5 is more machine than this needs and will run it
+  without complaint. Prefer the 64-bit image over the 32-bit one: both
+  boards are ARMv8 so either boots, but arm64 has much better wheel
+  coverage on PyPI, which is what you will care about the first time
+  someone adds a dependency.
+
+Neither covers the other, and they are tight on different axes. The VM
+has half the memory. The Pi is slower at everything - one i5-12500T core
+against a 1.4GHz Cortex-A53 is not a close comparison, and the VM also
+has much faster memory and much faster storage than an SD card. The Pi's
+four cores do not close that gap, because this is one process whose
+threads are mostly idle or blocked on I/O, not parallel work.
+
+**So size memory against the VM and time against the Pi.** Resident
+memory, and anything that accumulates, should be judged on the VM, where
+the service currently sits around 45MB with four threads. Startup, JSON
+parsing and anything CPU-bound should be judged on the Pi. Nothing in
+the code is architecture specific, and none of the measurements below
+have been taken on ARM.
+
+What those targets mean for changes:
+
+- **Python 3.9 to 3.14.** It runs on 3.14 in production today, and the
+  source parses cleanly against 3.9, so that is the tested span. The
+  Debian end is the binding one: Bullseye is 3.9 and Bookworm 3.11.
+  Adding syntax newer than 3.9 means choosing to drop a Debian release,
+  so do it deliberately.
+- **Four third-party imports** - Flask, Werkzeug, requests, urllib3. All
+  install on ARM without compiling anything. A dependency that needs a
+  toolchain is a much bigger ask here than it looks on a laptop.
+- **A restart is cheap.** Measured on x86-64: `/api/state` unavailable
+  for 0.10s, and a new process answering 0.26s after the trigger. A 3B+
+  is slower to start an interpreter and import Flask, so expect a few
+  seconds there - still an order of magnitude inside `restart.sh`'s 60s
+  timeout.
+- **Disk writes are not a concern.** `history.json` is rewritten whole
+  every 5 minutes: about 55MB a day, 20GB a year. That is orders of
+  magnitude below what any current SD card is rated for, high-endurance
+  or otherwise. The SD failure worth designing against is corruption
+  from power loss mid-write, and every file here is written to a
+  temporary and renamed over, so a cut leaves the old file or the new
+  one and never a torn one.
+
+One coupling to remember: `history.json` is parsed at startup, so the
+retention window sets how long starting takes. At the default 24 hours
+and a 30s poll that is around 2,900 points and 190KB; a week would be
+roughly 1.3MB. It is the only part of startup that grows.
 
 ## Upgrading
 
@@ -191,13 +186,14 @@ across it requires exactly that. Verify with:
     systemctl is-active office-fan-controller
     journalctl -u office-fan-controller -n5
 
-The journal reports `Serving Flask app 'controller'`. The name comes from
-the module, so it is the quickest confirmation the new file is running.
+The journal reports `Serving Flask app 'controller'`. The name comes
+from the module, so it is the quickest confirmation the new file is
+running.
 
 Do not run `./run.sh` until the unit is reinstalled. It guards against a
-double start by looking for the running process by name, and a stale unit
-means it will not recognise what is running and will start a second
-instance - two processes driving the same plug and both writing
+double start by looking for the running process by name, and a stale
+unit means it will not recognise what is running and will start a second
+instance - two processes driving the same plug, both writing
 `config.json`.
 
 ## Restarting
@@ -207,8 +203,8 @@ Ask the controller to restart itself. No privilege needed:
     ./restart.sh
 
 It writes `restart.request`, waits for the controller to take it, and
-reports what happened. Doing it by hand is the same thing without the
-reporting:
+proves a new process is answering before reporting success. Doing it by
+hand is the same thing without the checking:
 
     touch restart.request
 
@@ -220,30 +216,30 @@ caught it.
 
 A restart carries the state that exists only in memory - the per-rule
 latches, the minimum-run lease, the draw-fault timer and the
-stale-reading clock - to the replacement process, so a restart does not
+stale-reading clock - across to the replacement process, so it does not
 release a latched fan or short-cycle the motor. That handover rides in
 the environment, which survives `execv` and nothing else, so a crash or
-a `systemctl restart` correctly starts clean instead of resuming a lease
-that expired hours ago.
+a `systemctl restart` correctly starts clean rather than resuming a
+lease that expired hours ago.
 
 **A restart is refused while a fault is live but unsaved.** The
 dashboard shows `Fault not saved to disk` in that state. The fault
-exists only in memory, so a replacement process would load `fault.json`,
-find nothing, and let Auto start a fan that was stopped for drawing
-wrong. `restart.sh` exits 1 and says so. Clear the fault, or fix
-whatever is stopping `fault.json` being written, and try again.
+exists only in memory, so a replacement would load `fault.json`, find
+nothing, and let Auto start a fan that was stopped for drawing wrong.
+`restart.sh` exits 1 and says so. Clear the fault, or fix whatever is
+stopping `fault.json` being written, then try again.
 
 `sudo systemctl restart office-fan-controller` still works and is the
 fallback if the watcher is not running. It cannot refuse: a signalled
-shutdown makes one last attempt to write the fault and then goes ahead
+stop makes one last attempt to write the fault and then goes ahead
 either way. If that attempt fails the journal says so in capitals, and
 the fan will not be held off on the next start - check the draw before
-running it. Prefer `./restart.sh` when the dashboard shows an unsaved
-fault.
+running it. Prefer `./restart.sh` whenever the dashboard shows an
+unsaved fault.
 
 Otherwise restarting is safe: `history.json` is flushed on `SIGTERM`,
-and `config.json`, `events.json` and `fault.json` are untouched. A
-saved draw fault survives deliberately.
+and `config.json`, `events.json` and `fault.json` are untouched. A saved
+draw fault survives deliberately.
 
 ## Tests
 
@@ -254,7 +250,8 @@ against a throwaway directory, so `config.json`, `history.json`,
 `events.json` and `fault.json` are never read or written, and no plug or
 Protect console is contacted. Safe to run against a live install.
 
-- `test_control.py` - `decide()`, the per-rule latches, the min-run lease
+- `test_control.py` - `decide()`, the per-rule latches, the min-run
+  lease
 - `test_data.py` - `_coerce` validation, `prune_hist`, `find_metric`
 - `test_concurrency.py` - the actuation paths under `_act_lock`
 - `test_actuation.py` - `_force_on` and `_enforce_stop`: the mode
@@ -266,34 +263,35 @@ Protect console is contacted. Safe to run against a live install.
 - `test_restart.py` - the restart trigger, the handover, and the
   last-chance fault write on a signalled stop
 - `test_restart_sh.py` - the exit codes `restart.sh` reports, driven
-  against a stub controller: a proved restart, a failed exec, a
-  refusal, an ignored trigger and an unreachable service
+  against a stub controller: a proved restart, a failed exec, a refusal,
+  an ignored trigger and an unreachable service
+
+The concurrency tests gate the interleaving with events rather than
+sleeping. Timing alone does not reproduce these races, and a test that
+only widens the window can pass against code with the lock removed.
 
 Some tests need the deployment host and report `SKIP` elsewhere rather
-than failing, with the count in the summary line so a skip cannot pass
+than failing, with the count on the summary line so a skip cannot pass
 unnoticed:
 
 - one test in `test_restart.py` needs Linux `/proc/self/fd`. It covers
   descriptor inheritance across the `execv`, which is what stopped the
   replacement binding port 8096 the first time.
-- all of `test_restart_sh.py` needs a working `bash`. It is probed by
-  running it, not inferred from the platform: macOS has bash and should
-  run these, while on Windows the name can resolve to a WSL launcher
-  that is present but blocked.
+- all of `test_restart_sh.py` needs a working `bash`. That is probed by
+  running it rather than inferred from the platform: macOS has bash and
+  should run these, while on Windows the name can resolve to a WSL
+  launcher that is present but blocked.
 
 So a green run on Windows does not cover the restart path. Run the suite
 on the host before trusting a restart change.
 
-The concurrency tests gate the interleaving with events rather than
-sleeping. Timing alone does not reproduce these races: `_manual_off` does
-its own plug read, which reorders the stop to land last and hides the bug.
 ## Serving it over HTTPS
 
 Flask binds `127.0.0.1`, so a reverse proxy on the same host is required
 for network access.
 [deploy/nginx.conf.example](deploy/nginx.conf.example) is a working site
-config - copy it to `/etc/nginx/sites-available/`, replace `example.com`,
-and symlink it into `sites-enabled`.
+config - copy it to `/etc/nginx/sites-available/`, replace
+`example.com`, and symlink it into `sites-enabled`.
 
 It expects a certificate at the usual certbot path. Any issuance method
 works; DNS-01 suits a host with no inbound port 80, e.g. with the
@@ -304,10 +302,10 @@ Cloudflare plugin:
       --dns-cloudflare-credentials /etc/letsencrypt/cloudflare.ini \
       -d example.com
 
-Scope the API token narrowly - DNS edit rights on the one zone are enough,
-and a zone-wide token can mint a certificate for any name you host. Add a
-deploy hook so nginx reloads on renewal, or it keeps serving the old
-certificate from memory until it expires:
+Scope the API token narrowly - DNS edit rights on the one zone are
+enough, and a zone-wide token can mint a certificate for any name you
+host. Add a deploy hook so nginx reloads on renewal, or it keeps serving
+the old certificate from memory until it expires:
 
     printf '#!/bin/sh\nsystemctl reload nginx\n' | sudo tee \
       /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh
@@ -315,10 +313,12 @@ certificate from memory until it expires:
 
 ## Authentication
 
-Off by default. Setting a password protects everything that changes state
-while leaving the dashboard readable, so a wall display needs no login:
+Off by default. Setting a password protects everything that changes
+state while leaving the dashboard readable, so a wall display needs no
+login:
 
     curl -X POST https://<your-host>/api/ui/password \
       -H 'Content-Type: application/json' -d '{"password":"..."}'
 
-Post an empty password to disable it again. See Docs/configuration.md.
+Post an empty password to disable it again. See
+[Docs/configuration.md](Docs/configuration.md).
