@@ -3,15 +3,20 @@
 All settings are editable in the web UI and stored in `config.json`
 (mode 0600, never committed). Copy `config.example.json` to start.
 
+Defaults below are what `load_cfg` fills in for a key that is absent, so
+they are also what an older `config.json` reads as after an upgrade.
+`config.example.json` is a starting point rather than a copy of them and
+differs in a few places on purpose.
+
 ## control
 
 | Key | Default | Meaning |
 |---|---|---|
 | `mode` | `auto` | auto / manual / on |
 | `on_at` | 1000 | CO2 ppm that starts the fan |
-| `off_at` | 700 | CO2 ppm that releases it |
+| `off_at` | 800 | CO2 ppm that releases it |
 | `poll_seconds` | 30 | Seconds between readings |
-| `min_run_minutes` | 10 | Minimum run once started |
+| `min_run_minutes` | 5 | Minimum run once started |
 | `co2_enabled` | true | Use CO2 as a trigger. Absent in configs written before this existed, and read as true |
 | `temp_enabled` | false | Use temperature as a trigger |
 | `temp_on` | 26.0 | Degrees C that starts the fan |

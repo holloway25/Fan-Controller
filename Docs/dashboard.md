@@ -104,5 +104,6 @@ scale, so a level the room never reaches is still drawn.
 
 One time axis under both charts: they plot the same window.
 
-History comes from `/api/history`, fetched only when `history_rev`
-changes, not on every poll. See `api.md`.
+History comes from `/api/history`, fetched only when the revision or
+the process generation in `/api/state` differs from the copy held, and
+then usually as a delta rather than the whole trace. See `api.md`.

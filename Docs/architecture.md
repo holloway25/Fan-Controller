@@ -64,26 +64,28 @@ placed in front, the count must change to match or the logged address
 silently reverts to the nearest proxy.
 
 Icons live under /static and are served by Flask directly. nginx also
-compresses application/json, which matters most for /api/history - the
-trace is the one large payload left, and it is fetched only when the
-revision changes rather than on every 5 second poll.
+compresses application/json. That mattered most for `/api/history` when
+it returned the whole trace; it now answers deltas, so the large payload
+is only the first fetch after a restart.
 
 ## Restarting
 
-`restart.request` in the working directory asks the controller to
-restart itself. The watcher takes the trigger, deletes it, and replaces
-the process with `execv`: same PID, unit still active, systemd not
-involved, and no privilege needed. `./restart.sh` wraps that and proves
-it worked. `sudo systemctl restart` remains the fallback.
-
-Two things make this more than a convenience.
+A restart replaces the process with `execv`: same PID, unit still
+active, systemd not involved, and no privilege needed. README.md covers
+how to ask for one; this is why it is shaped that way.
 
 A restart is REFUSED while a fault is live but unsaved. The fault exists
 only in memory, so a replacement would load `fault.json`, find nothing,
-and let Auto start a fan that was stopped for drawing wrong. The
-signalled path cannot refuse - `systemctl restart` sends SIGTERM - so it
-instead makes one last attempt to write the fault, holding `_fault_lock`
-with a bounded wait, and reports to the journal if it still cannot.
+and let Auto start a fan that was stopped for drawing wrong.
+`_fault_lock` is held from that check through the exec, because
+`_store_fault` holds it across both the memory update and the write - so
+without it a restart could land mid-transaction, with the fault live and
+the flag not yet set. Holding a lock across `execv` costs nothing: the
+process image goes and the lock with it.
+
+The signalled path cannot refuse - `systemctl restart` sends SIGTERM -
+so it instead makes one last attempt to write the fault and reports to
+the journal if it still cannot.
 
 The in-memory timing state is HANDED OVER. Latches, the minimum-run
 lease, the draw-fault timer, the stale-reading clock and the original
@@ -160,15 +162,26 @@ cannot extend a hold something else is waiting on.
 - `events.json` - the activity log, written on each entry and reloaded
   at startup so switching history survives a restart. 300 kept, the
   most recent 30 returned to the UI each poll. Not in git.
-- `fault.json` - a latched draw fault. Raised, confirmed and acknowledged
-  as one transaction with the in-memory copy, never as two steps. Persisted rather than held in memory because
-  a restart would otherwise skip the acknowledgement it is waiting for and
-  re-arm a fan already judged faulty. Not in git.
+- `fault.json` - a latched draw fault. Raised, confirmed and
+  acknowledged as one transaction with the in-memory copy, never as two
+  steps. Persisted rather than held in memory because a restart would
+  otherwise skip the acknowledgement it is waiting for and re-arm a fan
+  already judged faulty. Not in git.
+- `manual-off.pending` - a one-time Manual stop that has been promised
+  and not yet made. Written before the mode is committed and removed
+  once the plug confirms the stop, so a crash in between does not leave
+  the fan running in the mode whose purpose is to stop it. Not in git.
+
+`config.json` and `fault.json` are written durably: the file is fsynced
+and then its directory, so the rename survives a power cut rather than
+merely a crash. `history.json` and `events.json` are not - they are
+written far more often, and losing the last few minutes of a graph costs
+a gap in a graph.
 - In-memory only - latch state, the minimum-run lease, the draw-fault
   timer and the stale-reading clock. Deliberately not persisted: after a
   crash or a power cut there is no reason to believe a lease from before
   it. A requested restart is the exception and hands them over; see
-  below.
+  Restarting above.
 
 Fan state is re-read from the plug every poll rather than trusted
 from memory, so switching it from Google Home or the plug itself is

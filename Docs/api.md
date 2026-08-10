@@ -61,19 +61,19 @@ after Manual had already stopped the fan. See `architecture.md`.
 
 ## Why history is a separate endpoint
 
-The trace was ~99% of `/api/state` (188KB of 191KB), and the UI polls that
-every 5 seconds while history only changes once per poll interval. Serving
-it inline meant re-sending and re-parsing 2500 points to redraw an
-unchanged chart, which is real battery cost on a phone left on the
-dashboard.
+The trace was ~99% of `/api/state` (188KB of 191KB), and the UI polls
+that every 5 seconds while history changes once per poll interval.
+Serving it inline meant re-sending and re-parsing thousands of points to
+redraw an unchanged chart - real battery cost on a phone left on the
+dashboard. State is now ~2.4KB.
 
-`/api/state` now carries `history_rev`, a counter bumped whenever the trace
-is appended to or pruned. The client refetches `/api/history` only when the
-value differs from the copy it holds. State dropped to ~2.4KB.
+`/api/state` carries `history_rev`, bumped whenever the trace is
+appended to, and `history_generation`, identifying the process. The
+client refetches only when either differs from the copy it holds.
 
-The response repeats `history_rev` so the client stores the revision it
-actually received. Storing the one it saw in `/api/state` would lose any
-change that landed while the fetch was in flight.
+Responses repeat both, so the client stores what it actually received.
+Storing the revision it saw in `/api/state` would lose a change that
+landed while the fetch was in flight.
 
 ### Deltas
 
@@ -86,11 +86,10 @@ Both parameters are required for a delta. `gen` is the
 
 `history_rev` increases by exactly one per appended point, and pruning
 only ever removes from the front. So a caller is missing `rev - since`
-points and they are the last that many - which is the single property
-the whole endpoint rests on. If either half of it ever stops being true,
-the delta goes silently wrong rather than failing, so `test_history.py`
-drives a simulated client through appends and prunes and compares its
-list against the server's point for point.
+points and they are the last that many - the single property the whole
+endpoint rests on. If either half stops being true the delta goes
+silently wrong rather than failing, which is why `test_history.py`
+compares a simulated client's list against the server's point for point.
 
 | Field | Meaning |
 |---|---|
@@ -101,11 +100,14 @@ list against the server's point for point.
 | `history_rev` | the revision this response was taken at |
 | `history_generation` | which process answered. Send it back as `gen` |
 
-`/api/state` carries `history_generation` as well, and that is what the
-dashboard compares to decide whether to fetch at all. The server refusing
-a cross-generation delta only helps if a request is made, and a tab
-holding a revision the replacement has climbed back to would otherwise
-never make one.
+Why the generation exists: `history_rev` restarts at 1 with the process.
+A dashboard left in a background tab can hold revision 100 from a
+process that no longer exists, and if the replacement climbs back to 100
+the revisions match, nothing refetches, and the next delta is appended
+to a trace from the previous process - a silently spliced graph. So the
+dashboard compares the generation in `/api/state` to decide whether to
+fetch at all, and the server refuses a mismatched delta. Both halves are
+needed: refusing a request only helps if one is made.
 
 `/api/state` also carries `process_started_at`, which `restart.sh` uses
 to prove a restart happened. Both derive from the same instant but are
@@ -123,11 +125,3 @@ because pruning has overtaken them, or a `gen` that does not match the
 process answering. The caller is told which it received rather than
 having to infer it.
 
-`history_rev` restarts at 1 with the process, so it is not by itself
-enough to identify a point in the trace. A dashboard left in a
-background tab can hold revision 100 from a process that no longer
-exists; if the replacement climbs back to 100 before the tab wakes, the
-revisions match, nothing refetches, and the next delta is appended to a
-trace from the previous process - a silently spliced graph. The
-generation makes that impossible, and it is checked server side so a
-client cannot get it wrong.
