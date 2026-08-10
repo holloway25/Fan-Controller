@@ -142,9 +142,16 @@ reappear at the next restart.
 
 ```
 _act_lock   -> _state_lock      five actuation paths
-_fault_lock -> _state_lock      three fault writers
+_fault_lock -> _state_lock      six fault paths, plus the restart check
 _act_lock and _fault_lock are never held together
 ```
+
+The fault paths are: raising one, acknowledging one, confirming the stop,
+the retry after a failed write, the last-chance write on a signalled
+stop, and a requested restart - which takes the lock not to write but to
+stop a restart landing midway through someone else's fault transaction.
+The count grew as those paths were added; if it looks wrong, count
+`_fault_lock` in `controller.py` rather than trusting this line.
 
 `_state_lock` is an RLock because nested acquisition previously deadlocked
 the poll thread. Nothing takes `_act_lock` or `_fault_lock` while holding
