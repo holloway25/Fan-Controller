@@ -89,12 +89,23 @@ Two targets, both first class:
   works fine. A 4 has room to spare. A 5 will run it and is a waste of
   a Pi.
 
-Neither is strictly the smaller machine, which is worth knowing before
-assuming one covers the other. The VM has half the memory of a 3B+ but
-a far faster core; the Pi has more memory and four slower ones. So the
-floor to build against is **512MB and one core**, not either box on its
-own. For reference the service itself sits around 45MB resident with
-four threads, so there is room either way.
+Neither covers the other, and they are tight in different ways:
+
+- **Memory quantity: the VM is smaller.** 512MB against the Pi's 1GB.
+  That is the ceiling to respect.
+- **Speed of every kind: the Pi is slower, and not marginally.** One
+  i5-12500T core is far quicker than a 1.4GHz Cortex-A53, the VM's
+  memory is much faster than LPDDR2 shared with the GPU, and its
+  storage is much faster than an SD card. The Pi's four cores do not
+  close that gap here: this is one process whose threads are mostly
+  idle or blocked on I/O, not parallel work.
+
+So size **memory** against the VM and **time** against the Pi. Startup,
+JSON parsing and anything CPU-bound should be judged on ARM; resident
+memory on the VM. For reference the service sits around 45MB resident
+with four threads, so there is room either way.
+
+None of the timings in this file have been measured on ARM.
 
 On ARM prefer the 64-bit image over the 32-bit one. Both boards are
 ARMv8 so either boots, but arm64 has much better wheel coverage on
