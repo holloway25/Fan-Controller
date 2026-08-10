@@ -20,8 +20,10 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REQ="$DIR/restart.request"
 EVENTS="$DIR/events.json"
 URL="http://127.0.0.1:8096/api/state"
-TAKE_TIMEOUT=15   # seconds to wait for the trigger to be consumed
-BACK_TIMEOUT=60   # seconds to wait for a replacement to answer
+# Overridable so the tests can exercise the failure paths without
+# waiting a minute for each one. Not intended for ordinary use.
+TAKE_TIMEOUT=${RESTART_TAKE_TIMEOUT:-15}  # wait for the trigger to be taken
+BACK_TIMEOUT=${RESTART_BACK_TIMEOUT:-60}  # wait for a replacement to answer
 
 # The process generation. Changes on every start, including an execv.
 # Everything else is circumstantial: the port answering proves nothing,

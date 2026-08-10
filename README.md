@@ -183,7 +183,10 @@ Protect console is contacted. Safe to run against a live install.
 - `test_concurrency.py` - the actuation paths under `_act_lock`
 - `test_failures.py` - persistence errors and malformed request bodies
 - `test_restart.py` - the restart trigger, the handover, and the
-  last-chance fault write on shutdown
+  last-chance fault write on a signalled stop
+- `test_restart_sh.py` - the exit codes `restart.sh` reports, driven
+  against a stub controller: a proved restart, a failed exec, a
+  refusal, an ignored trigger and an unreachable service
 
 `test_restart.py` includes one test that needs Linux `/proc/self/fd` and
 will not run on Windows. It covers descriptor inheritance across the
