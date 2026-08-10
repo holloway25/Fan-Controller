@@ -213,6 +213,18 @@ def _fsync_dir(path):
         os.close(fd)
 
 
+class InstalledNotDurable(OSError):
+    """The new file is in place; the rename may not survive a power cut.
+
+    A subclass of OSError so existing handlers still catch it, but a
+    distinct type because the two failures need OPPOSITE handling. A
+    write that never landed means nothing changed. A write that landed
+    without a durable rename means everything changed - the new file is
+    what a restart will load - so a caller that reports "nothing was
+    changed" would be lying, and the setting would appear later anyway.
+    """
+
+
 def write_json_durable(path, value, mode=0o600, **dump_args):
     """Write JSON so it survives a power cut, not merely a crash.
 
@@ -245,7 +257,13 @@ def write_json_durable(path, value, mode=0o600, **dump_args):
         except OSError:
             pass
         raise
-    _fsync_dir(os.path.dirname(path))
+    try:
+        _fsync_dir(os.path.dirname(path))
+    except OSError as e:
+        # Past this point the new file is already visible under its real
+        # name. Only its durability is in doubt, and saying so is not the
+        # same as saying the write failed.
+        raise InstalledNotDurable("%s (the new file is in place)" % e)
 
 
 def save_cfg(cfg):
@@ -256,11 +274,12 @@ def save_cfg(cfg):
     already moved. The lock is what makes that impossible; this function
     does not defend itself.
     """
-    # 0600 from creation, not chmod after the rename: the temp file holds
-    # the UniFi and plug passwords, and chmod afterwards left a window at
-    # the process umask.
+    # 0600 from creation rather than a chmod after the rename: the temp
+    # file holds the UniFi and plug passwords, and chmod afterwards left
+    # a window at the process umask. os.replace keeps the temp file's
+    # mode, so there is nothing to fix up - and a chmod here would be
+    # one more way to fail AFTER the new file is already in place.
     write_json_durable(CFG_PATH, cfg, mode=0o600, indent=2)
-    os.chmod(CFG_PATH, 0o600)
 
 
 HIST_PATH = os.path.join(DIR, "history.json")
@@ -2086,6 +2105,11 @@ def _api_config_locked():
     if entering_manual:
         try:
             promise_manual_off()
+        except InstalledNotDurable:
+            # The marker is on disk. Not being certain it survives a power
+            # cut is no reason to refuse the mode change: a promise that
+            # is probably there beats no promise at all.
+            pass
         except OSError as e:
             return jsonify(error="Could not record the manual stop (%s). "
                                  "Nothing was changed." % e), 500
@@ -2094,8 +2118,15 @@ def _api_config_locked():
     # reached disk - live behaviour and stored behaviour disagreeing
     # until the next restart silently reverted it. cand is a complete
     # config, so writing it is equivalent to writing the merged CFG.
+    durable = True
     try:
         save_cfg(cand)
+    except InstalledNotDurable:
+        # config.json now HOLDS the new settings, so a restart would
+        # apply them. Refusing here and leaving CFG on the old values
+        # would divide disk from memory and let a change the caller was
+        # told had been rejected take effect later, unannounced.
+        durable = False
     except OSError as e:
         return jsonify(error="Could not save settings (%s). Nothing "
                              "was changed." % e), 500
@@ -2130,6 +2161,11 @@ def _api_config_locked():
             CFG["control"].get("mode") == "auto":
         warn = ("No triggers are enabled, so Auto will not start the fan. "
                 "Only the stale-reading fail-safe can still run it.")
+        notice = "%s %s" % (notice, warn) if notice else warn
+    if not durable:
+        warn = ("Saved and in use, but the disk did not confirm the write "
+                "will survive a power cut. Check free space and the "
+                "filesystem, then save again.")
         notice = "%s %s" % (notice, warn) if notice else warn
     return jsonify(ok=True, config=_safe_cfg(), notice=notice)
 

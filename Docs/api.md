@@ -49,9 +49,19 @@ Every field is coerced and range-checked against a schema before being
 stored, and unknown keys are rejected. State-changing endpoints require an
 `application/json` content type; a form-encoded post returns 415.
 
-A save is all or nothing. One bad field rejects the whole request with a
-400, including sections that were valid, so a post that sets thresholds
-and plug limits together changes neither if the thresholds are refused.
+Validation is all or nothing. One bad field rejects the whole request
+with a 400, including sections that were valid, so a post that sets
+thresholds and plug limits together changes neither if the thresholds
+are refused.
+
+Persistence is reported separately, because "not written" and "written
+but not proven durable" need different answers. A write that never
+landed returns 500 and nothing changed. A write that landed but whose
+directory could not be synced returns 200 with a `notice` saying the
+settings are in use but power-loss durability was not confirmed - the
+file already holds them, so claiming nothing changed would be false and
+the setting would appear at the next restart anyway.
+
 Read the response body rather than assuming a 200.
 
 A save that changes the mode waits for any switch already in progress, so

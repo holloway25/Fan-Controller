@@ -67,9 +67,11 @@ stop the fan on the strength of not knowing. A reading that returns
 below the off level releases normally, and a rule that is switched off
 releases immediately either way.
 
-The API refuses any save where the on level is not above the off level,
-since that leaves the fan running forever, and refuses the whole request
-rather than the offending field.
+The API refuses any save where a rule's on level is not above its off
+level, since that leaves the fan running forever, and refuses the whole
+request rather than the offending field. CO2's levels are checked on
+every save; temperature and humidity only when their trigger is
+enabled.
 
 ## When it breaks
 
@@ -156,9 +158,12 @@ What those targets mean for changes:
   every 5 minutes: about 55MB a day, 20GB a year. That is orders of
   magnitude below what any current SD card is rated for, high-endurance
   or otherwise. The SD failure worth designing against is corruption
-  from power loss mid-write, and every file here is written to a
-  temporary and renamed over, so a cut leaves the old file or the new
-  one and never a torn one.
+  from power loss mid-write. `config.json`, `fault.json` and
+  `manual-off.pending` are written to a temporary, fsynced, renamed, and
+  the directory fsynced after - so a cut leaves the old file or the new
+  one, and the rename itself survives. `history.json` and `events.json`
+  are renamed atomically but not synced: losing their most recent update
+  is accepted, because neither controls the fan.
 
 One coupling to remember: `history.json` is parsed at startup, so the
 retention window sets how long starting takes. At the default 24 hours
@@ -247,8 +252,9 @@ draw fault survives deliberately.
 
 No dependencies beyond the venv. Each module imports `controller.py`
 against a throwaway directory, so `config.json`, `history.json`,
-`events.json` and `fault.json` are never read or written, and no plug or
-Protect console is contacted. Safe to run against a live install.
+`events.json`, `fault.json` and `manual-off.pending` are never read or
+written, and no plug or Protect console is contacted. Safe to run
+against a live install.
 
 - `test_control.py` - `decide()`, the per-rule latches, the min-run
   lease
@@ -267,6 +273,9 @@ Protect console is contacted. Safe to run against a live install.
   an ignored trigger and an unreachable service
 - `test_dashboard.py` - source assertions on `templates/index.html`, for
   the client-side wiring the server's behaviour depends on
+- `test_durability.py` - the durable writes and the Manual stop promise:
+  a failed directory sync reported rather than hidden, and a stop that
+  survives a crash
 
 `test_dashboard.py` needs saying out loud: there is no JavaScript engine
 on the deployment host, so it reads the template rather than running it.
@@ -290,6 +299,8 @@ unnoticed:
   running it rather than inferred from the platform: macOS has bash and
   should run these, while on Windows the name can resolve to a WSL
   launcher that is present but blocked.
+- all of `test_durability.py` needs Linux `O_DIRECTORY`, since every
+  test in it reaches a directory fsync.
 
 So a green run on Windows does not cover the restart path. Run the suite
 on the host before trusting a restart change.

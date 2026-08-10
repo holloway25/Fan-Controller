@@ -16,11 +16,24 @@ def boom(*a, **k):
     raise OSError(5, "Input/output error")
 
 
+def need_dir_sync():
+    """Skip where a directory cannot be opened for syncing.
+
+    Everything in this module reaches _fsync_dir, directly or through a
+    durable write, and that needs O_DIRECTORY. It exists on Linux, which
+    is what this runs on; on a Windows review host these would raise
+    AttributeError and read as failures rather than as untested.
+    """
+    if not hasattr(os, "O_DIRECTORY"):
+        harness.skip("directory fsync needs Linux O_DIRECTORY")
+
+
 # ------------------------------------------------- the manual-off promise
 
 def test_the_promise_is_on_disk_before_manual_is_committed():
     """A crash between the two would otherwise store Manual with the
     stop already forgotten."""
+    need_dir_sync()
     C = harness.load()
     C.CFG["control"]["mode"] = "auto"   # the example config starts manual
     seen = {}
@@ -45,6 +58,7 @@ def test_the_promise_is_on_disk_before_manual_is_committed():
 
 def test_a_promise_that_cannot_be_written_refuses_the_mode_change():
     """No promise and no Manual beats Manual with the promise lost."""
+    need_dir_sync()
     C = harness.load()
     C.CFG["control"]["mode"] = "auto"   # the example config starts manual
     real = C.promise_manual_off
@@ -63,6 +77,7 @@ def test_a_promise_that_cannot_be_written_refuses_the_mode_change():
 
 def test_a_promise_survives_to_the_next_start():
     """The crash case: Manual stored, stop never made."""
+    need_dir_sync()
     C = harness.load()
     C.promise_manual_off()
     C.CFG["control"]["mode"] = "manual"
@@ -72,6 +87,7 @@ def test_a_promise_survives_to_the_next_start():
 
 
 def test_the_promise_is_discharged_only_once_the_plug_confirms():
+    need_dir_sync()
     C = harness.load()
 
     class Plug:
@@ -102,6 +118,7 @@ def test_the_promise_is_discharged_only_once_the_plug_confirms():
 
 def test_a_failed_stop_leaves_the_promise_standing():
     """A stop the plug never confirmed is still owed."""
+    need_dir_sync()
     C = harness.load()
 
     class BrokenPlug:
@@ -153,6 +170,7 @@ def failing_dir_open(C):
 
 def test_the_directory_sync_reports_failure_rather_than_hiding_it():
     """Directly: a sync that cannot happen must raise."""
+    need_dir_sync()
     C = harness.load()
     not_a_directory = os.path.join(C.DIR, "controller.py")
 
@@ -175,6 +193,7 @@ def test_a_fault_is_not_reported_saved_if_the_directory_sync_fails():
     fault_unsaved, and a restart went ahead on a fault that might never
     have reached disk.
     """
+    need_dir_sync()
     C = harness.load()
     real_open, picky = failing_dir_open(C)
     C.os.open = picky
@@ -191,6 +210,7 @@ def test_a_fault_is_not_reported_saved_if_the_directory_sync_fails():
 
 def test_a_restart_is_refused_after_a_failed_directory_sync():
     """The consequence that matters: the fault must not be exec'd away."""
+    need_dir_sync()
     C = harness.load()
     real_open, picky = failing_dir_open(C)
     real_exec = C.os.execv
@@ -217,6 +237,58 @@ def test_a_restart_is_refused_after_a_failed_directory_sync():
     assert not calls, "restarted on a fault that may not be on disk"
     assert result is False, "the restart was not reported as refused"
     return "refused"
+
+
+def test_a_save_that_lands_but_cannot_be_synced_is_not_called_a_failure():
+    """The divided state: file replaced, directory sync failed.
+
+    Reporting "Nothing was changed" while config.json already holds the
+    new settings means a restart applies a change the caller was told
+    had been rejected.
+    """
+    need_dir_sync()
+    C = harness.load()
+    real_open, picky = failing_dir_open(C)
+
+    C.os.open = picky
+    try:
+        r = C.app.test_client().post("/api/config",
+                                     json={"control": {"on_at": 1234}})
+    finally:
+        C.os.open = real_open
+
+    body = r.get_json()
+    assert "Nothing was changed" not in str(body), (
+        "claimed nothing changed: %r" % body)
+    assert r.status_code == 200, "reported a failure: %s" % r.status_code
+    assert "power cut" in (body.get("notice") or ""), (
+        "no warning that durability was not confirmed: %r" % body)
+
+    on_disk = json.load(open(C.CFG_PATH))["control"]["on_at"]
+    assert on_disk == 1234, "the file does not hold the new value"
+    assert C.CFG["control"]["on_at"] == 1234, (
+        "memory kept the old value while disk holds the new one - a "
+        "restart would apply it unannounced")
+    return "applied, and reported as not-durable"
+
+
+def test_a_save_that_never_lands_still_changes_nothing():
+    """The other half: a write that failed BEFORE the replace."""
+    need_dir_sync()
+    C = harness.load()
+    before = C.CFG["control"]["on_at"]
+    real = C.write_json_durable
+    C.write_json_durable = boom
+    try:
+        r = C.app.test_client().post("/api/config",
+                                     json={"control": {"on_at": 1234}})
+    finally:
+        C.write_json_durable = real
+
+    assert r.status_code == 500, "a failed write reported success"
+    assert "Nothing was changed" in r.get_data(as_text=True)
+    assert C.CFG["control"]["on_at"] == before, "memory changed anyway"
+    return "refused, and nothing changed"
 
 
 if __name__ == "__main__":

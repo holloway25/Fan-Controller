@@ -1,7 +1,9 @@
 # Configuration
 
-All settings are editable in the web UI and stored in `config.json`
-(mode 0600, never committed). Copy `config.example.json` to start.
+Settings are stored in `config.json` (mode 0600, never committed). Copy
+`config.example.json` to start. Everything below is editable in the web
+UI except `ui.password_hash`, which is set through the API - see the
+bottom of this file.
 
 Defaults below are what `load_cfg` fills in for a key that is absent, so
 they are also what an older `config.json` reads as after an upgrade.
@@ -29,7 +31,13 @@ differs in a few places on purpose.
 Every rule's on level must be above its off level - `on_at` over
 `off_at`, `temp_on` over `temp_off`, `humidity_on` over `humidity_off`.
 The API rejects a save otherwise, since equal or inverted values leave
-the fan running permanently. Only enabled rules are checked.
+the fan running permanently.
+
+`on_at` and `off_at` are checked on every save whether or not
+`co2_enabled` is set; temperature and humidity are checked only when
+their own trigger is enabled. CO2 is the rule that defaults on and the
+one an upgraded config inherits, so its levels are never allowed to be
+nonsense even while it is switched off.
 
 Disabling every rule is allowed. Auto then has nothing to act on and
 never starts the fan; the save returns a notice saying so, and only the
@@ -151,10 +159,16 @@ stored and the API returns only `SET`. Set it with:
 
 While it is empty there is no authentication at all. Setting it protects
 everything that changes state or exposes internals, while leaving the
-dashboard readable without credentials, so a wall display needs no login.
+dashboard readable without credentials, so a wall display needs no
+login. `POST /api/clienterror` is the one deliberate exception: it stays
+open so a page that cannot load its own script can still report why, and
+it writes to the journal and the activity log. Body size and repeat
+logging are capped in the application; rate limiting it is nginx's job,
+and `deploy/nginx.conf.example` does it.
 
-Open without a password: `GET /`, `GET /api/state`, `GET /static/*` and
-`POST /api/clienterror`. Everything else requires it, including
+Open without a password: `GET /`, `GET /api/state`, `GET /api/history`,
+`GET /static/*` and `POST /api/clienterror`. Everything else requires
+it, including
 `/api/debug/sensor`, which returns the raw Protect payload. Icons are open
 for the same reason the dashboard is: a wall display would otherwise show a
 broken tab icon with no way to authenticate.
@@ -163,8 +177,10 @@ Browsers do not reliably raise the Basic auth dialog for a fetch, so the
 UI opens `/signin` when a save is refused. Authenticate there once and the
 browser caches the credentials. Post an empty password to disable auth.
 
-Basic auth travels over the TLS connection nginx terminates, so it is not
-exposed on the wire. Flask itself binds `127.0.0.1`, so port 8096 is not
-reachable from the network at all and credentials never traverse it. Treat
-the password as access control for a trusted network, not as a hard
-security boundary.
+nginx receives Basic auth over TLS and forwards the `Authorization`
+header to Flask over loopback, so the credentials do cross one plain
+HTTP hop - on the machine itself. They never leave the host and never
+travel the network unencrypted, which is the property that matters.
+Flask binds `127.0.0.1`, so port 8096 is not reachable from the network
+at all. Treat the password as access control for a trusted network, not
+as a hard security boundary.

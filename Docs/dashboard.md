@@ -33,8 +33,9 @@ arriving from it.
 
 Humidity colours the same way once its trigger is enabled, and stays
 neutral while it is off. A glance at the pills answers which inputs are
-live. PM2.5 is recorded and charted but not shown: it drives nothing, so
-a pill for it read as a trigger it is not.
+live. PM2.5 is recorded in the history and returned by the API, but not
+drawn and not given a pill: it drives nothing, so showing it read as a
+trigger it is not.
 
 The wattage pill is the one exception to green meaning monitored. It
 colours by band whenever the fan is running and settled, whether or not

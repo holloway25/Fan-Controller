@@ -57,7 +57,7 @@ it; the private API cannot complete a 2FA challenge.
 
 ## Fan will not stop
 
-Check `latch` in `/api/state`. If both are false, the minimum run timer is
+Check `latch` in `/api/state`. If all three are false, the minimum run timer is
 holding it - see control-logic.md. If one is true, the corresponding
 reading has not yet crossed its off threshold.
 

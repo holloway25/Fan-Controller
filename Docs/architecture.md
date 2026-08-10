@@ -149,16 +149,24 @@ _act_lock and _fault_lock are never held together
 `_state_lock` is an RLock because nested acquisition previously deadlocked
 the poll thread. Nothing takes `_act_lock` or `_fault_lock` while holding
 `_state_lock`, and keeping it that way is what makes the ordering above
-deadlock-free. Disk writes and event logging stay outside both, so they
-cannot extend a hold something else is waiting on.
+deadlock-free.
+
+Ordinary event and history writes stay outside both, so they cannot
+extend a hold something else is waiting on. Two deliberate exceptions:
+fault persistence happens INSIDE `_fault_lock`, because the memory copy
+and `fault.json` are one transaction and splitting them let an
+acknowledgement land in the gap; and a requested restart holds
+`_fault_lock` from its final check through the `execv`, which costs
+nothing because the process image goes and the lock with it.
 
 ## State
 
 - `config.json` - settings, written atomically, mode 0600. Not in git.
 - `history.json` - readings from the last 24 hours, pruned by timestamp so
   the window does not change with the poll interval. Written at most every
-  5 minutes rather than every poll, and flushed on SIGTERM so a restart
-  loses nothing. Not in git.
+  5 minutes rather than every poll, and a flush is attempted on SIGTERM
+  so a restart usually loses nothing - the write can still fail, and
+  says so. Not in git.
 - `events.json` - the activity log, written on each entry and reloaded
   at startup so switching history survives a restart. 300 kept, the
   most recent 30 returned to the UI each poll. Not in git.
@@ -175,8 +183,8 @@ cannot extend a hold something else is waiting on.
 `config.json` and `fault.json` are written durably: the file is fsynced
 and then its directory, so the rename survives a power cut rather than
 merely a crash. `history.json` and `events.json` are not - they are
-written far more often, and losing the last few minutes of a graph costs
-a gap in a graph.
+written far more often, and what is lost is a few minutes of the graph
+or a few lines of the activity log. Neither controls the fan.
 - In-memory only - latch state, the minimum-run lease, the draw-fault
   timer and the stale-reading clock. Deliberately not persisted: after a
   crash or a power cut there is no reason to believe a lease from before
