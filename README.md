@@ -80,34 +80,46 @@ Email on fault is designed but not built.
 
 ## Hardware
 
-The reference target is a Raspberry Pi 3B+ running the 64-bit Raspberry
-Pi OS image. That is the board to size for: a 1.4GHz quad-core
-Cortex-A53 and 1GB of RAM. A plain 3B is the same design a little
-slower and works fine. A 4 has room to spare. A 5 will run it perfectly
-well and is a waste of a Pi - nothing here is short of CPU, memory or
-I/O two generations back.
+Two targets, both first class:
 
-Prefer the 64-bit image over the 32-bit one. Both boards are ARMv8 so
-either boots, but arm64 has much better wheel coverage on PyPI, which
-is what you will care about the first time someone adds a dependency.
-It costs a little more RAM, which is affordable in 1GB for a process
-this size.
+- **x86-64 Debian or Ubuntu.** What it is developed and run on. The
+  current host is an Ubuntu 26.04 VM with one core and 512MB.
+- **A Raspberry Pi 3B+ on the 64-bit image.** 1.4GHz quad-core
+  Cortex-A53, 1GB. A plain 3B is the same design a little slower and
+  works fine. A 4 has room to spare. A 5 will run it and is a waste of
+  a Pi.
+
+Neither is strictly the smaller machine, which is worth knowing before
+assuming one covers the other. The VM has half the memory of a 3B+ but
+a far faster core; the Pi has more memory and four slower ones. So the
+floor to build against is **512MB and one core**, not either box on its
+own. For reference the service itself sits around 45MB resident with
+four threads, so there is room either way.
+
+On ARM prefer the 64-bit image over the 32-bit one. Both boards are
+ARMv8 so either boots, but arm64 has much better wheel coverage on
+PyPI, which is what you will care about the first time someone adds a
+dependency.
+
+Nothing in the code is architecture specific.
 
 What that target buys you, and what it costs:
 
-- **Python 3.9 or newer.** The source parses cleanly against 3.9, so
-  Bullseye works, and 3.11 on Bookworm is the realistic floor. If you
-  add syntax newer than 3.9, you are choosing to drop a Debian release,
-  so do it deliberately.
+- **Python 3.9 to 3.14.** It runs on 3.14 in production today and the
+  source parses cleanly against 3.9, so that is the tested span.
+  Bullseye is 3.9 and Bookworm 3.11, so the Debian floor is the binding
+  one. Adding syntax newer than 3.9 means choosing to drop a Debian
+  release, so do it deliberately.
 - **Four third-party imports** - Flask, Werkzeug, requests, urllib3.
   All install on ARM without compiling anything. A dependency that
   needs a toolchain is a much bigger ask here than it looks on a
   laptop.
-- **A restart is not expensive.** Measured on the development host,
+- **A restart is not expensive.** Measured on the x86-64 host,
   `/api/state` was unavailable for 0.10s and a new process was
-  answering 0.26s after the trigger. A 3B is slower to start an
-  interpreter and import Flask, so expect a few seconds - still an
-  order of magnitude inside `restart.sh`'s 60s timeout.
+  answering 0.26s after the trigger. A 3B+ is slower to start an
+  interpreter and import Flask, so expect a few seconds there - still
+  an order of magnitude inside `restart.sh`'s 60s timeout. That number
+  has not been measured on ARM.
 - **Disk writes are not a concern.** `history.json` is rewritten whole
   every 5 minutes: about 55 MB a day, 20 GB a year. That is orders of
   magnitude below what any current SD card is rated for, high-endurance
