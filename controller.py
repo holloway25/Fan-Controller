@@ -228,10 +228,11 @@ class InstalledNotDurable(OSError):
 def write_json_durable(path, value, mode=0o600, **dump_args):
     """Write JSON so it survives a power cut, not merely a crash.
 
-    Used for config.json and fault.json ONLY. Both are small, written
-    rarely, and losing either has consequences a user cannot see: a
-    fault that vanishes lets Auto start a fan already judged faulty, and
-    a lost config silently reverts thresholds.
+    Used for config.json, fault.json and manual-off.pending. All three
+    are small, written rarely, and losing any of them has consequences a
+    user cannot see: a fault that vanishes lets Auto start a fan already
+    judged faulty, a lost config silently reverts thresholds, and a lost
+    promise leaves a fan running in Manual.
 
     NOT used for history.json or events.json. They are written far more
     often - history every HIST_FLUSH_SECONDS - and an fsync of 190KB on
@@ -374,7 +375,15 @@ def save_fault(f):
             # The unlink needs committing too, or a fault acknowledged
             # just before a power cut comes back on the next start and
             # holds the fan off with nothing to explain why.
-            _fsync_dir(os.path.dirname(FAULT_PATH))
+            try:
+                _fsync_dir(os.path.dirname(FAULT_PATH))
+            except OSError as e:
+                # The file is gone but the removal may not survive. Same
+                # shape as a write that landed without a durable rename,
+                # and it gets the same distinct type so the caller can
+                # tell it apart from "the delete failed".
+                raise InstalledNotDurable(
+                    "%s (the fault file is already removed)" % e)
         return
     write_json_durable(FAULT_PATH, f, mode=0o600)
 
@@ -531,12 +540,19 @@ def flush_hist(signum=None, frame=None):
     """Persist on shutdown so batching never costs a restart's samples."""
     if signum is not None:
         # Before the history write, which can be 20,000 points against a
-        # shutdown deadline. The fault matters more than the graph.
+        # stop deadline. The fault matters more than the graph.
         _persist_fault_on_exit()
     with _state_lock:
         snapshot = list(STATE["history"])
     ok = maybe_save_hist(snapshot, force=True)
     if signum is not None:
+        if not ok:
+            # Said out loud rather than swallowed: the graph will have a
+            # gap and nothing else would ever mention it. stderr because
+            # this is a signal handler and _log takes a lock.
+            print("History could not be written on the way out; the trace "
+                  "will be missing its most recent points.",
+                  file=sys.stderr, flush=True)
         sys.exit(0)
     return ok
 
@@ -1293,6 +1309,16 @@ def _clear_fault():
             return None, True
         try:
             save_fault(None)
+        except InstalledNotDurable:
+            # The file is gone, so the fault is no longer on disk - but
+            # it is still live in memory and the removal is not proven.
+            # Flagging it unsaved is what keeps a restart from exec'ing
+            # away a fault that fault.json can no longer vouch for. The
+            # retry loop rewrites it, and the acknowledgement has to be
+            # made again once the disk is healthy.
+            with _state_lock:
+                STATE["fault_unsaved"] = True
+            return had, False
         except OSError:
             return had, False
         with _state_lock:
@@ -1845,14 +1871,24 @@ def api_ui_password():
         cand["ui"]["password_hash"] = set_ui_password(pw) if pw else ""
         # Persisted before it goes live, so a failed write cannot leave
         # authentication changed only in memory.
+        durable = True
         try:
             save_cfg(cand)
+        except InstalledNotDurable:
+            # config.json already holds the new hash. Leaving CFG on the
+            # old one would divide disk from memory, and for this route
+            # that means a restart silently turning authentication off
+            # after the caller was told nothing had changed.
+            durable = False
         except OSError as e:
             return jsonify(error="Could not save the password (%s). "
                                  "Nothing was changed." % e), 500
         CFG["ui"] = cand["ui"]
     _log("UI password %s" % ("set" if pw else "cleared"))
-    return jsonify(ok=True, enabled=bool(pw))
+    notice = None if durable else (
+        "The password change is active, but the disk did not confirm it "
+        "will survive a power cut. Check the filesystem and set it again.")
+    return jsonify(ok=True, enabled=bool(pw), notice=notice)
 
 
 @app.route("/signin")
@@ -2105,14 +2141,19 @@ def _api_config_locked():
     if entering_manual:
         try:
             promise_manual_off()
-        except InstalledNotDurable:
-            # The marker is on disk. Not being certain it survives a power
-            # cut is no reason to refuse the mode change: a promise that
-            # is probably there beats no promise at all.
-            pass
         except OSError as e:
-            return jsonify(error="Could not record the manual stop (%s). "
-                                 "Nothing was changed." % e), 500
+            # InstalledNotDurable is NOT excused here, unlike a config
+            # save. This marker exists for exactly one failure - a power
+            # cut between committing Manual and making the stop - so a
+            # marker that "probably" survives a power cut is not a
+            # property worth having. If the mode write then IS durable,
+            # the pair is worse than either alone: Manual stored with
+            # nothing owed, and a fan left running in the mode whose
+            # purpose is to stop it. A marker left behind by a refused
+            # change is harmless; startup only honours one while the
+            # stored mode is Manual.
+            return jsonify(error="Could not durably record the manual "
+                                 "stop (%s). Nothing was changed." % e), 500
     # Persist BEFORE committing. The reverse order left a failed write
     # returning 500 while the controller ran on settings that never
     # reached disk - live behaviour and stored behaviour disagreeing

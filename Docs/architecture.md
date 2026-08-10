@@ -142,7 +142,7 @@ reappear at the next restart.
 
 ```
 _act_lock   -> _state_lock      five actuation paths
-_fault_lock -> _state_lock      six fault paths, plus the restart check
+_fault_lock -> _state_lock      six paths, including the restart check
 _act_lock and _fault_lock are never held together
 ```
 
@@ -172,8 +172,8 @@ nothing because the process image goes and the lock with it.
 - `history.json` - readings from the last 24 hours, pruned by timestamp so
   the window does not change with the poll interval. Written at most every
   5 minutes rather than every poll, and a flush is attempted on SIGTERM
-  so a restart usually loses nothing - the write can still fail, and
-  says so. Not in git.
+  so a restart usually loses nothing. That write can still fail, and
+  says so in the journal rather than leaving an unexplained gap. Not in git.
 - `events.json` - the activity log, written on each entry and reloaded
   at startup so switching history survives a restart. 300 kept, the
   most recent 30 returned to the UI each poll. Not in git.

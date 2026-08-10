@@ -1,15 +1,20 @@
 # Reference nginx site for the fan controller.
-# Copy to /etc/nginx/sites-available/, replace example.com, and symlink
-# into sites-enabled. Flask must be bound to 127.0.0.1 (it is by default).
+# Copy to /etc/nginx/sites-available/, replace example.com, symlink into
+# sites-enabled, then:
 #
-# This line belongs in the http context, so it goes in nginx.conf rather
-# than here - a limit_req_zone inside a server block will not load:
+#     sudo nginx -t && sudo systemctl reload nginx
 #
-#     limit_req_zone $binary_remote_addr zone=client_errors:1m rate=5r/m;
+# Flask must be bound to 127.0.0.1 (it is by default).
+
+# Here rather than in nginx.conf. Debian and Ubuntu include
+# sites-enabled from the http context, so the top of this file IS http
+# context and the zone loads with the site - which means the file works
+# as copied. It would not load inside a server block below.
 #
-# It is what makes the rate limit below work. Without it, nginx refuses
-# to start rather than silently skipping the limit, so a missing zone is
-# noisy rather than quiet.
+# The rate limit further down references it by name. If the zone is
+# missing nginx refuses to start rather than skipping the limit quietly,
+# so a mistake here is loud.
+limit_req_zone $binary_remote_addr zone=client_errors:1m rate=5r/m;
 
 server {
     listen 80;

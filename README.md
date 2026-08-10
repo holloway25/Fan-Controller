@@ -274,8 +274,9 @@ against a live install.
 - `test_dashboard.py` - source assertions on `templates/index.html`, for
   the client-side wiring the server's behaviour depends on
 - `test_durability.py` - the durable writes and the Manual stop promise:
-  a failed directory sync reported rather than hidden, and a stop that
-  survives a crash
+  a failed directory sync reported rather than hidden, a stop that
+  survives a crash, and the routes that must not claim nothing changed
+  when the file on disk already did
 
 `test_dashboard.py` needs saying out loud: there is no JavaScript engine
 on the deployment host, so it reads the template rather than running it.
@@ -311,7 +312,13 @@ Flask binds `127.0.0.1`, so a reverse proxy on the same host is required
 for network access.
 [deploy/nginx.conf.example](deploy/nginx.conf.example) is a working site
 config - copy it to `/etc/nginx/sites-available/`, replace
-`example.com`, and symlink it into `sites-enabled`.
+`example.com`, symlink it into `sites-enabled`, then check and apply it:
+
+    sudo nginx -t && sudo systemctl reload nginx
+
+It declares its own `limit_req_zone` at the top of the file, which works
+because Debian and Ubuntu include `sites-enabled` from the http context.
+No edit to `nginx.conf` is needed.
 
 It expects a certificate at the usual certbot path. Any issuance method
 works; DNS-01 suits a host with no inbound port 80, e.g. with the

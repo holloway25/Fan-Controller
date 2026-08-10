@@ -4,6 +4,7 @@ makes a fault's durability honest.
 Both are about a failure nobody sees at the time: a fan left running in
 Manual after a power cut, and a fault reported saved that was not.
 """
+import base64
 import json
 import os
 import sys
@@ -289,6 +290,155 @@ def test_a_save_that_never_lands_still_changes_nothing():
     assert "Nothing was changed" in r.get_data(as_text=True)
     assert C.CFG["control"]["on_at"] == before, "memory changed anyway"
     return "refused, and nothing changed"
+
+
+def test_a_clear_that_cannot_be_synced_keeps_the_fault_live():
+    """Acknowledging a fault deletes the file, then syncs the directory.
+
+    If that sync fails the file is already gone, so fault.json can no
+    longer vouch for the fault - but it is still live in memory. Without
+    flagging it unsaved, the restart guard sees a clean flag, execs, and
+    the replacement loads no fault at all: Auto is free to run a fan
+    that was stopped for drawing wrong.
+    """
+    need_dir_sync()
+    C = harness.load()
+    with C._state_lock:
+        C.STATE["fault"] = {"msg": "draw fault", "stopped": True}
+        C.STATE["fault_unsaved"] = False
+    C.save_fault(C.STATE["fault"])
+
+    real_open, picky = failing_dir_open(C)
+    C.os.open = picky
+    try:
+        had, ok = C._clear_fault()
+    finally:
+        C.os.open = real_open
+
+    assert had is not None, "there was no fault to clear"
+    assert ok is False, "reported the acknowledgement as successful"
+    assert C.STATE["fault"] is not None, "the fault was cleared anyway"
+    assert C.STATE["fault_unsaved"] is True, (
+        "the fault is live and no longer on disk, but was not flagged - "
+        "a restart would exec it away")
+    return "still live, and flagged"
+
+
+def test_a_restart_is_refused_after_a_clear_that_could_not_be_synced():
+    """The consequence the flag exists for."""
+    need_dir_sync()
+    C = harness.load()
+    with C._state_lock:
+        C.STATE["fault"] = {"msg": "draw fault", "stopped": True}
+        C.STATE["fault_unsaved"] = False
+    C.save_fault(C.STATE["fault"])
+
+    real_open, picky = failing_dir_open(C)
+    C.os.open = picky
+    try:
+        C._clear_fault()
+    finally:
+        C.os.open = real_open
+
+    real_exec = C.os.execv
+    calls = []
+
+    def fake_exec(*a, **k):
+        calls.append(a)
+        raise AssertionError("exec should not have been reached")
+
+    C.os.execv = fake_exec
+    try:
+        result = C._restart_now()
+    finally:
+        C.os.execv = real_exec
+
+    assert not calls, "restarted with a fault that is no longer on disk"
+    assert result is False, "the restart was not reported as refused"
+    return "refused"
+
+
+def test_an_undurable_manual_promise_refuses_the_mode_change():
+    """This marker exists for exactly one failure: a power cut.
+
+    So a promise that only probably survives a power cut is not a
+    promise. Refusing costs a retry; accepting risks Manual stored with
+    nothing owed and the fan still running.
+    """
+    need_dir_sync()
+    C = harness.load()
+    C.CFG["control"]["mode"] = "auto"
+    real_open, picky = failing_dir_open(C)
+
+    C.os.open = picky
+    try:
+        r = C.app.test_client().post("/api/config",
+                                     json={"control": {"mode": "manual"}})
+    finally:
+        C.os.open = real_open
+
+    assert r.status_code == 500, "accepted an unconfirmed promise"
+    assert "Nothing was changed" in r.get_data(as_text=True)
+    assert C.CFG["control"]["mode"] != "manual", "Manual was committed"
+    return "refused, and Manual not stored"
+
+
+def test_a_password_change_that_lands_but_is_not_synced_is_not_denied():
+    """The password route had the same divided state as /api/config.
+
+    Disabling authentication is the case that matters: the file already
+    holds the empty hash, so a restart turns auth off - after the caller
+    was told nothing had changed.
+    """
+    need_dir_sync()
+    C = harness.load()
+    C.CFG["ui"]["password_hash"] = C.set_ui_password("initial-password")
+    # Setting a password turns auth on, so this route now needs it. Only
+    # the password is checked; the username is ignored.
+    creds = base64.b64encode(b"x:initial-password").decode()
+    auth = {"Authorization": "Basic %s" % creds}
+
+    real_open, picky = failing_dir_open(C)
+    C.os.open = picky
+    try:
+        r = C.app.test_client().post("/api/ui/password",
+                                     json={"password": ""}, headers=auth)
+    finally:
+        C.os.open = real_open
+
+    body = r.get_json()
+    assert r.status_code == 200, "reported a failure: %s" % r.status_code
+    assert "Nothing was changed" not in str(body), body
+    assert "power cut" in (body.get("notice") or ""), (
+        "no warning that durability was not confirmed: %r" % body)
+    assert C.CFG["ui"]["password_hash"] == "", (
+        "memory still has authentication on while the file has it off - "
+        "a restart would disable it unannounced")
+    return "applied, and reported as not-durable"
+
+
+def test_setting_a_password_that_is_not_synced_is_also_not_denied():
+    """The enabling direction. No auth needed yet - there is no password."""
+    need_dir_sync()
+    C = harness.load()
+    C.CFG["ui"]["password_hash"] = ""
+
+    real_open, picky = failing_dir_open(C)
+    C.os.open = picky
+    try:
+        r = C.app.test_client().post("/api/ui/password",
+                                     json={"password": "a-long-password"})
+    finally:
+        C.os.open = real_open
+
+    body = r.get_json()
+    assert r.status_code == 200, "reported a failure: %s" % r.status_code
+    assert body.get("enabled") is True, body
+    assert "power cut" in (body.get("notice") or ""), (
+        "no durability warning: %r" % body)
+    assert C.CFG["ui"]["password_hash"] != "", (
+        "memory has auth off while the file has it on")
+    return "enabled, and reported as not-durable"
 
 
 if __name__ == "__main__":
