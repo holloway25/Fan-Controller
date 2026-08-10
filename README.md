@@ -188,11 +188,20 @@ Protect console is contacted. Safe to run against a live install.
   against a stub controller: a proved restart, a failed exec, a
   refusal, an ignored trigger and an unreachable service
 
-`test_restart.py` includes one test that needs Linux `/proc/self/fd` and
-will not run on Windows. It covers descriptor inheritance across the
-`execv`, which is what stopped the replacement binding port 8096 the
-first time - so run the suite on the deployment host before trusting a
-restart change.
+Some tests need the deployment host and report `SKIP` elsewhere rather
+than failing, with the count in the summary line so a skip cannot pass
+unnoticed:
+
+- one test in `test_restart.py` needs Linux `/proc/self/fd`. It covers
+  descriptor inheritance across the `execv`, which is what stopped the
+  replacement binding port 8096 the first time.
+- all of `test_restart_sh.py` needs a working `bash`. It is probed by
+  running it, not inferred from the platform: macOS has bash and should
+  run these, while on Windows the name can resolve to a WSL launcher
+  that is present but blocked.
+
+So a green run on Windows does not cover the restart path. Run the suite
+on the host before trusting a restart change.
 
 The concurrency tests gate the interleaving with events rather than
 sleeping. Timing alone does not reproduce these races: `_manual_off` does

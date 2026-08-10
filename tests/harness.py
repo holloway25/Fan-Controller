@@ -19,6 +19,20 @@ import tempfile
 
 _LOADED = []
 
+
+class Skip(Exception):
+    """Raised by a test that cannot run in this environment.
+
+    Not a failure. Some tests need things that only exist on the
+    deployment host - /proc/self/fd, a working bash - and failing them
+    on a review machine teaches people to ignore a red line, which is
+    worse than not running them.
+    """
+
+
+def skip(reason):
+    raise Skip(reason)
+
 SRC = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -48,12 +62,18 @@ def load():
 def run(namespace):
     """Run every test_* callable in a module namespace."""
     failures = 0
+    skipped = 0
     for name, fn in sorted(namespace.items()):
         if not name.startswith("test_") or not callable(fn):
             continue
         try:
             detail = fn()
             print("PASS  %s%s" % (name, "  (%s)" % detail if detail else ""))
+        except Skip as exc:
+            # Counted as neither pass nor failure, and named so that a
+            # suite run somewhere unusual says what it did not cover.
+            skipped += 1
+            print("SKIP  %s: %s" % (name, exc))
         except AssertionError as exc:
             failures += 1
             print("FAIL  %s: %s" % (name, exc))
@@ -64,5 +84,7 @@ def run(namespace):
             # against older code.
             failures += 1
             print("ERROR %s: %s: %s" % (name, type(exc).__name__, exc))
-    print("\n%d failed" % failures if failures else "\nall passed")
+    tail = " (%d skipped)" % skipped if skipped else ""
+    print("\n%d failed%s" % (failures, tail) if failures
+          else "\nall passed%s" % tail)
     return 1 if failures else 0

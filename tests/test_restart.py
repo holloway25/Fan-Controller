@@ -105,6 +105,8 @@ def test_open_sockets_do_not_survive_the_exec():
     the replacement process inherits a socket already bound to 8096
     and dies with "Address already in use".
     """
+    if not os.path.isdir("/proc/self/fd"):
+        harness.skip("needs Linux /proc/self/fd; run this on the host")
     C = harness.load()
     s = socket.socket()
     try:

@@ -74,8 +74,31 @@ def sandbox(action="", gen="1000", down=False):
     return box
 
 
+_BASH = None
+
+
+def _need_bash():
+    """Skip unless bash actually runs here.
+
+    Probed rather than inferred from the platform. macOS has bash and
+    should run these; on Windows the name may resolve to a WSL launcher
+    that is present but blocked, so finding it on PATH proves nothing.
+    """
+    global _BASH
+    if _BASH is None:
+        try:
+            _BASH = subprocess.run(["bash", "-c", "exit 0"],
+                                   capture_output=True,
+                                   timeout=15).returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            _BASH = False
+    if not _BASH:
+        harness.skip("needs a working bash; restart.sh is a shell script")
+
+
 def run(box, start_watcher=True):
     """Run restart.sh in the sandbox and return the completed process."""
+    _need_bash()
     env = dict(os.environ)
     env["PATH"] = os.path.join(box, "bin") + os.pathsep + env["PATH"]
     env["RESTART_TAKE_TIMEOUT"] = "3"
