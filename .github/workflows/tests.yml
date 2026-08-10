@@ -40,8 +40,13 @@ jobs:
       # step. A green build that cannot go red is worse than no build.
       - name: run the suite
         run: |
+          # set +e around the run, or `bash -e` aborts the moment the
+          # suite exits non-zero and the cat below never happens - a red
+          # build with nothing on screen to say what failed.
+          set +e
           python tests/run_all.py > out.txt 2>&1
           status=$?
+          set -e
           cat out.txt
           exit $status
 
