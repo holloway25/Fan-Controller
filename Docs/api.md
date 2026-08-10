@@ -7,7 +7,7 @@ All responses are JSON except `/` and `/signin`.
 |---|---|---|---|
 | GET | `/` | open | Web UI |
 | GET | `/api/state` | open | Readings, fan state, latches, events, config, `history_rev` |
-| GET | `/api/history` | open | The 24h trace, with the `history_rev` it was taken at |
+| GET | `/api/history` | open | The 24h trace, or a delta with `?since=REV`, and the `history_rev` it was taken at |
 | POST | `/api/clienterror` | open | Browser JS errors, logged server side |
 | GET | `/static/*` | open | Icons: browser tab and iOS home screen |
 | GET | `/signin` | required | Empty page whose only job is to raise the browser auth prompt |
@@ -65,3 +65,35 @@ value differs from the copy it holds. State dropped to ~2.4KB.
 The response repeats `history_rev` so the client stores the revision it
 actually received. Storing the one it saw in `/api/state` would lose any
 change that landed while the fetch was in flight.
+
+### Deltas
+
+`GET /api/history?since=REV` returns only what the caller is missing.
+Measured on the live service: **135 bytes against 189,857** for one
+poll's worth of new data.
+
+`history_rev` increases by exactly one per appended point, and pruning
+only ever removes from the front. So a caller is missing `rev - since`
+points and they are the last that many - which is the single property
+the whole endpoint rests on. If either half of it ever stops being true,
+the delta goes silently wrong rather than failing, so `test_history.py`
+drives a simulated client through appends and prunes and compares its
+list against the server's point for point.
+
+| Field | Meaning |
+|---|---|
+| `full` | `true` if the whole trace was sent, `false` for a delta |
+| `history` | the whole trace. Only present when `full` is `true` |
+| `add` | points appended since `since`. Only present when `full` is `false` |
+| `first_t` | timestamp of the oldest point still held |
+| `history_rev` | the revision this response was taken at |
+
+Removals are not listed. `first_t` is the oldest point still held, and
+the caller drops anything older - which describes a prune of any size,
+including one that happened while the caller was away, in one number.
+
+A full copy is sent whenever the delta reasoning does not hold: no
+`since`, one that will not parse, a caller ahead of the server (which is
+what a restart looks like, since the counter starts again), or more
+points missing than are still held because pruning has overtaken them.
+The caller is told which it received rather than having to infer it.

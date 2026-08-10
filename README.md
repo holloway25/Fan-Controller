@@ -191,6 +191,8 @@ Protect console is contacted. Safe to run against a live install.
 - `test_data.py` - `_coerce` validation, `prune_hist`, `find_metric`
 - `test_concurrency.py` - the actuation paths under `_act_lock`
 - `test_failures.py` - persistence errors and malformed request bodies
+- `test_history.py` - `/api/history` deltas, including the round trip
+  that proves a client ends up holding exactly what the server holds
 - `test_restart.py` - the restart trigger, the handover, and the
   last-chance fault write on a signalled stop
 - `test_restart_sh.py` - the exit codes `restart.sh` reports, driven
