@@ -170,6 +170,35 @@ Email on fault is designed but not built. The design, the relay it will
 use and what remains to be settled are in the handoff notes, which are
 deliberately outside this repository.
 
+## "Saved and in use, but the disk did not confirm..."
+
+The settings were applied and are live. The file on disk already holds
+them, so a restart will keep them. What could not be confirmed is that
+the rename survives a power cut - the write landed, the directory sync
+that commits it did not.
+
+Nothing is broken and nothing needs undoing. Save again once the disk is
+healthy and the notice goes away. The same message can appear when
+setting or clearing the UI password, for the same reason.
+
+If it persists, the filesystem is the place to look:
+
+    df -h .
+    dmesg | tail -20
+    touch testfile && rm testfile
+
+A full disk, a read-only remount after an I/O error, or a failing SD
+card all produce it. The fan keeps running on the settings you saved
+either way - this is about what survives a power cut, not about what is
+in force now.
+
+Two related states are NOT this and are worth telling apart:
+
+- `Could not save settings ... Nothing was changed` means the write
+  never landed. Nothing was applied.
+- `Fault not saved to disk` on the dashboard is about a draw fault
+  rather than settings, and it blocks restarts. See below.
+
 ## Fan stopped with a draw fault
 
 Power monitoring was enabled and the draw sat outside `watts_min` to

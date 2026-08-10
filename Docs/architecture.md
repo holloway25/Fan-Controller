@@ -150,8 +150,11 @@ The fault paths are: raising one, acknowledging one, confirming the stop,
 the retry after a failed write, the last-chance write on a signalled
 stop, and a requested restart - which takes the lock not to write but to
 stop a restart landing midway through someone else's fault transaction.
-The count grew as those paths were added; if it looks wrong, count
-`_fault_lock` in `controller.py` rather than trusting this line.
+The count grew as those paths were added; if it looks wrong, count the
+ACQUISITIONS in `controller.py` - `with _fault_lock` and
+`_fault_lock.acquire` - rather than trusting this line. A plain grep for
+the name returns seven, because `_persist_fault_locked` mentions it in a
+docstring to say its caller already holds it.
 
 `_state_lock` is an RLock because nested acquisition previously deadlocked
 the poll thread. Nothing takes `_act_lock` or `_fault_lock` while holding

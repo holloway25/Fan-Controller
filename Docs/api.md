@@ -65,6 +65,12 @@ settings are in use but power-loss durability was not confirmed - the
 file already holds them, so claiming nothing changed would be false and
 the setting would appear at the next restart anyway.
 
+`POST /api/ui/password` behaves the same way and returns `notice` for
+the same reason. Disabling authentication is the case that makes it
+matter: the file would already hold the empty hash, so a restart would
+turn authentication off after the caller had been told nothing
+changed.
+
 Read the response body rather than assuming a 200.
 
 A save that changes the mode waits for any switch already in progress, so
