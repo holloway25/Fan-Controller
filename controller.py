@@ -767,14 +767,15 @@ def _clients():
 # written rather than a decision. All three now hold. See decide().
 RULES = (
     {"key": "co2", "reading": "co2", "flag": "co2_enabled",
-     "on": "on_at", "off": "off_at", "default": True,
+     "on": "on_at", "off": "off_at", "default": True, "label": "CO2",
      "fmt": lambda v: "%d ppm" % round(v)},
     {"key": "temp", "reading": "temperature", "flag": "temp_enabled",
      "on": "temp_on", "off": "temp_off", "default": False,
+     "label": "temperature",
      "fmt": lambda v: "%.1f C" % v},
     {"key": "humidity", "reading": "humidity",
      "flag": "humidity_enabled", "on": "humidity_on",
-     "off": "humidity_off", "default": False,
+     "off": "humidity_off", "default": False, "label": "humidity",
      "fmt": lambda v: "%.0f%% RH" % v},
 )
 
@@ -842,8 +843,15 @@ def decide(co2, temp, fan_on, c, ran_for, latch, fault=None,
     if want == bool(fan_on):
         return (True, None) if want else (False, None)
     if want:
-        why = [r["fmt"](readings[r["key"]]) for r in RULES
-               if latch.get(r["key"]) and readings.get(r["key"]) is not None]
+        # A latch can now outlive its reading, so a rule may be holding
+        # the fan on with nothing to print. Saying so beats the empty
+        # string this used to produce: the log read "Fan on - " and
+        # gave no reason at all, which is at its worst exactly when the
+        # reason is unusual.
+        why = [r["fmt"](readings[r["key"]])
+               if readings.get(r["key"]) is not None
+               else "%s latch held, no reading" % r["label"]
+               for r in RULES if latch.get(r["key"])]
         return True, " and ".join(why)
     if fan_on and ran_for is not None and \
             ran_for < c["min_run_minutes"] * 60:

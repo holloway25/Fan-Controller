@@ -231,5 +231,29 @@ def test_a_disabled_rule_still_releases_when_its_reading_is_missing():
     return "the enable flag still wins"
 
 
+def test_a_latch_without_a_reading_still_explains_itself():
+    """A latch can outlive its reading, so it may have nothing to print.
+
+    The activity log used to read "Fan on - " with no reason, which is
+    worst exactly when the reason is unusual: a rule holding the fan on
+    from a reading that stopped arriving.
+    """
+    c = cfg(temp_enabled=True)
+    latch = {"co2": False, "temp": False, "humidity": False}
+
+    C.decide(None, 30.0, False, c, None, latch)
+    assert latch["temp"] is True, "did not latch on"
+
+    # Someone switches the fan off at the wall; temperature has gone
+    # quiet, but CO2 still reports so the poll is valid.
+    want, why = C.decide(500, None, False, c, None, latch)
+
+    assert want is True, "did not switch it back on"
+    assert why, "switched the fan on and gave no reason"
+    assert "temperature" in why and "no reading" in why, (
+        "the reason did not name the rule holding it on: %r" % why)
+    return "%r" % why
+
+
 if __name__ == "__main__":
     sys.exit(harness.run(dict(globals())))
