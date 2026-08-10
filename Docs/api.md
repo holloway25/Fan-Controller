@@ -68,9 +68,12 @@ change that landed while the fetch was in flight.
 
 ### Deltas
 
-`GET /api/history?since=REV` returns only what the caller is missing.
-Measured on the live service: **135 bytes against 189,857** for one
-poll's worth of new data.
+`GET /api/history?since=REV&gen=GENERATION` returns only what the caller
+is missing. Measured on the live service: **110 bytes against 189,960**
+for one poll's worth of new data.
+
+Both parameters are required for a delta. `gen` is the
+`history_generation` from a previous response.
 
 `history_rev` increases by exactly one per appended point, and pruning
 only ever removes from the front. So a caller is missing `rev - since`
@@ -87,13 +90,24 @@ list against the server's point for point.
 | `add` | points appended since `since`. Only present when `full` is `false` |
 | `first_t` | timestamp of the oldest point still held |
 | `history_rev` | the revision this response was taken at |
+| `history_generation` | which process answered. Send it back as `gen` |
 
 Removals are not listed. `first_t` is the oldest point still held, and
 the caller drops anything older - which describes a prune of any size,
 including one that happened while the caller was away, in one number.
 
 A full copy is sent whenever the delta reasoning does not hold: no
-`since`, one that will not parse, a caller ahead of the server (which is
-what a restart looks like, since the counter starts again), or more
-points missing than are still held because pruning has overtaken them.
-The caller is told which it received rather than having to infer it.
+`since`, one that will not parse, a negative one (never issued), a
+caller ahead of the server, more points missing than are still held
+because pruning has overtaken them, or a `gen` that does not match the
+process answering. The caller is told which it received rather than
+having to infer it.
+
+`history_rev` restarts at 1 with the process, so it is not by itself
+enough to identify a point in the trace. A dashboard left in a
+background tab can hold revision 100 from a process that no longer
+exists; if the replacement climbs back to 100 before the tab wakes, the
+revisions match, nothing refetches, and the next delta is appended to a
+trace from the previous process - a silently spliced graph. The
+generation makes that impossible, and it is checked server side so a
+client cannot get it wrong.

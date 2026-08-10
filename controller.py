@@ -219,6 +219,10 @@ RESTART_PATH = os.path.join(DIR, "restart.request")
 # so a trigger written before startup can be told from one written
 # after it.
 _PROC_START = time.time()
+# A token for "which process is answering", carried as a STRING so it
+# survives a JSON round trip through the browser and back as a query
+# parameter without float formatting getting a vote.
+PROC_GENERATION = "%.6f" % _PROC_START
 RESTART_POLL_SECONDS = 2
 
 
@@ -1752,11 +1756,21 @@ def api_history():
     thread appends stores the revision it actually received, rather than
     the one it saw a moment earlier and then missing the next change.
 
-    Answers a DELTA when the caller says which revision it already holds.
-    history_rev increases by exactly one per appended point, so a caller
-    is missing rev - since points, and they are the last that many:
-    pruning only ever removes from the front, never the tail. That one
-    property is what makes this safe without tracking anything extra.
+    Answers a DELTA when the caller says which revision it already holds
+    AND which process issued it. history_rev increases by exactly one per
+    appended point, so a caller is missing rev - since points, and they
+    are the last that many: pruning only ever removes from the front,
+    never the tail. That one property is what makes this safe without
+    tracking anything extra.
+
+    The generation is not decoration. history_rev restarts at 1 with the
+    process, so a dashboard left in a background tab can hold revision
+    100 from a process that no longer exists, and if the replacement
+    climbs back to 100 before the tab wakes, nothing anywhere would
+    notice: the revision matches, so no refetch happens, and the next
+    delta is appended to a trace from the previous process. Comparing
+    generations makes that impossible, and it is checked HERE rather
+    than in the browser so a client cannot get it wrong.
 
     Removals are not sent as a list. first_t is the oldest timestamp
     still held, and the caller drops anything older - which describes a
@@ -1775,12 +1789,19 @@ def api_history():
 
     first_t = hist[0].get("t") if hist else None
     since = request.args.get("since", type=int)
-    behind = None if since is None else rev - since
+    # A revision we never issued is not a revision. Negative values are
+    # the obvious case, and treating one as real turns rev - since into
+    # a larger number than the trace has ever held.
+    known = since is not None and since >= 0
+    same_process = request.args.get("gen") == PROC_GENERATION
+    behind = rev - since if (known and same_process) else None
     if behind is not None and 0 <= behind <= len(hist):
         return jsonify({"history_rev": rev, "full": False,
+                        "history_generation": PROC_GENERATION,
                         "add": hist[len(hist) - behind:],
                         "first_t": first_t})
     return jsonify({"history": hist, "history_rev": rev, "full": True,
+                    "history_generation": PROC_GENERATION,
                     "first_t": first_t})
 
 

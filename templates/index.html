@@ -549,7 +549,14 @@ function render(s){
     // Ask only for what we are missing. The server sends a delta when it
     // can and a full copy when it cannot, and says which it sent rather
     // than leaving us to infer it.
-    const url=HIST.length?("/api/history?since="+HIST_REV):"/api/history";
+    // Send the generation as well as the revision. Revisions restart
+    // with the process, so on their own they cannot tell "two points
+    // behind" from "a different process that happens to be at the same
+    // count" - which is reachable from a tab left in the background.
+    // The server refuses the delta if they do not match.
+    const url=(HIST.length&&HIST_GEN)
+      ?("/api/history?since="+HIST_REV+"&gen="+encodeURIComponent(HIST_GEN))
+      :"/api/history";
     fetch(url).then(r=>r.json()).then(h=>{
       if(h.full===false){
         HIST=HIST.concat(h.add||[]);
@@ -562,7 +569,8 @@ function render(s){
       }
       // Store the revision the response carried, not the one we saw, or a
       // change landing mid-flight would be missed until the next one.
-      HIST_REV=h.history_rev; HIST_BUSY=false;
+      HIST_REV=h.history_rev; HIST_GEN=h.history_generation||null;
+      HIST_BUSY=false;
       drawTrace(HIST,c); drawMini(HIST,c);
     }).catch(()=>{HIST_BUSY=false});
   }
@@ -763,7 +771,7 @@ $("plugtest").addEventListener("click",async()=>{
   }catch(e){say("hmsg",e.message,"err")}
 });
 
-let HIST=[], HIST_REV=null, HIST_BUSY=false;
+let HIST=[], HIST_REV=null, HIST_BUSY=false, HIST_GEN=null;
 let hydrated=false;
 async function hydrate(){
   if(CFG&&CFG.protect.username){

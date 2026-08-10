@@ -14,6 +14,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import harness
 
 
+def delta_url(C, since):
+    """A delta request as the dashboard makes it: revision AND generation."""
+    return "/api/history?since=%s&gen=%s" % (since, C.PROC_GENERATION)
+
+
 def seed(C, n, start=1000.0, step=30.0):
     """n points, oldest first, as the poll thread would leave them."""
     with C._state_lock:
@@ -37,11 +42,12 @@ class Client:
     def __init__(self):
         self.hist = []
         self.rev = None
+        self.gen = None
 
     def fetch(self, app):
         url = "/api/history"
-        if self.hist and self.rev is not None:
-            url += "?since=%d" % self.rev
+        if self.hist and self.rev is not None and self.gen is not None:
+            url += "?since=%d&gen=%s" % (self.rev, self.gen)
         body = app.get(url).get_json()
         if body.get("full") is False:
             self.hist = self.hist + body.get("add", [])
@@ -51,6 +57,7 @@ class Client:
         else:
             self.hist = body.get("history", [])
         self.rev = body["history_rev"]
+        self.gen = body.get("history_generation")
         return body
 
 
@@ -71,7 +78,7 @@ def test_a_delta_carries_only_what_is_new():
 
     poll(C, 2000.0)
     poll(C, 2030.0)
-    body = app.get("/api/history?since=5").get_json()
+    body = app.get(delta_url(C, 5)).get_json()
 
     assert body["full"] is False, "sent a full copy where a delta would do"
     assert len(body["add"]) == 2, "expected 2 new points, got %r" % body["add"]
@@ -83,7 +90,7 @@ def test_a_delta_carries_only_what_is_new():
 def test_an_up_to_date_caller_gets_nothing():
     C = harness.load()
     seed(C, 5)
-    body = C.app.test_client().get("/api/history?since=5").get_json()
+    body = C.app.test_client().get(delta_url(C, 5)).get_json()
 
     assert body["full"] is False and body["add"] == [], body
     return "nothing new, nothing sent"
@@ -93,7 +100,7 @@ def test_a_caller_ahead_of_us_gets_a_full_copy():
     """What a restart looks like: the revision counter starts again."""
     C = harness.load()
     seed(C, 5)
-    body = C.app.test_client().get("/api/history?since=900").get_json()
+    body = C.app.test_client().get(delta_url(C, 900)).get_json()
 
     assert body["full"] is True, (
         "served a delta to a caller holding a revision we never issued")
@@ -107,7 +114,7 @@ def test_a_caller_too_far_behind_gets_a_full_copy():
     seed(C, 3)
     with C._state_lock:
         C.STATE["history_rev"] = 500
-    body = C.app.test_client().get("/api/history?since=1").get_json()
+    body = C.app.test_client().get(delta_url(C, 1)).get_json()
 
     assert body["full"] is True, (
         "served a delta of 499 points from a trace holding 3")
@@ -118,14 +125,12 @@ def test_a_nonsense_since_is_not_trusted():
     C = harness.load()
     seed(C, 5)
     app = C.app.test_client()
-    for bad in ("banana", "", "1.5", "-1", "9e99"):
-        body = app.get("/api/history?since=%s" % bad).get_json()
-        if bad == "-1":
-            # Parses, and is simply a caller behind us by rev+1.
-            continue
+    for bad in ("banana", "", "1.5", "-1", "-999", "9e99"):
+        body = app.get("/api/history?since=%s&gen=%s"
+                       % (bad, C.PROC_GENERATION)).get_json()
         assert body["full"] is True, (
-            "since=%r was treated as a revision" % bad)
-    return "five bad values all fell back"
+            "since=%r was treated as a revision we had issued" % bad)
+    return "six bad values all fell back"
 
 
 def test_the_client_ends_up_with_what_the_server_has():
@@ -170,12 +175,75 @@ def test_a_delta_is_much_smaller_than_the_whole_trace():
     full = len(app.get("/api/history").get_data())
 
     poll(C, 99999.0)
-    delta = len(app.get("/api/history?since=2000").get_data())
+    delta = len(app.get(delta_url(C, 2000)).get_data())
 
     assert delta * 50 < full, (
         "a one point delta was %d bytes against %d for the whole trace"
         % (delta, full))
     return "%d bytes against %d" % (delta, full)
+
+
+def test_a_delta_needs_the_right_generation():
+    """Revisions restart with the process, so on their own they cannot
+    tell "two behind" from "a different process at the same count"."""
+    C = harness.load()
+    seed(C, 5)
+    poll(C, 2000.0)
+    app = C.app.test_client()
+
+    stale = app.get("/api/history?since=5&gen=1234.000000").get_json()
+    assert stale["full"] is True, (
+        "served a delta against a revision from another process")
+    assert len(stale["history"]) == 6, stale
+
+    fresh = app.get(delta_url(C, 5)).get_json()
+    assert fresh["full"] is False, "refused a delta to the right process"
+    return "wrong generation falls back, right one does not"
+
+
+def test_a_delta_without_a_generation_is_refused():
+    """An older dashboard, cached from before this existed, must not be
+    handed deltas it cannot validate."""
+    C = harness.load()
+    seed(C, 5)
+    body = C.app.test_client().get("/api/history?since=5").get_json()
+
+    assert body["full"] is True, "sent a delta to a caller with no generation"
+    return "no generation, no delta"
+
+
+def test_every_response_carries_the_generation():
+    C = harness.load()
+    seed(C, 5)
+    app = C.app.test_client()
+    for url in ("/api/history", delta_url(C, 5)):
+        body = app.get(url).get_json()
+        assert body.get("history_generation") == C.PROC_GENERATION, (
+            "%s did not identify the process that answered it" % url)
+    return "full and delta both identify the process"
+
+
+def test_a_tab_that_slept_through_a_restart_does_not_splice():
+    """The failure this is all for.
+
+    A dashboard holds revision 100 from a process that is gone. The
+    replacement climbs back to 100. Without a generation the revisions
+    match, nothing refetches, and the next delta is appended to a trace
+    from the previous process.
+    """
+    C = harness.load()
+    seed(C, 100)
+    old_gen = "1000.000000"          # the process the tab last spoke to
+
+    app = C.app.test_client()
+    body = app.get("/api/history?since=100&gen=%s" % old_gen).get_json()
+
+    assert body["full"] is True, (
+        "a tab holding another process's revision was sent a delta")
+    assert len(body["history"]) == 100, "the full copy was short"
+    assert body["history_generation"] == C.PROC_GENERATION, (
+        "the tab was not told which process it is now talking to")
+    return "spliced trace prevented"
 
 
 if __name__ == "__main__":

@@ -168,27 +168,63 @@ def test_an_unreadable_plug_is_not_reported_as_a_switch_off():
     return "no invented event, still forced on"
 
 
+class GatedPlug(Plug):
+    """A plug whose read blocks the FIRST caller until it is released.
+
+    Sleeping only widens the window and hopes the other thread runs in
+    it, which on a loaded Pi it may not - so a missing lock could pass.
+
+    The read returns the value seen BEFORE the block, not after. A
+    version that re-read on release still passed with _act_lock removed:
+    by then the overtaking caller had switched the plug, so the first
+    caller saw True and returned early, and the test proved nothing.
+    Verified by neutralising _act_lock and watching this fail.
+    """
+
+    def __init__(self, on=False):
+        Plug.__init__(self, on=on)
+        self.entered = threading.Event()
+        self.gate = threading.Event()
+        self._held = False
+
+    def state(self):
+        if not self._held:
+            self._held = True
+            # Captured BEFORE blocking, and returned after. This is the
+            # whole trick: a caller that reads, is overtaken, and then
+            # acts on what it read is exactly the race _act_lock exists
+            # to prevent. Re-reading here would hide it, because the
+            # value would have been corrected by the overtaking caller.
+            stale = self.on
+            self.entered.set()
+            self.gate.wait(10)
+            self.reads += 1
+            return stale
+        return Plug.state(self)
+
+
 def test_two_callers_cannot_both_switch_and_both_log():
     """tick() and the draw thread both call this. _act_lock is what
     stops them both acting on the same off fan."""
     C = harness.load()
     setup(C, mode="on", fan=True)
+    plug = GatedPlug(on=False)
 
-    plug = Plug(on=False)
-    real_state = plug.state
+    first = threading.Thread(target=C._force_on, args=(plug,), name="first")
+    first.start()
+    assert plug.entered.wait(10), "the first caller never reached the read"
 
-    def slow_state():
-        time.sleep(0.3)     # widen the window both threads race for
-        return real_state()
+    # Started only once the first caller is provably inside the read and
+    # holding _act_lock, so the second has to contend for it.
+    second = threading.Thread(target=C._force_on, args=(plug,), name="second")
+    second.start()
+    second_ready = threading.Event()
+    second_ready.wait(0.2)      # let it reach the lock; correctness does
+                                # not depend on this having been enough
+    plug.gate.set()
 
-    plug.state = slow_state
-
-    threads = [threading.Thread(target=C._force_on, args=(plug,),
-                                name="caller%d" % i) for i in range(2)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join(10)
+    first.join(10)
+    second.join(10)
 
     assert plug.calls == [True], (
         "both callers switched the fan: %r" % plug.calls)
