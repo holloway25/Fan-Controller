@@ -166,5 +166,70 @@ def test_every_rule_disabled_means_auto_never_starts():
     want, _ = C.decide(5000, 40.0, False, c, None, latch, humidity=99.0)
     assert want is False, "nothing enabled must not start the fan"
     assert not any(latch.values()), latch
+def test_a_dropped_reading_holds_every_latch():
+    """The three rules used to disagree about this.
+
+    CO2 held its latch when the reading vanished; temperature and
+    humidity released theirs. Now all three hold, because a missing
+    reading says nothing about whether the condition cleared.
+    """
+    for flag, hot, extra in (
+            ("co2_enabled", 1200, {}),
+            ("temp_enabled", 30.0, {}),
+            ("humidity_enabled", 80.0,
+             {"humidity_on": 70.0, "humidity_off": 60.0})):
+        over = {flag: True}
+        over.update(extra)
+        c = cfg(**over)
+        latch = {"co2": False, "temp": False, "humidity": False}
+
+        if flag == "co2_enabled":
+            C.decide(hot, None, False, c, None, latch)
+        elif flag == "temp_enabled":
+            C.decide(None, hot, False, c, None, latch)
+        else:
+            C.decide(None, None, False, c, None, latch, humidity=hot)
+        assert any(latch.values()), "%s never latched on" % flag
+
+        # Same call, every reading now missing.
+        want, _ = C.decide(None, None, True, c, 9999, latch)
+        assert any(latch.values()), (
+            "%s released its latch on a missing reading, so the fan "
+            "would stop on the strength of not knowing" % flag)
+        assert want is True, "%s stopped the fan on a dropped reading" % flag
+    return "co2, temp and humidity all hold"
+
+
+def test_a_reading_that_returns_low_still_releases():
+    """Holding through a gap must not mean holding forever."""
+    c = cfg(temp_enabled=True)
+    latch = {"co2": False, "temp": False, "humidity": False}
+
+    C.decide(None, 30.0, False, c, None, latch)
+    assert latch["temp"] is True, "did not latch on a hot reading"
+
+    C.decide(None, None, True, c, 9999, latch)
+    assert latch["temp"] is True, "released during the gap"
+
+    C.decide(None, 22.0, True, c, 9999, latch)
+    assert latch["temp"] is False, (
+        "a reading below the off level did not release the latch")
+    return "the gap holds, a cool reading releases"
+
+
+def test_a_disabled_rule_still_releases_when_its_reading_is_missing():
+    """Turning a rule off must release it even with nothing to read."""
+    c = cfg(temp_enabled=True)
+    latch = {"co2": False, "temp": False, "humidity": False}
+    C.decide(None, 30.0, False, c, None, latch)
+    assert latch["temp"] is True, "did not latch on"
+
+    C.decide(None, None, True, cfg(temp_enabled=False), 9999, latch)
+    assert latch["temp"] is False, (
+        "a rule switched off kept its latch, so the fan would keep "
+        "running on a rule nobody asked for")
+    return "the enable flag still wins"
+
+
 if __name__ == "__main__":
     sys.exit(harness.run(dict(globals())))

@@ -761,22 +761,20 @@ def _clients():
 # the flag existed keeps ventilating. A False default there would stop
 # every upgraded install silently.
 #
-# clear_on_missing records existing behaviour rather than choosing it.
-# CO2 keeps its latch when the reading drops out, temperature clears it.
-# Unifying them would change how the fan behaves during a sensor
-# outage, so it is left alone here and noted in the handoff.
+# There is no clear_on_missing any more. The three rules used to
+# disagree about a dropped reading - CO2 held its latch, temperature and
+# humidity released theirs - which recorded how the code happened to be
+# written rather than a decision. All three now hold. See decide().
 RULES = (
     {"key": "co2", "reading": "co2", "flag": "co2_enabled",
-     "on": "on_at", "off": "off_at",
-     "default": True, "clear_on_missing": False,
+     "on": "on_at", "off": "off_at", "default": True,
      "fmt": lambda v: "%d ppm" % round(v)},
     {"key": "temp", "reading": "temperature", "flag": "temp_enabled",
-     "on": "temp_on",
-     "off": "temp_off", "default": False, "clear_on_missing": True,
+     "on": "temp_on", "off": "temp_off", "default": False,
      "fmt": lambda v: "%.1f C" % v},
     {"key": "humidity", "reading": "humidity",
      "flag": "humidity_enabled", "on": "humidity_on",
-     "off": "humidity_off", "default": False, "clear_on_missing": True,
+     "off": "humidity_off", "default": False,
      "fmt": lambda v: "%.0f%% RH" % v},
 )
 
@@ -816,8 +814,26 @@ def decide(co2, temp, fan_on, c, ran_for, latch, fault=None,
         if not bool(c.get(r["flag"], r["default"])):
             latch[key] = False
         elif val is None:
-            if r["clear_on_missing"]:
-                latch[key] = False
+            # Deliberately nothing: the latch is left as it was.
+            #
+            # A missing reading is not evidence the condition cleared.
+            # The room was hot, the sensor stopped answering, and
+            # nothing has happened since to suggest it cooled - so
+            # releasing here would stop the fan on the strength of not
+            # knowing. This errs toward ventilating, like the rest of
+            # decide().
+            #
+            # It only matters during a PARTIAL outage. If every reading
+            # stops, reading_at stops advancing and the stale-reading
+            # fail-safe ventilates regardless. The uncovered case was
+            # one metric dropping out while others still report, which
+            # keeps the fail-safe asleep - exactly when releasing the
+            # latch was worst.
+            #
+            # The cost is a fan that may run longer than needed on a
+            # stale latch until a reading returns and falls below the
+            # off level. That is the cheaper mistake.
+            pass
         elif val >= c[r["on"]]:
             latch[key] = True
         elif val <= c[r["off"]]:

@@ -57,10 +57,25 @@ fills missing keys from `DEFAULTS`, so this is what a `config.json`
 written before the flag existed reads as. A false default would have
 stopped every upgraded install ventilating, with nothing in the log.
 
-A missing reading is not a release. CO2 keeps its latch when its reading
-drops out; temperature and humidity clear theirs. That inconsistency
-predates the rules table and is recorded in it rather than fixed, since
-changing it would alter what the fan does during a sensor outage.
+A missing reading is not a release, for any of the three. The rules used
+to disagree - CO2 held its latch when its reading dropped out while
+temperature and humidity cleared theirs - which recorded how the code
+happened to be written rather than a decision. All three now hold.
+
+The reasoning: a reading that stops arriving says nothing about whether
+the condition cleared. The room was hot, the sensor went quiet, and
+nothing since suggests it cooled, so releasing would stop the fan on the
+strength of not knowing.
+
+This only bites during a partial outage. If every reading stops,
+`reading_at` stops advancing and the stale-reading fail-safe ventilates
+anyway. The gap was one metric dropping out while the others still
+report, which keeps the fail-safe asleep - precisely when releasing the
+latch was worst.
+
+The cost is a fan that may run longer than needed on a stale latch until
+a reading returns and falls below the off level. A rule that is switched
+off still releases immediately, reading or no reading.
 
 A latch is held in memory, not derived from the current thresholds, so
 changing a threshold does not release one that is already set. Lowering
