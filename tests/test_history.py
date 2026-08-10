@@ -264,8 +264,15 @@ def test_state_carries_the_generation_too():
     return "state and history agree on the generation"
 
 
-def test_the_dashboard_asks_when_only_the_generation_differs():
-    """The revision alone is not enough to decide whether to fetch."""
+def test_a_matching_revision_from_another_process_still_gets_a_full_copy():
+    """The server half of the stale-tab case.
+
+    Named for what it checks. It was previously called
+    test_the_dashboard_asks_..., which was wrong twice over: it never
+    opened index.html, and the thing it did check was the server
+    refusing the request rather than the client making it. The client
+    half is in tests/test_dashboard.py.
+    """
     C = harness.load()
     seed(C, 5)
     app = C.app.test_client()
@@ -274,15 +281,13 @@ def test_the_dashboard_asks_when_only_the_generation_differs():
     # A tab that slept through a restart: same revision, older process.
     held_rev, held_gen = state["history_rev"], "1000.000000"
 
-    assert state["history_rev"] == held_rev, "set-up wrong"
     assert state["history_generation"] != held_gen, (
         "the two generations match, so this proves nothing")
 
-    # Having noticed, it asks - and is given a full copy, not a delta.
     body = app.get("/api/history?since=%d&gen=%s"
                    % (held_rev, held_gen)).get_json()
     assert body["full"] is True, "the stale tab was handed a delta"
-    return "matching revision, different process, still refetched"
+    return "matching revision, different process, full copy"
 
 
 if __name__ == "__main__":

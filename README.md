@@ -265,6 +265,15 @@ Protect console is contacted. Safe to run against a live install.
 - `test_restart_sh.py` - the exit codes `restart.sh` reports, driven
   against a stub controller: a proved restart, a failed exec, a refusal,
   an ignored trigger and an unreachable service
+- `test_dashboard.py` - source assertions on `templates/index.html`, for
+  the client-side wiring the server's behaviour depends on
+
+`test_dashboard.py` needs saying out loud: there is no JavaScript engine
+on the deployment host, so it reads the template rather than running it.
+It catches a line being **deleted**, not a line being **wrong**. It
+exists because the alternative for one defect was a test named after the
+dashboard that never opened the file, which is worse than no test at
+all.
 
 The concurrency tests gate the interleaving with events rather than
 sleeping. Timing alone does not reproduce these races, and a test that
