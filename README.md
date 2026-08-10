@@ -80,10 +80,18 @@ Email on fault is designed but not built.
 
 ## Hardware
 
-Developed and run on a Raspberry Pi 3B under Debian, and that is the
-machine to size for. A 3B+ or a 4 has room to spare. A 5 will run it
-perfectly well and is a waste of a Pi - nothing here is short of CPU,
-memory or I/O on a board two generations older.
+The reference target is a Raspberry Pi 3B+ running the 64-bit Raspberry
+Pi OS image. That is the board to size for: a 1.4GHz quad-core
+Cortex-A53 and 1GB of RAM. A plain 3B is the same design a little
+slower and works fine. A 4 has room to spare. A 5 will run it perfectly
+well and is a waste of a Pi - nothing here is short of CPU, memory or
+I/O two generations back.
+
+Prefer the 64-bit image over the 32-bit one. Both boards are ARMv8 so
+either boots, but arm64 has much better wheel coverage on PyPI, which
+is what you will care about the first time someone adds a dependency.
+It costs a little more RAM, which is affordable in 1GB for a process
+this size.
 
 What that target buys you, and what it costs:
 
