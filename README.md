@@ -86,8 +86,8 @@ Two targets, both first class:
   current host is an Ubuntu 26.04 VM with one core and 512MB.
 - **A Raspberry Pi 3B+ on the 64-bit image.** 1.4GHz quad-core
   Cortex-A53, 1GB. A plain 3B is the same design a little slower and
-  works fine. A 4 has room to spare. A 5 will run it and is a waste of
-  a Pi.
+  works fine. A 4 or a 5 is more machine than this needs and will run
+  it without complaint - use one if you already have it.
 
 Neither covers the other, and they are tight in different ways:
 
