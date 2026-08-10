@@ -1,0 +1,49 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.10 is the floor: click, requests and urllib3 in
+        # requirements.txt all declare requires-python >=3.10, so the
+        # pinned set cannot install below it. The source itself parses
+        # back to 3.9, which is not the same thing - which is why this
+        # matrix is built from the dependencies rather than the syntax.
+        #
+        # 3.11 is Debian Bookworm, which is what a Raspberry Pi 3B+ runs.
+        # 3.14 is what production runs today.
+        python: ["3.10", "3.11", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - run: pip install -r requirements.txt
+
+      # The reason to run this on Linux at all: every test in
+      # test_durability.py needs O_DIRECTORY and every test in
+      # test_restart_sh.py needs bash, so both skip wholesale on a
+      # Windows review host. This is the only place they run
+      # automatically.
+      - name: run the suite
+        run: python tests/run_all.py | tee out.txt
+
+      # A skip is not a pass. On Linux with bash present nothing should
+      # skip, so treat one as a failure rather than letting the suite go
+      # quietly green while covering less than it looks.
+      - name: nothing should have skipped here
+        run: |
+          if grep -q '^SKIP' out.txt; then
+            echo "skipped on a platform where everything should run:"
+            grep '^SKIP' out.txt
+            exit 1
+          fi
+          echo "nothing skipped"

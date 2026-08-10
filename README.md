@@ -141,11 +141,13 @@ have been taken on ARM.
 
 What those targets mean for changes:
 
-- **Python 3.9 to 3.14.** It runs on 3.14 in production today, and the
-  source parses cleanly against 3.9, so that is the tested span. The
-  Debian end is the binding one: Bullseye is 3.9 and Bookworm 3.11.
-  Adding syntax newer than 3.9 means choosing to drop a Debian release,
-  so do it deliberately.
+- **Python 3.10 to 3.14.** The floor is set by the pinned
+  dependencies, not the syntax: `click`, `requests` and `urllib3` all
+  declare `requires-python >=3.10`, so `requirements.txt` cannot install
+  below it. The source itself parses back to 3.9, which is not the same
+  thing - a version it compiles on but cannot get its libraries on is
+  not a version it supports. That rules out Bullseye; Bookworm is 3.11,
+  Trixie 3.13, and production runs 3.14. CI covers 3.10, 3.11 and 3.14.
 - **Four third-party imports** - Flask, Werkzeug, requests, urllib3. All
   install on ARM without compiling anything. A dependency that needs a
   toolchain is a much bigger ask here than it looks on a laptop.
@@ -249,6 +251,13 @@ draw fault survives deliberately.
 ## Tests
 
     ./venv/bin/python tests/run_all.py
+
+GitHub Actions runs the same suite on Ubuntu against 3.10, 3.11 and 3.14
+on every push. That matters because the tests needing Linux - the
+durability suite and the shell tests - skip everywhere else, so CI is
+the only place they run without someone remembering to. The workflow
+fails if anything reports SKIP, since a skip on Linux means the suite is
+covering less than it appears to.
 
 No dependencies beyond the venv. Each module imports `controller.py`
 against a throwaway directory, so `config.json`, `history.json`,

@@ -1,13 +1,16 @@
 # HTTP API
 
 Served by Flask on 127.0.0.1:8096 and fronted by nginx on the same host.
-All responses are JSON except `/` and `/signin`.
+Successful responses and validation errors are JSON. Pages,
+authentication failures and framework-generated errors are not: `/` and
+`/signin` are HTML, a 401 is plain text, and an oversized body gets
+Werkzeug's own 413 page.
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | GET | `/` | open | Web UI |
 | GET | `/api/state` | open | Readings, fan state, latches, events, config, `history_rev` |
-| GET | `/api/history` | open | The 24h trace, or a delta with `?since=REV`, and the `history_rev` it was taken at |
+| GET | `/api/history` | open | The 24h trace, or a delta with `?since=REV&gen=GENERATION`, and the `history_rev` it was taken at |
 | POST | `/api/clienterror` | open | Browser JS errors, logged server side |
 | GET | `/static/*` | open | Icons: browser tab and iOS home screen |
 | GET | `/signin` | required | Empty page whose only job is to raise the browser auth prompt |

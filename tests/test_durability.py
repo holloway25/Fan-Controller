@@ -441,5 +441,50 @@ def test_setting_a_password_that_is_not_synced_is_also_not_denied():
     return "enabled, and reported as not-durable"
 
 
+def test_a_second_clear_does_not_skip_the_sync_the_first_one_failed():
+    """The file is already gone, so there is nothing to unlink - but the
+    earlier removal was never committed.
+
+    Guarding the sync on the file existing meant the second attempt
+    found nothing, skipped it, and reported a durable acknowledgement
+    that had never reached the directory.
+    """
+    need_dir_sync()
+    C = harness.load()
+    with C._state_lock:
+        C.STATE["fault"] = {"msg": "draw fault", "stopped": True}
+        C.STATE["fault_unsaved"] = False
+    C.save_fault(C.STATE["fault"])
+
+    real_open = C.os.open
+    syncs = []
+
+    def counting(path, flags, *a):
+        if flags & os.O_DIRECTORY:
+            syncs.append(path)
+            raise OSError(5, "Input/output error")
+        return real_open(path, flags, *a)
+
+    C.os.open = counting
+    try:
+        first = C._clear_fault()
+        assert not os.path.exists(C.FAULT_PATH), (
+            "set-up wrong: the first attempt did not remove the file")
+        second = C._clear_fault()
+    finally:
+        C.os.open = real_open
+
+    assert first[1] is False, "the first acknowledgement claimed success"
+    assert second[1] is False, (
+        "the second acknowledgement reported success without committing "
+        "the removal the first one left unsynced")
+    assert len(syncs) == 2, (
+        "the sync was attempted %d times, not twice - the second call "
+        "skipped it because the file was already gone" % len(syncs))
+    assert C.STATE["fault"] is not None, "the fault was cleared anyway"
+    assert C.STATE["fault_unsaved"] is True, "not flagged after the retry"
+    return "retried, and still refused"
+
+
 if __name__ == "__main__":
     sys.exit(harness.run(dict(globals())))

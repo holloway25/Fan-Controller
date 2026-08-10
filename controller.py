@@ -370,20 +370,27 @@ def save_fault(f):
     catches this, keeps the fault live, says so, and retries.
     """
     if f is None:
-        if os.path.exists(FAULT_PATH):
+        try:
             os.remove(FAULT_PATH)
-            # The unlink needs committing too, or a fault acknowledged
-            # just before a power cut comes back on the next start and
-            # holds the fan off with nothing to explain why.
-            try:
-                _fsync_dir(os.path.dirname(FAULT_PATH))
-            except OSError as e:
-                # The file is gone but the removal may not survive. Same
-                # shape as a write that landed without a durable rename,
-                # and it gets the same distinct type so the caller can
-                # tell it apart from "the delete failed".
-                raise InstalledNotDurable(
-                    "%s (the fault file is already removed)" % e)
+        except FileNotFoundError:
+            # Already gone. Fall through to the sync anyway - see below.
+            pass
+        # ALWAYS, even when there was nothing to remove. The unlink needs
+        # committing or a fault acknowledged just before a power cut comes
+        # back on the next start with nothing to explain why. Guarding
+        # this on the file existing meant a second acknowledgement, after
+        # a first that unlinked and then failed to sync, found no file,
+        # skipped the sync, and reported a durable delete that had never
+        # been committed. Unconditional makes the retry free.
+        try:
+            _fsync_dir(os.path.dirname(FAULT_PATH))
+        except OSError as e:
+            # The file is gone but the removal may not survive. Same
+            # shape as a write that landed without a durable rename,
+            # and it gets the same distinct type so the caller can
+            # tell it apart from "the delete failed".
+            raise InstalledNotDurable(
+                "%s (the fault file is already removed)" % e)
         return
     write_json_durable(FAULT_PATH, f, mode=0o600)
 
