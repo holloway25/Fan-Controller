@@ -1,10 +1,12 @@
 # Architecture
 
-A single Flask process run under systemd, with two background threads.
+A single Flask process run under systemd, with three background threads.
 The poll thread reads the sensor and decides; the draw thread reads the
 plug's energy meter on a shorter cadence, enforces a latched fault, and
 re-asserts Force on. Both switch the plug, which is why the locking below
-matters. The Flask routes serve the UI and settings.
+matters. The third, the restart watcher, never touches the plug - it
+only looks for the restart trigger. The Flask routes serve the UI and
+settings.
 
 ```
 UniFi Protect  --HTTPS-->  Fan Controller  --HTTP-->   Tasmota plug
@@ -65,6 +67,40 @@ Icons live under /static and are served by Flask directly. nginx also
 compresses application/json, which matters most for /api/history - the
 trace is the one large payload left, and it is fetched only when the
 revision changes rather than on every 5 second poll.
+
+## Restarting
+
+`restart.request` in the working directory asks the controller to
+restart itself. The watcher takes the trigger, deletes it, and replaces
+the process with `execv`: same PID, unit still active, systemd not
+involved, and no privilege needed. `./restart.sh` wraps that and proves
+it worked. `sudo systemctl restart` remains the fallback.
+
+Two things make this more than a convenience.
+
+A restart is REFUSED while a fault is live but unsaved. The fault exists
+only in memory, so a replacement would load `fault.json`, find nothing,
+and let Auto start a fan that was stopped for drawing wrong. The
+signalled path cannot refuse - `systemctl restart` sends SIGTERM - so it
+instead makes one last attempt to write the fault, holding `_fault_lock`
+with a bounded wait, and reports to the journal if it still cannot.
+
+The in-memory timing state is HANDED OVER. Latches, the minimum-run
+lease, the draw-fault timer, the stale-reading clock and the original
+start time are passed to the replacement in the environment, which
+`execv` preserves and nothing else does. Without it a restart releases a
+latched fan and short-cycles the motor the lease protects. A crash or a
+`systemctl restart` finds no handover and correctly starts clean, rather
+than resuming a lease that expired hours ago. The activity log records
+the pair: `Restarting on request`, then `Resumed after restart`.
+
+One trap worth knowing. werkzeug marks its listening socket inheritable
+so its reloader can pass the fd to a child, so the first version of this
+`execv`d with port 8096 still held and the replacement died with
+"Address already in use". Every descriptor above 2 is now marked
+close-on-exec immediately before the exec. 0, 1 and 2 are left alone:
+they are the journal, and the replacement's own startup logging is the
+first thing anyone reads when a restart goes wrong.
 
 ## Threads and locks
 
@@ -128,7 +164,11 @@ cannot extend a hold something else is waiting on.
   as one transaction with the in-memory copy, never as two steps. Persisted rather than held in memory because
   a restart would otherwise skip the acknowledgement it is waiting for and
   re-arm a fan already judged faulty. Not in git.
-- In-memory only - latch state and current fan state.
+- In-memory only - latch state, the minimum-run lease, the draw-fault
+  timer and the stale-reading clock. Deliberately not persisted: after a
+  crash or a power cut there is no reason to believe a lease from before
+  it. A requested restart is the exception and hands them over; see
+  below.
 
 Fan state is re-read from the plug every poll rather than trusted
 from memory, so switching it from Google Home or the plug itself is

@@ -9,6 +9,7 @@ import json
 import os
 import socket
 import sys
+import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -349,6 +350,124 @@ def test_shutdown_reports_a_fault_it_cannot_save():
     assert C.STATE["fault_unsaved"] is True, \
         "cleared the flag despite the write failing"
     return "still unsaved, and flagged as such"
+
+
+def test_a_clear_during_the_last_chance_write_is_not_undone():
+    """The race the bounded lock exists to prevent.
+
+    The first version read the fault without the lock. An
+    acknowledgement landing between the read and the write meant the
+    old snapshot was written back, and the fault returned from the dead
+    at the next start with nothing to say why.
+    """
+    C = harness.load()
+    with C._state_lock:
+        C.STATE["fault"] = {"msg": "draw fault", "stopped": True}
+        C.STATE["fault_unsaved"] = True
+    C.save_fault(C.STATE["fault"])
+
+    # Acknowledge it the ordinary way. _clear_fault takes _fault_lock,
+    # so the last-chance write cannot interleave with it.
+    had, ok = C._clear_fault()
+    assert had is not None and ok, "the clear did not take"
+
+    C._persist_fault_on_exit()
+
+    assert C.load_fault() is None, \
+        "a cleared fault was written back to disk and would return"
+    return "acknowledgement survives the last-chance write"
+
+
+def test_last_chance_write_gives_up_rather_than_hanging():
+    """A signal handler must not wait until systemd escalates."""
+    C = harness.load()
+    with C._state_lock:
+        C.STATE["fault"] = {"msg": "draw fault", "stopped": True}
+        C.STATE["fault_unsaved"] = True
+
+    C._fault_lock.acquire()
+    started = time.time()
+    try:
+        result = C._persist_fault_on_exit()
+    finally:
+        C._fault_lock.release()
+    took = time.time() - started
+
+    assert result is False, "claimed a write it could not have made"
+    assert took < 10, "waited %.1fs, long enough to be SIGKILLed" % took
+    assert C.STATE["fault_unsaved"] is True, \
+        "cleared the flag without writing"
+    return "gave up after %.1fs" % took
+
+
+def test_last_chance_write_still_works_when_the_lock_is_free():
+    """The bound must not break the ordinary case."""
+    C = harness.load()
+    with C._state_lock:
+        C.STATE["fault"] = {"msg": "draw fault", "stopped": True}
+        C.STATE["fault_unsaved"] = True
+
+    assert C._persist_fault_on_exit() is True, "the write did not happen"
+    assert C.load_fault() is not None, "the fault did not reach disk"
+    assert C._fault_lock.acquire(timeout=1), "the lock was not released"
+    C._fault_lock.release()
+    return "written, and the lock released"
+
+
+def test_state_reports_a_process_generation():
+    """restart.sh proves a restart with this. The port answering proves
+    nothing: a failed exec leaves the original process serving."""
+    C = harness.load()
+    app = C.app.test_client()
+    body = app.get("/api/state").get_json()
+
+    assert "process_started_at" in body, \
+        "no generation marker, so a restart cannot be proved"
+    assert body["process_started_at"] == C._PROC_START, \
+        "the marker does not match this process"
+    assert isinstance(body["process_started_at"], (int, float)), \
+        "the marker is not a number and cannot be compared"
+    return "generation exposed and matches"
+
+
+def test_the_last_chance_write_holds_the_fault_lock():
+    """The real pin for the clear-during-write race.
+
+    The end-state test above passes against the broken code too - by
+    the time the clear has finished, the early return catches it. What
+    actually went wrong was narrower: the snapshot was read, an
+    acknowledgement landed, and the stale snapshot was written back.
+    The only thing that makes that impossible is holding _fault_lock
+    across the read and the write, so that is what is asserted.
+
+    _fault_lock is a plain Lock, so a non-reentrant acquire from this
+    same thread answers the question directly: it fails while held.
+    """
+    C = harness.load()
+    with C._state_lock:
+        C.STATE["fault"] = {"msg": "draw fault", "stopped": True}
+        C.STATE["fault_unsaved"] = True
+
+    seen = {}
+    real_save = C.save_fault
+
+    def watched(f):
+        got = C._fault_lock.acquire(blocking=False)
+        seen["lock_was_free"] = got
+        if got:
+            C._fault_lock.release()
+        return real_save(f)
+
+    C.save_fault = watched
+    try:
+        C._persist_fault_on_exit()
+    finally:
+        C.save_fault = real_save
+
+    assert seen.get("lock_was_free") is False, \
+        ("the write ran without _fault_lock held, so an acknowledgement "
+         "could land between the read and the write and be undone")
+    return "lock held across read and write"
 
 
 if __name__ == "__main__":

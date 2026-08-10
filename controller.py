@@ -347,21 +347,43 @@ def _persist_fault_on_exit():
     down. It costs one write and turns a silent loss into either a save
     or a loud complaint.
 
-    Deliberately does NOT take _fault_lock. This runs in a signal
-    handler on the main thread, and blocking on a lock another thread
-    holds would hang the shutdown until systemd escalated to SIGKILL -
-    which loses the fault anyway, and the history with it. _state_lock
-    is an RLock, so re-entering it here is safe. save_fault writes via
-    tmp and os.replace, so a racing write cannot tear the file: one
-    simply wins, and both are writing the same fault.
+    Takes _fault_lock with a BOUNDED wait. The first version skipped the
+    lock entirely, to avoid a signal handler blocking on something
+    another thread held - and reintroduced the exact stale-snapshot race
+    the lock exists to prevent: read the fault, have an acknowledgement
+    clear it, then write the old snapshot back, and the fault returns
+    from the dead at the next start with nothing to say why. Correctness
+    first; the timeout is what keeps it from waiting until systemd
+    escalates to SIGKILL. Two seconds is far longer than any holder
+    needs and far shorter than the stop deadline.
 
-    Reports to stderr rather than the activity log for the same reason.
-    _log takes _events_lock, which is a plain Lock, and a signal handler
-    must not block on one. stderr is the journal, which is where anyone
-    looks after a shutdown that went wrong.
+    Giving up without writing is the right failure. Whoever holds the
+    lock is in the middle of a fault transaction of their own, so the
+    write is very likely to land anyway - and writing without the lock
+    is what caused the bug.
+
+    Reports to stderr rather than the activity log. _log takes
+    _events_lock, another plain Lock, and this already holds one. stderr
+    is the journal, which is where anyone looks after a stop that went
+    wrong.
     """
+    if not _fault_lock.acquire(timeout=2):
+        print("Could not take the fault lock on the way out; an unsaved "
+              "fault may be lost. Check the draw before running the fan.",
+              file=sys.stderr, flush=True)
+        return False
+    try:
+        return _persist_fault_locked()
+    finally:
+        _fault_lock.release()
+
+
+def _persist_fault_locked():
+    """The body of the last-chance write, with _fault_lock already held."""
     with _state_lock:
-        fault = STATE["fault"]
+        # Deep-copied: _confirm_fault_stopped mutates the dict in place,
+        # so a reference could be changed underneath the write.
+        fault = copy.deepcopy(STATE["fault"])
         owed = STATE["fault_unsaved"]
     if not owed or fault is None:
         return False
@@ -1665,6 +1687,11 @@ def api_state():
         s["watts"] = None
     s["events"] = s["events"][:EVENTS_SHOWN]
     s["config"] = _safe_cfg()
+    # Changes on every start, including an execv. It is the only thing a
+    # caller can use to prove a restart actually happened: the port
+    # answering proves nothing, because a failed exec leaves the original
+    # process serving on it.
+    s["process_started_at"] = _PROC_START
     return jsonify(s)
 
 
