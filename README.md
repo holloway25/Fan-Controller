@@ -122,10 +122,10 @@ Two targets, both first class:
   works fine; a 4 or a 5 is more machine than this needs and will run it
   without complaint. Prefer the 64-bit image over the 32-bit one: both
   boards are ARMv8 so either boots, but wheel coverage on PyPI is much
-  better for arm64, and that is not hypothetical. MarkupSafe, already a
-  dependency, ships aarch64 wheels for every Python here and no `armv7l`
-  wheels at all - so a 32-bit image builds it from source and needs a
-  compiler.
+  better for arm64, and that is not hypothetical: MarkupSafe, already a
+  dependency, publishes aarch64 wheels for every Python here and no
+  `armv7l` wheels at all, so a 32-bit image builds it from source and
+  needs a compiler.
 
 Neither covers the other, and they are tight on different axes. The VM
 has half the memory. The Pi is slower at everything - one i5-12500T core
@@ -152,10 +152,11 @@ What those targets mean for changes:
   Trixie 3.13, and production runs 3.14. CI covers 3.10, 3.11 and 3.14.
 - **Four third-party imports** - Flask, Werkzeug, requests, urllib3.
   With their own dependencies that is twelve pins, and on 64-bit ARM
-  every one installs from a wheel: eleven are pure Python and MarkupSafe
-  ships aarch64 builds. Nothing needs a compiler. Keep it that way - a
-  dependency that builds from source is a much bigger ask on a Pi than
-  it looks on a laptop.
+  every one installs from a wheel: ten are architecture-neutral, while
+  MarkupSafe and charset-normalizer publish aarch64 builds
+  (charset-normalizer also keeps a pure-Python fallback). Nothing is
+  compiled during install. Keep it that way - a dependency that builds
+  from source is a much bigger ask on a Pi than it looks on a laptop.
 - **A restart is cheap.** Measured on x86-64: `/api/state` unavailable
   for 0.10s, and a new process answering 0.26s after the trigger. A 3B+
   is slower to start an interpreter and import Flask, so expect a few
