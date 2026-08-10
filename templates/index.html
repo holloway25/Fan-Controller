@@ -546,8 +546,20 @@ function render(s){
   // it is ~99% of the old /api/state payload but only moves once per poll.
   if(s.history_rev!==HIST_REV&&!HIST_BUSY){
     HIST_BUSY=true;
-    fetch("/api/history").then(r=>r.json()).then(h=>{
-      HIST=h.history||[];
+    // Ask only for what we are missing. The server sends a delta when it
+    // can and a full copy when it cannot, and says which it sent rather
+    // than leaving us to infer it.
+    const url=HIST.length?("/api/history?since="+HIST_REV):"/api/history";
+    fetch(url).then(r=>r.json()).then(h=>{
+      if(h.full===false){
+        HIST=HIST.concat(h.add||[]);
+        // Then drop whatever has been pruned off the front. first_t is
+        // the oldest point the server still holds, so this handles a
+        // prune of any size without it having to list removals.
+        if(h.first_t!=null)HIST=HIST.filter(p=>p&&p.t>=h.first_t);
+      }else{
+        HIST=h.history||[];
+      }
       // Store the revision the response carried, not the one we saw, or a
       // change landing mid-flight would be missed until the next one.
       HIST_REV=h.history_rev; HIST_BUSY=false;

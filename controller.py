@@ -1751,10 +1751,37 @@ def api_history():
     Returned with its own revision so a client that fetches while the poll
     thread appends stores the revision it actually received, rather than
     the one it saw a moment earlier and then missing the next change.
+
+    Answers a DELTA when the caller says which revision it already holds.
+    history_rev increases by exactly one per appended point, so a caller
+    is missing rev - since points, and they are the last that many:
+    pruning only ever removes from the front, never the tail. That one
+    property is what makes this safe without tracking anything extra.
+
+    Removals are not sent as a list. first_t is the oldest timestamp
+    still held, and the caller drops anything older - which describes a
+    prune of any size, including one that happened while the caller was
+    away, in a single number.
+
+    Falls back to a full copy whenever that reasoning does not hold: an
+    unparseable since, a caller ahead of us - which is what a restart
+    looks like, because the counter starts again - or more points
+    missing than are still held, because pruning has overtaken them.
+    The caller is told which it got rather than having to guess.
     """
     with _state_lock:
-        return jsonify({"history": list(STATE["history"]),
-                        "history_rev": STATE["history_rev"]})
+        hist = list(STATE["history"])
+        rev = STATE["history_rev"]
+
+    first_t = hist[0].get("t") if hist else None
+    since = request.args.get("since", type=int)
+    behind = None if since is None else rev - since
+    if behind is not None and 0 <= behind <= len(hist):
+        return jsonify({"history_rev": rev, "full": False,
+                        "add": hist[len(hist) - behind:],
+                        "first_t": first_t})
+    return jsonify({"history": hist, "history_rev": rev, "full": True,
+                    "first_t": first_t})
 
 
 MODE_LABELS = {"auto": "Auto", "manual": "Manual", "on": "Force on"}
