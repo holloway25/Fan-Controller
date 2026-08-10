@@ -78,6 +78,42 @@ Email on fault is designed but not built.
 - [deploy/nginx.conf.example](deploy/nginx.conf.example) - reference nginx
   site config, since Flask binds loopback and needs a proxy
 
+## Hardware
+
+Developed and run on a Raspberry Pi 3B under Debian, and that is the
+machine to size for. A 3B+ or a 4 has room to spare. A 5 will run it
+perfectly well and is a waste of a Pi - nothing here is short of CPU,
+memory or I/O on a board two generations older.
+
+What that target buys you, and what it costs:
+
+- **Python 3.9 or newer.** The source parses cleanly against 3.9, so
+  Bullseye works, and 3.11 on Bookworm is the realistic floor. If you
+  add syntax newer than 3.9, you are choosing to drop a Debian release,
+  so do it deliberately.
+- **Four third-party imports** - Flask, Werkzeug, requests, urllib3.
+  All install on ARM without compiling anything. A dependency that
+  needs a toolchain is a much bigger ask here than it looks on a
+  laptop.
+- **A restart is not expensive.** Measured on the development host,
+  `/api/state` was unavailable for 0.10s and a new process was
+  answering 0.26s after the trigger. A 3B is slower to start an
+  interpreter and import Flask, so expect a few seconds - still an
+  order of magnitude inside `restart.sh`'s 60s timeout.
+- **Disk writes are not a concern.** `history.json` is rewritten whole
+  every 5 minutes: about 55 MB a day, 20 GB a year. That is orders of
+  magnitude below what any current SD card is rated for, high-endurance
+  or otherwise. The SD failure that is worth designing against is
+  corruption from power loss mid-write, and every file here is written
+  to a temporary and renamed over, so a power cut leaves the old file
+  or the new one and never a torn one.
+
+One coupling to remember: `history.json` is parsed at startup, so the
+retention window sets how long starting takes. At the default 24 hours
+and a 30s poll it is around 2,900 points and 190 KB. A week would be
+roughly 1.3 MB, which is still fine on a 3B, but it is the only part of
+startup that grows.
+
 ## Install
 
     git clone https://github.com/holloway25/Fan-Controller.git
