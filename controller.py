@@ -12,6 +12,7 @@ import atexit, copy, hashlib, hmac, json, math, os, signal, socket, sys
 import threading, time
 import requests, urllib3
 from flask import Flask, Response, jsonify, request, render_template
+from werkzeug.exceptions import RequestEntityTooLarge
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -192,19 +193,22 @@ def _fsync_dir(path):
     power goes can simply not be there afterwards. Syncing the directory
     is what commits the name.
 
-    Failure is swallowed. Some filesystems refuse to open a directory
-    for reading, and a controller that will not start because it cannot
-    fsync a directory is worse than one whose last write might not
-    survive a power cut.
+    Raises OSError if it cannot. An earlier version swallowed it, on the
+    theory that some filesystem might refuse to open a directory for
+    reading - but the supported targets are Debian and Ubuntu on x86-64
+    and ARM64, where every filesystem in use allows it. So the only
+    thing the swallow actually caught was a real durability failure, and
+    it caught it by reporting success: write_json_durable returned
+    normally, _store_fault cleared fault_unsaved, and a restart went
+    ahead on a fault that might not be on disk. An EIO here is precisely
+    when the fault should stay flagged.
+
+    O_DIRECTORY so a path that is not a directory fails loudly instead
+    of syncing whatever else the descriptor turned out to be.
     """
-    try:
-        fd = os.open(path or ".", os.O_RDONLY)
-    except OSError:
-        return
+    fd = os.open(path or ".", os.O_RDONLY | os.O_DIRECTORY)
     try:
         os.fsync(fd)
-    except OSError:
-        pass
     finally:
         os.close(fd)
 
@@ -269,6 +273,11 @@ _last_flush = 0.0
 
 FAULT_PATH = os.path.join(DIR, "fault.json")
 RESTART_PATH = os.path.join(DIR, "restart.request")
+# A one-time stop that has been promised and not yet made. On disk
+# because a crash or a power cut between committing Manual and making
+# the stop would otherwise drop the promise, leaving the fan running in
+# the one mode whose whole purpose is to stop touching it.
+MANUAL_PENDING_PATH = os.path.join(DIR, "manual-off.pending")
 # Captured at import, and again by the process that replaces this one,
 # so a trigger written before startup can be told from one written
 # after it.
@@ -291,6 +300,45 @@ def load_fault():
         return d if isinstance(d, dict) and d.get("msg") else None
     except (ValueError, OSError):
         return None
+
+
+def promise_manual_off():
+    """Record that a one-time stop is owed, durably, BEFORE Manual is
+    committed.
+
+    Written first on purpose. If this fails the mode change is refused,
+    which is the safe direction: no promise recorded and no Manual
+    stored beats Manual stored with the promise lost. If it succeeds and
+    the process then dies before the stop, the marker is still there and
+    startup restores it.
+
+    A marker left behind by a mode that moved on is harmless: startup
+    only honours it while the stored mode is still Manual, and selecting
+    Manual again writes it afresh at a point where the stop is genuinely
+    owed.
+    """
+    write_json_durable(MANUAL_PENDING_PATH, {"at": time.time()}, mode=0o600)
+
+
+def clear_manual_off_promise():
+    """Forget the owed stop, once the plug has confirmed it.
+
+    Failure is swallowed here, unlike the write. A marker that will not
+    delete costs one extra stop after a restart in Manual, which is the
+    action the user asked for in the first place. Refusing to record a
+    completed stop would be worse.
+    """
+    try:
+        if os.path.exists(MANUAL_PENDING_PATH):
+            os.remove(MANUAL_PENDING_PATH)
+            _fsync_dir(os.path.dirname(MANUAL_PENDING_PATH))
+    except OSError:
+        pass
+
+
+def manual_off_promised():
+    """Whether a stop was owed when we last stopped running."""
+    return os.path.exists(MANUAL_PENDING_PATH)
 
 
 def save_fault(f):
@@ -964,6 +1012,8 @@ def _manual_off_locked(plug):
         STATE["manual_off_pending"] = False
         STATE["fan"] = False
         STATE["changed_at"] = time.time()
+    # Only now: the plug has confirmed, so the promise is discharged.
+    clear_manual_off_promise()
     if not already_off:
         _log("Manual mode - switched off, now hands off")
 
@@ -1588,10 +1638,15 @@ app = Flask(__name__)
 # stays open even once auth is on, so without a cap one LAN device can
 # push arbitrary volume into the journal and events.json.
 app.config["MAX_CONTENT_LENGTH"] = 8192
-# The last client error and when, so a script erroring in a render loop
-# cannot evict the 300 entries of real activity history behind it.
-_last_ui_error = (None, 0.0)
+# When each recent client error was last written to the activity log, so
+# a script erroring in a render loop cannot evict the 300 entries of real
+# fan history behind it. A single most-recent slot was not enough:
+# alternating messages - A, B, A, B - each differ from the one before, so
+# every one got through and the suppression did nothing.
+_ui_error_times = {}
+_ui_error_lock = threading.Lock()
 UI_ERROR_QUIET_SECONDS = 60
+UI_ERROR_TRACKED = 64
 
 # One reverse proxy fronts this service, so the peer address is always
 # the proxy and every request logged as the same client. Trust a single
@@ -1681,19 +1736,36 @@ def api_clienterror():
     if not isinstance(b, dict):
         # A reporting endpoint should not 500 on a malformed report.
         return jsonify(error="JSON body must be an object."), 400
-    global _last_ui_error
     msg = str(b.get("msg", ""))[:300]
     where = "%s:%s" % (str(b.get("src", ""))[:120], b.get("line", "?"))
-    # The journal gets every report: it rotates, and a repeat count is
-    # useful when diagnosing. The activity log does not, because it is
-    # 300 entries deep and shared with the fan events that matter.
+    # The journal gets every report: it rotates, and the repeat count is
+    # diagnostic. The activity log does not, because it is 300 entries
+    # deep and shared with the fan events that matter. Rate limiting the
+    # journal is nginx's job, not this endpoint's.
     app.logger.error("UI error: %s @ %s", msg, where)
-    last, at = _last_ui_error
-    now = time.time()
-    if msg != last or now - at >= UI_ERROR_QUIET_SECONDS:
-        _last_ui_error = (msg, now)
+    if _ui_error_is_new(msg):
         _log("UI error: %s" % msg[:120])
     return jsonify(ok=True)
+
+
+def _ui_error_is_new(msg):
+    """True if this message has not been logged in the quiet period.
+
+    Per message, not just the most recent one, or two errors taking
+    turns would each look new every time. Bounded, or remembering them
+    becomes its own way to fill memory: past the limit the least
+    recently seen is dropped, which at worst lets one extra entry
+    through for a message nobody has reported in a while.
+    """
+    now = time.time()
+    with _ui_error_lock:
+        if now - _ui_error_times.get(msg, 0) < UI_ERROR_QUIET_SECONDS:
+            return False
+        _ui_error_times[msg] = now
+        while len(_ui_error_times) > UI_ERROR_TRACKED:
+            del _ui_error_times[min(_ui_error_times,
+                                    key=_ui_error_times.get)]
+        return True
 
 
 # Distinct from None, which is a valid JSON body ("null"). Without the
@@ -1713,6 +1785,11 @@ def _json_body():
         return _NO_JSON
     try:
         return request.get_json()
+    except RequestEntityTooLarge:
+        # Let Flask answer 413. Catching it here turned "your body is
+        # too big" into "your JSON is malformed", which sends whoever
+        # is debugging it looking at the wrong thing entirely.
+        raise
     except Exception:
         return _BAD_JSON
 
@@ -1999,6 +2076,19 @@ def _api_config_locked():
     if w_lo >= w_hi:
         return jsonify(error="Expected draw low must be below high."), 400
     summary = _describe_changes(cand)
+    # Before save_cfg, not after. The promise has to reach disk BEFORE
+    # the mode that creates it, or a crash in between leaves Manual
+    # stored with nothing owed and a fan still running. Written even if
+    # the plug is unreachable: the promise is what is being recorded,
+    # not the stop.
+    entering_manual = (cand.get("control", {}).get("mode") == "manual"
+                       and CFG["control"].get("mode") != "manual")
+    if entering_manual:
+        try:
+            promise_manual_off()
+        except OSError as e:
+            return jsonify(error="Could not record the manual stop (%s). "
+                                 "Nothing was changed." % e), 500
     # Persist BEFORE committing. The reverse order left a failed write
     # returning 500 while the controller ran on settings that never
     # reached disk - live behaviour and stored behaviour disagreeing
@@ -2366,7 +2456,17 @@ def restart_loop():
 if __name__ == "__main__":
     # Before any thread starts, so the first decide() sees the lease and
     # the latches the previous process was holding.
-    _apply_resume()
+    resumed = _apply_resume()
+    # A promise that outlived the process that made it. Only honoured
+    # while the stored mode is still Manual - a marker left by a mode
+    # that has since moved on is stale, not owed. Skipped after a
+    # handover, which carried the live value across and is more current
+    # than anything on disk.
+    if not resumed and CFG["control"].get("mode") == "manual" \
+            and manual_off_promised():
+        with _state_lock:
+            STATE["manual_off_pending"] = True
+        _log("Manual stop was still owed from before the restart")
     atexit.register(flush_hist)
     for _sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(_sig, flush_hist)

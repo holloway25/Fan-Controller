@@ -13,3 +13,4 @@ __pycache__/
 *.pyc
 fault.json
 restart.request
+manual-off.pending
