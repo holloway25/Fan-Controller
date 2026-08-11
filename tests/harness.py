@@ -56,7 +56,42 @@ def load():
     spec.loader.exec_module(mod)
     _LOADED.append(mod)
     assert mod.DIR == tmp, "tests must not run against the live install"
+    _stub_dir_fsync(mod)
     return mod
+
+
+_ANNOUNCED = []
+
+
+def _stub_dir_fsync(mod):
+    """Make _fsync_dir a no-op where O_DIRECTORY does not exist.
+
+    Not a convenience. write_json_durable calls _fsync_dir, and
+    save_cfg, promise_manual_off and save_fault all call
+    write_json_durable - so on Windows a plain config save raises
+    AttributeError from os.O_DIRECTORY, and dozens of tests with
+    nothing to do with durability fail. AttributeError is not OSError,
+    so write_json_durable's own handler does not even catch it.
+
+    The README used to say a Windows run went green with three named
+    skips. It did not, and could not, and this is the half of the fix
+    that makes the claim true.
+
+    WHAT THIS COSTS, stated rather than buried: on such a platform the
+    directory fsync is not exercised at all. test_durability.py skips
+    before it ever loads the controller, so nothing here claims
+    durability was tested - but every other module then passes without
+    the sync happening, which is a weaker run than the same modules on
+    Linux. It says so out loud, once, rather than going quietly green.
+    """
+    if hasattr(os, "O_DIRECTORY"):
+        return
+    mod._fsync_dir = lambda path: None
+    if not _ANNOUNCED:
+        _ANNOUNCED.append(True)
+        print("NOTE  no O_DIRECTORY on this platform: directory fsync is "
+              "stubbed out.\n      Durability is NOT exercised by this "
+              "run. Linux or CI is the real check.")
 
 
 def run(namespace):

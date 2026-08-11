@@ -318,8 +318,22 @@ unnoticed:
 - all of `test_durability.py` needs Linux `O_DIRECTORY`, since every
   test in it reaches a directory fsync.
 
-So a green run on Windows does not cover the restart path. Run the suite
-on the host before trusting a restart change.
+`test_durability.py` is not the only module that reaches that fsync,
+which is why the harness stubs it out where `O_DIRECTORY` does not
+exist. `write_json_durable` calls `_fsync_dir`, and `save_cfg`,
+`promise_manual_off` and `save_fault` all call `write_json_durable` - so
+without the stub an ordinary config save raises `AttributeError` on
+Windows and takes dozens of unrelated tests down with it. The harness
+prints a `NOTE` when it does this: the run is real, but the directory
+fsync is not exercised anywhere in it.
+
+An earlier version of this section listed the three skips above and
+implied everything else passed on Windows. It did not. That was wrong
+until the stub and the `test_restart_sh.py` platform skip were added.
+
+So a green run on Windows does not cover the restart path, and does not
+cover durability either. Run the suite on the host, or read CI, before
+trusting a change to either.
 
 ## Serving it over HTTPS
 

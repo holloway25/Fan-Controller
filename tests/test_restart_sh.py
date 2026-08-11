@@ -78,12 +78,27 @@ _BASH = None
 
 
 def _need_bash():
-    """Skip unless bash actually runs here.
+    """Skip unless bash actually runs here, and skip on Windows outright.
 
     Probed rather than inferred from the platform. macOS has bash and
     should run these; on Windows the name may resolve to a WSL launcher
     that is present but blocked, so finding it on PATH proves nothing.
+
+    THE ONE PLATFORM CHECK, and why a deliberately platform-agnostic
+    probe has one. Git Bash on Windows passes the probe - bash really
+    does run - and then every scenario fails anyway, because the sandbox
+    paths handed to the scripts are Windows paths and Git Bash rewrites
+    them on the way through. The blocker is path translation, not the
+    shell, so probing the shell cannot detect it. Skipping honestly
+    beats a red line nobody can act on.
+
+    Remove this check the day restart.sh is meant to run under Git Bash,
+    and not before - it is a statement that Windows is unsupported here,
+    not that Windows is broken.
     """
+    if os.name == "nt":
+        harness.skip("restart.sh is not supported under Git Bash: the "
+                     "sandbox paths do not survive path conversion")
     global _BASH
     if _BASH is None:
         try:
