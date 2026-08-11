@@ -403,5 +403,93 @@ def test_the_fault_write_happens_outside_the_actuation_lock():
     return "written outside the lock, and recorded"
 
 
+# ------------------------------------------- the parser in the loop
+#
+# Every stub above replaces the plug OBJECT and answers in Python
+# bools. That is right for testing actuation logic, but it puts the
+# reply parser outside the test entirely - so a parser that reported a
+# live relay as off would not disturb a single assertion in this file.
+# These two keep the real Tasmota client in the loop and replace only
+# _cmd, the HTTP boundary.
+
+
+class RawPlug:
+    """The real client over a simulated relay that answers like a plug."""
+
+    def __init__(self, C, on=True, stuck=False):
+        self.on = on
+        self.stuck = stuck          # a relay that ignores the command
+        self.commands = []
+        self.plug = C.Tasmota("192.0.2.1")
+        self.plug._cmd = self._cmd
+
+    def _cmd(self, cmnd):
+        self.commands.append(cmnd)
+        if not self.stuck:
+            if cmnd == "Power ON":
+                self.on = True
+            elif cmnd == "Power OFF":
+                self.on = False
+        # A JSON boolean, which is what the old parser read as OFF.
+        return {"POWER": self.on}
+
+
+def test_a_manual_stop_reaches_a_relay_answering_with_a_json_boolean():
+    """The defect this file could not see, asserted where it bites.
+
+    _manual_off_locked asks state(), and its except branch says plainly
+    that an unknown answer must switch anyway. The branch was correct
+    and unreachable: a parser that turned an unreadable value into False
+    meant state() returned a confident "off", so the switch was skipped
+    and the durable promise discharged with the fan still running.
+
+    Asserted on the RELAY, not on the parser. What matters is that the
+    fan actually stops.
+    """
+    C = harness.load()
+    setup(C, mode="manual", fan=True)
+    with C._state_lock:
+        C.STATE["manual_off_pending"] = True
+    C.promise_manual_off()
+    raw = RawPlug(C, on=True)
+
+    C._manual_off_locked(raw.plug)
+
+    assert raw.on is False, (
+        "the relay is still on after a manual stop: commands were %r"
+        % (raw.commands,))
+    assert "Power OFF" in raw.commands, (
+        "no stop was ever sent to the plug: %r" % (raw.commands,))
+    return "manual stop reached the relay"
+
+
+def test_an_unstoppable_relay_keeps_the_promise_owed():
+    """The promise is discharged only by a confirmed stop.
+
+    A relay that reports on after being told off must leave the flag
+    set and the marker on disk, so the stop is retried rather than
+    forgotten. This is the second half of the same guarantee: the first
+    test proves the switch is attempted, this one proves a failed
+    attempt is not recorded as a success.
+    """
+    C = harness.load()
+    setup(C, mode="manual", fan=True)
+    with C._state_lock:
+        C.STATE["manual_off_pending"] = True
+    C.promise_manual_off()
+    raw = RawPlug(C, on=True, stuck=True)
+
+    try:
+        C._manual_off_locked(raw.plug)
+    except C.PlugError:
+        pass                        # expected: the switch was refused
+
+    assert C.STATE["manual_off_pending"] is True, (
+        "an unconfirmed stop cleared the pending flag")
+    assert C.manual_off_promised(), (
+        "an unconfirmed stop deleted the durable promise")
+    return "unconfirmed stop stays owed"
+
+
 if __name__ == "__main__":
     sys.exit(harness.run(dict(globals())))

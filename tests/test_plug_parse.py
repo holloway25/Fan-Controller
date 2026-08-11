@@ -103,19 +103,49 @@ def test_an_absent_power_field_is_unknown_and_not_off():
     return "absent field reads as None"
 
 
-def test_only_the_string_on_counts_as_on():
-    """Recorded as the boundary, not endorsed as ideal.
+def test_a_json_boolean_is_believed():
+    """A JSON true means the relay is ON.
 
-    A JSON boolean would stringify to TRUE and read as OFF. That fails
-    in the SAFE direction - set() compares what it got against what it
-    asked for and raises rather than reporting a success - but if a
-    firmware ever starts sending booleans this test is the one that
-    will say so.
+    This replaces a test that asserted the opposite. The old one said a
+    boolean reads as False and called that safe, reasoning that set()
+    compares what it got against what it asked for and raises. set()
+    does. state() does not - it hands the False straight back, and the
+    callers of state() take False as a fact. The old test was wrong,
+    and being a test it made the wrong behaviour look decided.
     """
-    assert C.Tasmota._power({"POWER": True}) is False
-    assert C.Tasmota._power({"POWER": 1}) is False
-    assert C.Tasmota._power({"POWER": "ONLINE"}) is False
-    return "string ON only"
+    assert C.Tasmota._power({"POWER": True}) is True
+    assert C.Tasmota._power({"POWER": False}) is False
+    assert C.Tasmota._power({"POWER1": True}) is True
+    return "JSON booleans read as themselves"
+
+
+def test_a_value_that_is_neither_bool_nor_on_off_is_unknown():
+    """Unknown, not off. The distinction the client rests on.
+
+    An int 1 is NOT read as on: Tasmota does not send one, and inventing
+    the mapping would be guessing in the one place guessing is unsafe.
+    None here means state() raises and the caller switches anyway.
+    """
+    for junk in (1, 0, "ONLINE", "", "1", "0", None, {}, [], 1.0):
+        assert C.Tasmota._power({"POWER": junk}) is None, repr(junk)
+    return "10 unusable values all None"
+
+
+def test_surrounding_whitespace_is_tolerated():
+    assert C.Tasmota._power({"POWER": " on "}) is True
+    assert C.Tasmota._power({"POWER": "OFF\n"}) is False
+    return "trimmed before comparing"
+
+
+def test_an_unusable_key_falls_through_to_the_next():
+    """POWER present but junk must not shadow a good POWER1.
+
+    Short-circuiting on the mere PRESENCE of POWER would report unknown
+    for a reply that plainly says what the relay is doing.
+    """
+    assert C.Tasmota._power({"POWER": "ONLINE", "POWER1": "ON"}) is True
+    assert C.Tasmota._power({"POWER": 1, "POWER1": False}) is False
+    return "falls through to POWER1"
 
 
 def test_state_raises_rather_than_returning_false_when_unknown():

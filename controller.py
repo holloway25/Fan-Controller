@@ -764,9 +764,43 @@ class Tasmota:
 
     @staticmethod
     def _power(data):
+        """True, False, or None when the reply cannot be read.
+
+        None is the whole contract. state() turns it into a raise, and
+        every caller of state() treats a raise as "switch anyway" - see
+        the comment in _manual_off_locked. A value that is neither a
+        bool nor a recognisable ON/OFF string is therefore reported as
+        UNKNOWN rather than guessed at, because guessing "off" is what
+        let a live relay be recorded as stopped: _manual_off_locked
+        skipped the switch and then discharged the durable promise, and
+        the draw enforcement recorded a confirmed stop and quit
+        retrying. Neither raised, because nothing had gone wrong as far
+        as either could tell.
+
+        Only bools and the strings ON and OFF are believed. A JSON true
+        means on. An int 1 does NOT, because Tasmota does not send one
+        and inventing that mapping would be a guess in the one place
+        guessing is unsafe. If a firmware ever does send "1", this
+        returns None and the plug reads as unreadable - which is loud,
+        and the right moment to add it deliberately with a capture to
+        justify it.
+
+        A key that is present but unusable falls through to the next key
+        rather than short-circuiting, so a reply carrying a junk POWER
+        and a good POWER1 is still readable.
+        """
         for k in ("POWER", "POWER1"):
-            if k in data:
-                return str(data[k]).upper() == "ON"
+            if k not in data:
+                continue
+            v = data[k]
+            if isinstance(v, bool):
+                return v
+            if isinstance(v, str):
+                v = v.strip().upper()
+                if v == "ON":
+                    return True
+                if v == "OFF":
+                    return False
         return None
 
     def state(self):
