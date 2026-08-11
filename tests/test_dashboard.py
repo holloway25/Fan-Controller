@@ -5,11 +5,17 @@ JavaScript engine on the deployment host, so nothing here executes the
 dashboard - it only checks that the wiring the server's behaviour
 depends on is still present.
 
-Be clear about the limit: these catch a line being DELETED. They cannot
-catch it being wrong. A condition that references the right names and
-compares them the wrong way passes everything here. They exist because
-the alternative for this particular defect was a test named after the
-dashboard that never opened the file, which is worse than no test.
+Be clear about the limit: MOST of these catch a line being DELETED
+rather than being wrong. Two exceptions, added later, check the
+OPERATORS in the fetch guard - that it compares for difference rather
+than equality, and that the two halves are OR'd rather than AND'd -
+because those are the two ways that guard has actually been wrong. The
+limit stands everywhere else: a line referencing the right names and
+using them backwards still passes the rest of this file.
+
+They exist because the alternative for this particular defect was a
+test named after the dashboard that never opened the file, which is
+worse than no test.
 """
 import os
 import re
@@ -64,6 +70,44 @@ def test_the_fetch_guard_watches_the_generation_as_well():
         "through a restart never asks and never learns the trace is from "
         "a process that no longer exists")
     return "guard watches both"
+
+
+def test_the_fetch_guard_compares_for_difference_not_equality():
+    """The inversion the test above cannot see.
+
+    That one proves both names are MENTIONED. A guard that mentions
+    them and compares with === refetches only while the client is
+    already up to date, and stops the moment it falls behind - exactly
+    backwards, and green against every other assertion in this file.
+
+    Checks the OPERATOR rather than the operand order, so rewriting
+    HIST_REV!==s.history_rev the other way round does not fail a test
+    about something else.
+    """
+    cond = guard_condition(squashed())
+    assert "===" not in cond, (
+        "the fetch guard compares for equality, so it refetches while "
+        "the trace is current and stops when it goes stale")
+    assert cond.count("!==") == 2, (
+        "expected two inequality comparisons, revision and generation, "
+        "found %d" % cond.count("!=="))
+    return "two !== and no ==="
+
+
+def test_the_revision_and_generation_are_ored_not_anded():
+    """Either one differing has to be enough on its own.
+
+    Requiring BOTH is the 3e0aca4 defect reached by a different route:
+    a tab holding a revision the replacement has climbed back to
+    matches on the revision, so an AND never fires, nothing refetches,
+    and the next delta is appended to a trace from a process that no
+    longer exists.
+    """
+    cond = guard_condition(squashed())
+    assert "||" in cond, (
+        "the revision and generation checks are not OR'd, so one of "
+        "them differing on its own does not trigger a fetch")
+    return "revision OR generation"
 
 
 def test_the_delta_request_sends_both_since_and_gen():
