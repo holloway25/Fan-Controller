@@ -29,9 +29,24 @@ def test_no_request_is_not_a_restart():
 
 
 def test_fresh_request_is_taken_and_removed():
+    """Freshness is set explicitly, not left to the clock.
+
+    _consume_restart_request compares the file's mtime against
+    _PROC_START, so "fresh" has to be stated rather than assumed.
+    Writing the file and hoping its timestamp lands after a value
+    captured at import is a race with a margin of about a millisecond -
+    the time harness.load() takes. time.time() here was no better: it
+    re-reads the same clock that _PROC_START came from, so a backward
+    step between the two puts it on the wrong side just the same.
+
+    Anchoring to _PROC_START removes the clock from the test entirely.
+    The stale case below has always done this; this is the pair being
+    made symmetric.
+    """
     C = harness.load()
     open(C.RESTART_PATH, "w").close()
-    os.utime(C.RESTART_PATH, (time.time(), time.time()))
+    fresh = C._PROC_START + 1
+    os.utime(C.RESTART_PATH, (fresh, fresh))
 
     assert C._consume_restart_request() is True, \
         "a fresh trigger was not taken"
@@ -41,8 +56,18 @@ def test_fresh_request_is_taken_and_removed():
 
 
 def test_a_taken_request_does_not_fire_twice():
+    """See the note above on why the timestamp is set rather than taken.
+
+    This one had no os.utime at all and relied on the filesystem
+    stamping the new file later than _PROC_START. On ext4 it does, by
+    roughly a millisecond. Under WSL it consistently does NOT - the
+    reviewer measured 0.1 to 3 ms EARLY - so the first consume returned
+    False and the test failed every run on that platform.
+    """
     C = harness.load()
     open(C.RESTART_PATH, "w").close()
+    fresh = C._PROC_START + 1
+    os.utime(C.RESTART_PATH, (fresh, fresh))
 
     assert C._consume_restart_request() is True, "first call missed it"
     assert C._consume_restart_request() is False, \
