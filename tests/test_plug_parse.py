@@ -18,6 +18,7 @@ shapes this particular plug actually sends - that needs one captured
 something to read off disk to satisfy a test. Until such a capture
 exists these say "matches documented Tasmota", not "matches the device".
 """
+import json
 import os
 import sys
 
@@ -25,6 +26,22 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import harness
 
 C = harness.load()
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+FIXTURE = os.path.join(HERE, "fixtures", "plug_capture.json")
+
+
+def capture():
+    """The replies captured from the real plug, or a skip.
+
+    Skipping rather than failing so a fork with no device is not stuck
+    with a red suite. Note CI treats a SKIP as a failure, which is what
+    keeps the fixture from quietly disappearing from the repo.
+    """
+    try:
+        return json.load(open(FIXTURE, encoding="utf-8"))["replies"]
+    except (OSError, KeyError, ValueError):
+        harness.skip("no capture fixture - run tests/capture_plug_fixture.py")
 
 
 def plug(reply=None, record=None):
@@ -181,6 +198,20 @@ def test_zero_watts_is_a_reading_and_not_a_miss():
     return "0 W survives as 0.0"
 
 
+def test_a_bare_integer_is_accepted():
+    """What the real plug actually sends when the draw is a whole number.
+
+    Recorded because the table above was written with 19.4 and a quoted
+    "19.4", and the device sends 18. float() takes all three, so this
+    was never a defect - it is the difference between modelling the
+    shapes Tasmota documents and the shapes this plug emits.
+    """
+    p = plug({"StatusSNS": {"ENERGY": {"Power": 18}}})
+    v = p.power_w()
+    assert v == 18.0 and isinstance(v, float), repr(v)
+    return "bare int coerced to float"
+
+
 def test_a_draw_that_cannot_be_read_is_none():
     """Every malformed shape returns None rather than raising, because
     the draw thread must keep running when the plug answers oddly."""
@@ -194,6 +225,59 @@ def test_a_draw_that_cannot_be_read_is_none():
                   {"StatusSNS": None}):
         assert plug(shape).power_w() is None, shape
     return "8 malformed shapes all None"
+
+
+# ------------------------------------------------------- the real plug
+#
+# Half B. Everything above models shapes Tasmota is DOCUMENTED to send.
+# These three drive the same parsers over replies actually captured
+# from the deployment's plug, so the module can claim the device rather
+# than the documentation. Reads only - see capture_plug_fixture.py.
+
+
+def test_the_captured_relay_reply_is_readable():
+    """The parser must get a definite answer from the real device.
+
+    None here would mean the plug names its relay something the client
+    does not look for, which reads as an unknown state and stops the
+    fan being switched at all.
+    """
+    v = C.Tasmota._power(capture()["Power"])
+    assert v is not None, (
+        "the relay reply from the real plug parses as unknown")
+    assert isinstance(v, bool), type(v)
+    return "relay reply parses to %s" % v
+
+
+def test_the_captured_draw_reply_is_readable():
+    """Same for the meter. None would mean the fault detector is blind
+    on this device while every unit test above still passes."""
+    v = plug(capture()["Status 8"]).power_w()
+    assert v is not None, (
+        "the draw reply from the real plug parses as no reading")
+    assert isinstance(v, float), type(v)
+    return "%.1f W" % v
+
+
+def test_the_capture_uses_shapes_the_table_above_models():
+    """The one that will speak up when the firmware moves.
+
+    If a plug update starts sending a relay key the client does not
+    look for, or a draw value of a type float() will not take, this
+    fails and names it - rather than the unit tests carrying on green
+    against shapes the device stopped using. The detail it returns is
+    printed by the runner, so a passing run still records WHICH shapes
+    were seen.
+    """
+    reps = capture()
+    keys = [k for k in ("POWER", "POWER1") if k in reps["Power"]]
+    assert keys, (
+        "the captured relay reply carries neither POWER nor POWER1, so "
+        "the client cannot read this firmware at all")
+    raw = reps["Status 8"]["StatusSNS"]["ENERGY"]["Power"]
+    assert isinstance(raw, (int, float, str)), (
+        "draw arrived as %s, which float() will not take" % type(raw).__name__)
+    return "relay key %s, draw as %s" % (keys[0], type(raw).__name__)
 
 
 if __name__ == "__main__":

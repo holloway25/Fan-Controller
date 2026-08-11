@@ -1,0 +1,26 @@
+{
+  "_comment": "Real replies from the deployment's Tasmota plug, for test_plug_parse.py. Reads only. No credentials and no host address - see capture_plug_fixture.py.",
+  "captured_utc": "2026-08-11",
+  "replies": {
+    "Power": {
+      "POWER": "ON"
+    },
+    "Status 8": {
+      "StatusSNS": {
+        "ENERGY": {
+          "ApparentPower": 29,
+          "Current": 0.12,
+          "Factor": 0.6,
+          "Power": 17,
+          "ReactivePower": 23,
+          "Today": 0.012,
+          "Total": 0.598,
+          "TotalStartTime": "2026-08-05T00:00:00",
+          "Voltage": 241,
+          "Yesterday": 0.061
+        },
+        "Time": "2026-08-11T15:16:08"
+      }
+    }
+  }
+}
