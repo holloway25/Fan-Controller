@@ -20,9 +20,25 @@ jobs:
         # 3.14 is what production runs today.
         python: ["3.10", "3.11", "3.14"]
     steps:
-      - uses: actions/checkout@v4
+      # Node 20 was deprecated on the runners: these have been
+      # force-run on Node 24 since 2026-06-02, and Node 20 leaves
+      # entirely on 2026-09-16. checkout v5 and setup-python v6 are the
+      # first releases targeting Node 24 natively, so this only silences
+      # a warning - the green run before the bump was ALREADY on Node
+      # 24, which is what makes the September removal a non-event here.
+      #
+      # NOT checkout v6, deliberately. It needs Actions Runner
+      # >=v2.329.0 for credential persistence and changes
+      # pull_request_target defaults. This workflow triggers on
+      # pull_request so neither reaches it, but a bump to clear a
+      # warning is not the place to take an unrelated behaviour change.
+      #
+      # @v5 and @v6 float, so they pick up backports. If a CI result
+      # ever needs to be reproducible, pin the full commit SHA with the
+      # version in a trailing comment instead.
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
 
