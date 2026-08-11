@@ -1,5 +1,12 @@
 name: tests
 
+# Read-only, declared explicitly. This workflow checks out the repo and
+# runs the suite; it writes nothing back. Both checkout and
+# setup-python recommend narrowing the token to the smallest scope that
+# works, and the default is wider than this needs.
+permissions:
+  contents: read
+
 on:
   push:
   pull_request:
@@ -20,22 +27,34 @@ jobs:
         # 3.14 is what production runs today.
         python: ["3.10", "3.11", "3.14"]
     steps:
-      # Node 20 was deprecated on the runners: these have been
-      # force-run on Node 24 since 2026-06-02, and Node 20 leaves
-      # entirely on 2026-09-16. checkout v5 and setup-python v6 are the
-      # first releases targeting Node 24 natively, so this only silences
-      # a warning - the green run before the bump was ALREADY on Node
-      # 24, which is what makes the September removal a non-event here.
+      # Node 20 was deprecated on the Actions runners. checkout v5 and
+      # setup-python v6 are the first releases targeting Node 24
+      # natively, which is the whole of what this bump is for. It
+      # changed no behaviour: the green run BEFORE the bump was already
+      # being force-run on Node 24, so the eventual removal of Node 20
+      # takes away a runtime this workflow had already stopped using.
       #
-      # NOT checkout v6, deliberately. It needs Actions Runner
-      # >=v2.329.0 for credential persistence and changes
-      # pull_request_target defaults. This workflow triggers on
-      # pull_request so neither reaches it, but a bump to clear a
-      # warning is not the place to take an unrelated behaviour change.
+      # NO DATES HERE, ON PURPOSE. An earlier version of this comment
+      # pinned two of them and both were wrong within weeks - GitHub
+      # moved the default-switch date and withdrew the removal date
+      # altogether. Read the changelog for the current schedule:
+      # https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
       #
-      # @v5 and @v6 float, so they pick up backports. If a CI result
-      # ever needs to be reproducible, pin the full commit SHA with the
-      # version in a trailing comment instead.
+      # v5 RATHER THAN v6 IS NOT A SAFETY CHOICE, whatever an earlier
+      # version of this comment claimed. It said v6 alone changed
+      # pull_request_target defaults and alone needed a newer runner.
+      # Both were wrong. The pull_request_target enforcement was
+      # backported to every supported major, and a floating tag like
+      # @v5 picks it up automatically - so this workflow already has
+      # it. The v2.329.0 runner floor is for authenticated git from a
+      # Docker container action, which this does not do. v5 is here
+      # because it works and is green; v6 and v7 exist and would also
+      # work. Do not churn the version without a reason.
+      #
+      # @v5 and @v6 float, so they pick up backports - which is exactly
+      # how the enforcement above arrived without anyone editing this
+      # file. If a CI result ever needs to be reproducible, pin the full
+      # commit SHA with the version in a trailing comment instead.
       - uses: actions/checkout@v5
 
       - uses: actions/setup-python@v6
