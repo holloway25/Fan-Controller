@@ -1480,10 +1480,27 @@ def _notify(subject, body, on_complete=None):
     escaping into _store_fault's caller would leave the fault path
     half-run.
     """
+    def complete(ok):
+        """Report completion once, and never let it escape.
+
+        A callback that raised used to be caught by the queueing handler
+        below, which then reported completion AGAIN - so the contract
+        two paragraphs up was false in exactly the case it mattered.
+        Bookkeeping failures are logged and dropped here instead.
+        """
+        if not on_complete:
+            return
+        try:
+            on_complete(ok)
+        except Exception as exc:
+            try:
+                _log("Alert bookkeeping failed: %s" % exc)
+            except Exception:
+                pass
+
     try:
         if not _email_ready():
-            if on_complete:
-                on_complete(False)
+            complete(False)
             return
 
         def run():
@@ -1502,21 +1519,15 @@ def _notify(subject, body, on_complete=None):
                 # password.
                 _log(_redact("Alert email failed (%s): %s"
                              % (subject, why)))
-            if on_complete:
-                try:
-                    on_complete(why is None)
-                except Exception as exc:    # pragma: no cover
-                    _log("Alert bookkeeping failed: %s" % exc)
+            complete(why is None)
         threading.Thread(target=run, daemon=True,
                          name="notify").start()
     except Exception as exc:            # pragma: no cover - belt and braces
         # Thread creation can fail. Reporting completion here as well
-        # means an in-flight flag is released even then.
-        if on_complete:
-            try:
-                on_complete(False)
-            except Exception:
-                pass
+        # means an in-flight flag is released even then. complete()
+        # swallows, so this cannot become a second call for a callback
+        # that already raised above.
+        complete(False)
         try:
             _log("Alert email could not be queued: %s" % exc)
         except Exception:
@@ -1720,6 +1731,15 @@ def _notify_restart_fault():
         with _state_lock:
             f = dict(STATE["fault"]) if STATE["fault"] else None
         if not f:
+            return
+        # Checked BEFORE anything is stamped. _mark_fault_attempted
+        # WRITES fault.json, so leaving this until _notify meant every
+        # restart with a standing fault wrote and fsynced the file even
+        # with alerts switched off - recording an attempt that never
+        # happened, and on a Pi in a crash loop, writing to the SD card
+        # every ten seconds for nothing. _notify checks again, because
+        # the configuration can change between here and there.
+        if not _email_ready():
             return
         # Suppress on DELIVERY, not on the attempt. Rate limiting on
         # the attempt meant a send that failed still bought an hour of

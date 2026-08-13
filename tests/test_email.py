@@ -938,5 +938,98 @@ def test_an_already_unsaved_fault_stays_flagged():
     return "still flagged"
 
 
+# --------------------------- alerts off means nothing happens at all
+
+def test_a_restart_with_alerts_off_writes_nothing():
+    """Checking readiness late meant a disk write for no reason.
+
+    _mark_fault_attempted writes and fsyncs fault.json. Stamping first
+    and checking email afterwards meant EVERY restart with a standing
+    fault wrote the file even with alerts switched off - recording an
+    attempt that never happened, and on a Pi in a crash loop, writing
+    to the SD card every ten seconds for nothing.
+    """
+    C = harness.load()
+    C.CFG["email"]["enabled"] = False
+    now = C.time.time()
+    C._store_fault({"at": now, "msg": "draw fault", "stopped": True,
+                    "attempted_at": None, "delivered_at": None})
+
+    writes = []
+    real = C.save_fault
+
+    def counting(f):
+        writes.append(f)
+        return real(f)
+
+    C.save_fault = counting
+    try:
+        C._notify_restart_fault()
+    finally:
+        C.save_fault = real
+
+    assert writes == [], "wrote fault.json with alerts switched off"
+    assert C.STATE["fault"]["attempted_at"] is None, \
+        "recorded an attempt that never happened"
+    return "no write, no false attempt"
+
+
+def test_a_restart_with_alerts_on_does_stamp_the_attempt():
+    """The guard above must not silence the notice when it is wanted."""
+    C = harness.load()
+    sent = wire(C)
+    now = C.time.time()
+    C._store_fault({"at": now, "msg": "draw fault", "stopped": True,
+                    "attempted_at": None, "delivered_at": None})
+    C._notify_restart_fault()
+    assert len(sent) == 1, "no notice with alerts on: %r" % sent
+    assert C.STATE["fault"]["attempted_at"] is not None, "no attempt stamp"
+    return "still notifies when configured"
+
+
+# ------------------------------------------- exactly once, even on error
+
+def test_on_complete_is_called_once_even_when_it_raises():
+    """The contract says exactly once. It used to mean at most twice.
+
+    The disabled-email path called the callback inside the outer try, so
+    a callback that raised was caught by the queueing handler, which
+    called it again.
+    """
+    C = harness.load()
+    C.CFG["email"]["enabled"] = False
+    calls = []
+
+    def angry(ok):
+        calls.append(ok)
+        raise RuntimeError("bookkeeping exploded")
+
+    C._notify("subject", "body", on_complete=angry)
+    assert calls == [False], "called %d times: %r" % (len(calls), calls)
+    return "once, and the raise is swallowed"
+
+
+def test_a_raising_callback_does_not_escape_the_worker():
+    C = harness.load()
+    live_email(C)
+    gate = Gate()
+    C._send_mail = gate
+    calls = []
+
+    def angry(ok):
+        calls.append(ok)
+        raise RuntimeError("bookkeeping exploded")
+
+    C._notify("subject", "body", on_complete=angry)
+    assert gate.started.wait(5)
+    gate.release.set()
+    for _ in range(50):
+        if calls:
+            break
+        C.time.sleep(0.05)
+    assert calls == [True], "called %d times: %r" % (len(calls), calls)
+    return "once from the worker too"
+
+
 if __name__ == "__main__":
     sys.exit(harness.run(dict(globals())))
