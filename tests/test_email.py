@@ -42,7 +42,6 @@ def wire(C, **cfg):
             on_complete(True)
 
     C._notify = fake_notify
-    C._notify_or_skip = fake_notify
     return sent
 
 
@@ -62,7 +61,6 @@ def wire_failing(C, **cfg):
             on_complete(False)
 
     C._notify = fake_notify
-    C._notify_or_skip = fake_notify
     return attempts
 
 
@@ -783,6 +781,161 @@ def test_a_replacement_fault_is_not_marked_delivered():
     assert C.STATE["fault"]["delivered_at"] is not None, \
         "the matching callback did not record delivery"
     return "identity checked on at"
+
+
+# ------------------------------------------ the attempt write is guarded
+#
+# _mark_fault_delivered was fixed first; the ATTEMPT write on the restart
+# path kept the same bug for a round longer. Both now match on "at".
+
+
+def test_an_acknowledged_fault_is_not_resurrected_by_the_attempt_write():
+    """The restart notice stamps attempted_at before it sends.
+
+    It used to snapshot the fault and call _store_fault, so an
+    acknowledgement landing in between was written back over: the
+    operator cleared it, and the notice put it back.
+    """
+    C = harness.load()
+    now = C.time.time()
+    C._store_fault({"at": now, "msg": "draw fault", "stopped": True,
+                    "attempted_at": None, "delivered_at": None})
+    C._clear_fault()
+    assert C.STATE["fault"] is None, "precondition"
+
+    assert C._mark_fault_attempted(now) is False, \
+        "stamped a fault that had been acknowledged"
+    assert C.STATE["fault"] is None, "resurrected it in memory"
+    assert C.load_fault() is None, "resurrected it on disk"
+    return "acknowledgement wins"
+
+
+def test_the_attempt_write_ignores_a_replacement_fault():
+    C = harness.load()
+    first = C.time.time() - 100
+    C._store_fault({"at": first, "msg": "old", "stopped": True})
+    C._clear_fault()
+    second = C.time.time()
+    C._store_fault({"at": second, "msg": "new", "stopped": True})
+
+    assert C._mark_fault_attempted(first) is False, \
+        "stamped a different fault"
+    assert C.STATE["fault"]["msg"] == "new", "overwrote the newer fault"
+    assert C.STATE["fault"].get("attempted_at") is None
+    return "identity checked"
+
+
+def test_the_restart_notice_stays_quiet_if_the_fault_goes_first():
+    """No fault, nothing to report - and nothing to write back."""
+    C = harness.load()
+    sent = wire(C)
+    with C._state_lock:
+        C.STATE["fault"] = None
+    C._notify_restart_fault()
+    assert sent == [], "notified about a fault that was not there"
+    return "quiet when it has gone"
+
+
+# ------------------------------------- on_complete is always called once
+
+def test_on_complete_fires_when_alerts_are_switched_off():
+    """Otherwise an in-flight flag sticks on for the life of the process.
+
+    Readiness used to be checked in a wrapper and again inside _notify.
+    Alerts going off between the two meant no worker ran and nothing
+    called back, so the stale warning was silenced permanently - even
+    after email was switched back on.
+    """
+    C = harness.load()
+    C.CFG["email"]["enabled"] = False
+    seen = []
+    C._notify("subject", "body", on_complete=seen.append)
+    assert seen == [False], "on_complete not called: %r" % seen
+    return "called with False"
+
+
+def test_on_complete_fires_when_the_thread_cannot_start():
+    C = harness.load()
+    live_email(C)
+    seen = []
+
+    real = C.threading.Thread
+
+    class Broken(object):
+        def __init__(self, *a, **k):
+            raise RuntimeError("cannot start new thread")
+
+    C.threading.Thread = Broken
+    try:
+        C._notify("subject", "body", on_complete=seen.append)
+    finally:
+        C.threading.Thread = real
+
+    assert seen == [False], "on_complete not called on thread failure"
+    return "called with False"
+
+
+def test_a_stuck_inflight_flag_cannot_silence_later_warnings():
+    """The end-to-end version of the two tests above."""
+    C = harness.load()
+    C.CFG["email"]["enabled"] = False
+    C._notify_stale(30, True)
+    assert C._stale_inflight is False, "stuck in flight with alerts off"
+
+    sent = wire(C)                       # alerts back on
+    C._notify_stale(30, True)
+    assert len(sent) == 1, "later warning was silenced: %r" % sent
+    return "recovers when alerts return"
+
+
+# -------------------------- a lost timestamp is not a lost safety fault
+
+def test_a_failed_delivery_stamp_does_not_raise_the_unsaved_flag():
+    """fault_unsaved means "this fault would be lost on restart".
+
+    Only the alert bookkeeping is at risk here - the fault itself is
+    already durable. Raising the flag produced an alarming alert of its
+    own, warned the fault could vanish, and blocked requested restarts,
+    all for a timestamp whose loss costs one duplicate notice.
+    """
+    C = harness.load()
+    now = C.time.time()
+    C._store_fault({"at": now, "msg": "draw fault", "stopped": True})
+    assert C.STATE["fault_unsaved"] is False, "precondition: durable"
+
+    def boom(*a, **k):
+        raise OSError(28, "No space left on device")
+
+    real = os.replace
+    os.replace = boom
+    try:
+        C._mark_fault_delivered(now)
+    finally:
+        os.replace = real
+
+    assert C.STATE["fault_unsaved"] is False, \
+        "a lost delivery stamp was reported as a lost fault"
+    return "timestamp loss is not fault loss"
+
+
+def test_an_already_unsaved_fault_stays_flagged():
+    """Restoring the previous value must not mask a real problem."""
+    C = harness.load()
+
+    def boom(*a, **k):
+        raise OSError(28, "No space left on device")
+
+    real = os.replace
+    os.replace = boom
+    try:
+        C._store_fault({"at": 1.0, "msg": "draw fault", "stopped": True})
+        assert C.STATE["fault_unsaved"] is True, "precondition: unsaved"
+        C._mark_fault_delivered(1.0)
+        assert C.STATE["fault_unsaved"] is True, \
+            "cleared the unsaved flag on a fault that is still not on disk"
+    finally:
+        os.replace = real
+    return "still flagged"
 
 
 if __name__ == "__main__":

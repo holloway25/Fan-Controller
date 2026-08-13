@@ -1452,25 +1452,21 @@ def _send_mail(subject, body):
             pass
 
 
-def _notify_or_skip(subject, body, on_complete):
-    """_notify, but tell the caller if nothing was queued.
-
-    _notify is a no-op when alerts are off or unconfigured, and no
-    worker runs - so on_complete would never fire and an inflight flag
-    would stick on for the life of the process.
-    """
-    if not _email_ready():
-        on_complete(False)
-        return
-    _notify(subject, body, on_complete=on_complete)
-
-
 def _notify(subject, body, on_complete=None):
     """Queue a notification. Returns immediately; never raises.
 
-    on_complete(ok), if given, is called on the sending thread once the
-    send has FINISHED, with True if the relay accepted the message and
-    False otherwise. It is always called exactly once.
+    on_complete(ok) IS ALWAYS CALLED EXACTLY ONCE, whatever happens:
+    with True from the sending thread if the relay accepted the
+    message, and with False if it did not, if alerts are switched off,
+    or if the thread could not even be started. Callers rely on that to
+    clear an in-flight flag, and a path that returns without calling it
+    leaves that flag set for the life of the process - which silences
+    the alert it was guarding.
+
+    An earlier version checked readiness in a wrapper and again in here.
+    Alerts being switched off between the two checks meant no worker ran
+    and nothing called back. The check belongs in ONE place, and that
+    place also owns the callback.
 
     Bookkeeping belongs in there, not at the call site. _notify returns
     as soon as the thread starts, so anything written after the call
@@ -1486,7 +1482,10 @@ def _notify(subject, body, on_complete=None):
     """
     try:
         if not _email_ready():
+            if on_complete:
+                on_complete(False)
             return
+
         def run():
             # _send_mail reports failures by returning a reason rather
             # than raising, so this guard is redundant today. It is here
@@ -1511,6 +1510,13 @@ def _notify(subject, body, on_complete=None):
         threading.Thread(target=run, daemon=True,
                          name="notify").start()
     except Exception as exc:            # pragma: no cover - belt and braces
+        # Thread creation can fail. Reporting completion here as well
+        # means an in-flight flag is released even then.
+        if on_complete:
+            try:
+                on_complete(False)
+            except Exception:
+                pass
         try:
             _log("Alert email could not be queued: %s" % exc)
         except Exception:
@@ -1546,8 +1552,7 @@ def _notify_stale(mins, already_on):
         if ok:
             _stale_delivered = True
         _stale_inflight = False
-    _notify_or_skip(
-            "Sensor readings stopped - fan running as a precaution",
+    _notify("Sensor readings stopped - fan running as a precaution",
             "No reading for %d minutes.\n\n%s\n\nThe air quality "
             "sensor or the Protect console is the place to look. Normal "
             "control resumes on its own once readings come back, and "
@@ -1596,6 +1601,58 @@ def _unsaved_edge():
             "or a permissions change on the install directory.")
 
 
+def _mark_fault_attempted(expected_at):
+    """Stamp attempted_at on the fault, if it is still that fault.
+
+    The restart notice used to snapshot the fault, then call
+    _store_fault to record the attempt. An acknowledgement landing
+    between those two steps was undone - _store_fault wrote the stale
+    copy back over a fault the operator had just cleared.
+
+    Same shape as _mark_fault_delivered and for the same reason: hold
+    _fault_lock across the check AND the write, and match on "at".
+    Returns False if the fault has gone or been replaced, in which case
+    the caller must not send.
+    """
+    with _fault_lock:
+        with _state_lock:
+            cur = dict(STATE["fault"]) if STATE["fault"] else None
+        if not cur or cur.get("at") != expected_at:
+            return False
+        cur["attempted_at"] = time.time()
+        with _state_lock:
+            if not STATE["fault"] or STATE["fault"].get("at") != expected_at:
+                return False
+            STATE["fault"] = cur
+        _save_annotation(cur)
+    _unsaved_edge()
+    return True
+
+
+def _save_annotation(fault):
+    """Persist a fault whose SAFETY content has not changed.
+
+    CALLERS MUST HOLD _fault_lock. Only the alert bookkeeping -
+    attempted_at, delivered_at - differs from what is already on disk,
+    so a write failure here must NOT raise fault_unsaved: that flag
+    means "this fault would be lost on restart", it produces an alarming
+    alert of its own, and it blocks requested restarts. Losing a
+    timestamp costs at most one duplicate notice.
+
+    A fault that was ALREADY unsaved stays unsaved: the previous value
+    is restored rather than cleared, so this cannot mask a real problem.
+    """
+    with _state_lock:
+        was_unsaved = STATE["fault_unsaved"]
+    try:
+        save_fault(fault)
+        with _state_lock:
+            STATE["fault_unsaved"] = False
+    except OSError:
+        with _state_lock:
+            STATE["fault_unsaved"] = was_unsaved
+
+
 def _mark_fault_delivered(expected_at):
     """Record that the alert for THIS fault reached the relay.
 
@@ -1630,16 +1687,7 @@ def _mark_fault_delivered(expected_at):
             if not STATE["fault"] or STATE["fault"].get("at") != expected_at:
                 return              # changed while we were copying
             STATE["fault"] = cur
-        try:
-            save_fault(cur)
-            with _state_lock:
-                STATE["fault_unsaved"] = False
-        except OSError:
-            # Only the delivery stamp is at risk, and losing it costs at
-            # most one duplicate restart notice. The fault itself is
-            # already on disk.
-            with _state_lock:
-                STATE["fault_unsaved"] = True
+        _save_annotation(cur)
     _unsaved_edge()
 
 
@@ -1679,9 +1727,12 @@ def _notify_restart_fault():
         # unreported precisely because the mail was broken.
         if time.time() - (f.get("delivered_at") or 0) < RESTART_NOTICE_SUPPRESS:
             return
-        f["attempted_at"] = time.time()
-        _store_fault(f)
         expected_at = f.get("at")
+        # Guarded: an acknowledgement landing between the read above and
+        # this write would otherwise be undone by storing the stale copy.
+        # If it has gone, there is nothing to notify about either.
+        if not _mark_fault_attempted(expected_at):
+            return
 
         def completed(ok):
             if ok:
