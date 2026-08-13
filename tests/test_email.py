@@ -276,5 +276,241 @@ def test_password_is_redacted_and_cleared_with_the_host():
     return "redacted, and cleared on host change"
 
 
+# ------------------------------------------------------- authentication
+#
+# The review found that smtplib.login() iterates CRAM-MD5, PLAIN, LOGIN
+# and CONTINUES past an SMTPAuthenticationError - so a failed CRAM-MD5
+# silently retried as PLAIN, in clear, on a link with no STARTTLS. These
+# tests exist so that cannot come back.
+
+
+class FakeSMTP(object):
+    """Enough of smtplib.SMTP to record what a send actually does."""
+
+    def __init__(self, auth="CRAM-MD5 PLAIN LOGIN", starttls=False):
+        self.esmtp_features = {"auth": auth} if auth else {}
+        self._starttls = starttls
+        self.calls = []
+        self.sent = None
+        self.user = None
+        self.password = None
+        # Real code passes s.auth_cram_md5 to s.auth(), so the fake needs
+        # it to exist. Its return value is never inspected here - what is
+        # under test is WHICH mechanism gets chosen, not the HMAC.
+        self.auth_cram_md5 = lambda *a, **k: "challenge-response"
+
+    def has_extn(self, name):
+        return name.lower() == "starttls" and self._starttls
+
+    def starttls(self):
+        self.calls.append("starttls")
+
+    def ehlo(self, *a):
+        self.calls.append("ehlo")
+        return 250, b"ok"
+
+    def auth(self, mechanism, authobject, **kw):
+        self.calls.append("auth:" + mechanism)
+        return 235, b"ok"
+
+    def login(self, user, password):
+        self.calls.append("login")
+        return 235, b"ok"
+
+    def sendmail(self, sender, to, msg):
+        self.sent = (sender, to, msg)
+        return {}
+
+    def quit(self):
+        self.calls.append("quit")
+
+
+def with_fake(C, fake, **cfg):
+    C.CFG["email"].update(enabled=True, host="relay.invalid", port=25,
+                          username="user", password="pw",
+                          sender="fan@invalid", recipients="a@invalid")
+    C.CFG["email"].update(**cfg)
+    C.smtplib.SMTP = lambda *a, **k: fake
+    return fake
+
+
+def test_cram_md5_is_used_and_login_is_never_called():
+    """login() would fall back to PLAIN. It must not be used."""
+    C = harness.load()
+    real = C.smtplib.SMTP
+    fake = with_fake(C, FakeSMTP())
+    try:
+        why = C._send_mail("s", "b")
+    finally:
+        C.smtplib.SMTP = real
+    assert why is None, why
+    assert "auth:CRAM-MD5" in fake.calls, fake.calls
+    assert "login" not in fake.calls, \
+        "used login(), which falls back to PLAIN in the clear"
+    return "CRAM-MD5 chosen explicitly"
+
+
+def test_refuses_when_only_clear_mechanisms_are_offered():
+    """No STARTTLS and no CRAM-MD5 means refuse, not degrade.
+
+    A refused send is a logged failure. A downgraded one is a leaked
+    password that looks like success.
+    """
+    C = harness.load()
+    real = C.smtplib.SMTP
+    fake = with_fake(C, FakeSMTP(auth="PLAIN LOGIN"))
+    try:
+        why = C._send_mail("s", "b")
+    finally:
+        C.smtplib.SMTP = real
+    assert why and "refusing" in why.lower(), why
+    assert fake.sent is None, "sent anyway after refusing to authenticate"
+    assert not any(c.startswith("auth") for c in fake.calls), fake.calls
+    return "refuses rather than sending the password in clear"
+
+
+def test_starttls_is_used_when_offered():
+    """A relay that offers encryption gets it, and login is then safe."""
+    C = harness.load()
+    real = C.smtplib.SMTP
+    fake = with_fake(C, FakeSMTP(auth="PLAIN LOGIN", starttls=True))
+    try:
+        why = C._send_mail("s", "b")
+    finally:
+        C.smtplib.SMTP = real
+    assert why is None, why
+    assert "starttls" in fake.calls, fake.calls
+    assert "login" in fake.calls, "did not authenticate over TLS"
+    return "encrypts when it can"
+
+
+def test_no_username_means_no_authentication():
+    C = harness.load()
+    real = C.smtplib.SMTP
+    fake = with_fake(C, FakeSMTP(auth="PLAIN"), username="")
+    try:
+        why = C._send_mail("s", "b")
+    finally:
+        C.smtplib.SMTP = real
+    assert why is None, why
+    assert not any(c.startswith("auth") or c == "login" for c in fake.calls)
+    assert fake.sent is not None, "did not send"
+    return "open relay needs no credentials"
+
+
+# -------------------------------------------------- message construction
+
+def test_the_message_has_the_headers_a_mail_server_needs():
+    C = harness.load()
+    real = C.smtplib.SMTP
+    fake = with_fake(C, FakeSMTP(), recipients="a@x.com, b@y.com")
+    try:
+        C._send_mail("Fan stopped", "the body")
+    finally:
+        C.smtplib.SMTP = real
+    sender, to, msg = fake.sent
+    assert sender == "fan@invalid", sender
+    assert to == ["a@x.com", "b@y.com"], to
+    assert "Subject: Fan stopped" in msg, msg[:200]
+    assert "From: fan@invalid" in msg
+    assert "To: a@x.com, b@y.com" in msg
+    assert "charset=utf-8" in msg
+    head, _, body = msg.partition("\r\n\r\n")
+    assert body == "the body", repr(body)
+    return "headers and body separated correctly"
+
+
+# ---------------------------------------------------------- stale alerts
+
+def stale_setup(C, fan_already_on):
+    """Drive _failsafe with readings long stale."""
+    sent = wire(C)
+    C.CFG["control"].update(mode="auto", stale_minutes=1)
+
+    class Plug:
+        def state(self):
+            return fan_already_on
+
+        def set(self, on):
+            return None
+
+    C._clients = lambda: (None, Plug())
+    with C._state_lock:
+        C.STATE["fault"] = None
+        C.STATE["reading_at"] = C.time.time() - 3600
+    C._failsafe()
+    return sent
+
+
+def test_stale_alert_fires_when_the_fan_is_already_running():
+    """The review found this sent nothing at all.
+
+    The alert sat under the branch that switches the plug, so readings
+    stopping while the fan happened to be running was silent - and that
+    is the COMMON case, because high CO2 starts the fan and the fan is
+    then on when the sensor dies.
+    """
+    C = harness.load()
+    sent = stale_setup(C, fan_already_on=True)
+    assert len(sent) == 1, "no alert with the fan already on: %r" % sent
+    assert "already running" in sent[0][1], sent[0][1]
+    return "alerts even when nothing was switched"
+
+
+def test_stale_alert_fires_when_the_fan_had_to_be_switched_on():
+    C = harness.load()
+    sent = stale_setup(C, fan_already_on=False)
+    assert len(sent) == 1, "no alert when the fail-safe switched: %r" % sent
+    assert "switched on" in sent[0][1], sent[0][1]
+    return "alerts when it ventilates"
+
+
+def test_stale_alert_is_sent_once_not_every_cycle():
+    """_failsafe runs every poll while readings stay stale."""
+    C = harness.load()
+    sent = stale_setup(C, fan_already_on=True)
+    C._failsafe()
+    C._failsafe()
+    assert len(sent) == 1, "sent %d times for one outage" % len(sent)
+    return "one alert per outage"
+
+
+def test_no_stale_alert_outside_auto_or_with_the_failsafe_off():
+    """Two documented silences, asserted so they stay deliberate."""
+    C = harness.load()
+    sent = wire(C)
+    C.CFG["control"].update(mode="manual", stale_minutes=1)
+    C._clients = lambda: (None, None)
+    with C._state_lock:
+        C.STATE["fault"] = None
+        C.STATE["reading_at"] = C.time.time() - 3600
+    C._failsafe()
+    assert sent == [], "alerted in Manual"
+
+    C.CFG["control"].update(mode="auto", stale_minutes=0)
+    C._failsafe()
+    assert sent == [], "alerted with the fail-safe disabled"
+    return "silent in Manual and at 0"
+
+
+# ------------------------------------------------------- recovery alerts
+
+def test_recovery_alert_only_follows_an_alert_that_was_sent():
+    """A blip that never alerted must not produce an all-clear."""
+    C = harness.load()
+    sent = wire(C)
+
+    C._stale_notified = False
+    C._notify_stale(30, True)
+    assert len(sent) == 1
+
+    # Recovery resets the edge and announces.
+    C._stale_notified = False
+    assert C._stale_notified is False
+    C._notify_stale(30, True)
+    assert len(sent) == 2, "a later outage did not alert again"
+    return "one all-clear per outage"
+
+
 if __name__ == "__main__":
     sys.exit(harness.run(dict(globals())))

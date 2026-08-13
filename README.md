@@ -295,6 +295,9 @@ against a live install.
 - `test_actuation.py` - `_force_on` and `_enforce_stop`: the mode
   re-checks under the lock, the fault write kept outside it, and an
   unreadable plug never being mistaken for a fan that is off
+- `test_email.py` - the alert edges, the draw-fault cause text, and the
+  authentication choice. `login()` is deliberately not used, because it
+  falls back from CRAM-MD5 to PLAIN in the clear; a test asserts that
 - `test_failures.py` - persistence errors and malformed request bodies
 - `test_history.py` - `/api/history` deltas, including the round trip
   that proves a client ends up holding exactly what the server holds

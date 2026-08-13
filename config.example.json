@@ -32,5 +32,14 @@
   },
   "ui": {
     "password_hash": ""
+  },
+  "email": {
+    "enabled": false,
+    "host": "",
+    "port": 25,
+    "username": "",
+    "password": "",
+    "sender": "",
+    "recipients": ""
   }
 }

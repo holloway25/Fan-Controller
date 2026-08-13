@@ -1306,25 +1306,26 @@ def _failsafe():
         since = last if last is not None else START_TIME
         if time.time() - since < mins * 60:
             return
+        already_on = False
         try:
-            if h.state() is True:
-                return
+            already_on = h.state() is True
         except PlugError:
             pass                 # unreadable: assert ON anyway
-        h.set(True)
-        with _state_lock:
-            STATE["fan"] = True
-            STATE["changed_at"] = time.time()
-    _log("FAIL-SAFE: no reading for %d min, ventilating" % mins)
-    global _stale_notified
-    if not _stale_notified:
-        _stale_notified = True
-        _notify("Sensor readings stopped - fan forced on",
-                "No reading for %d minutes, so the fan has been switched "
-                "on as a precaution and will stay on until readings "
-                "return.\n\nThe air quality sensor or the Protect "
-                "console is the place to look. Normal control resumes on "
-                "its own once readings come back." % mins)
+        if not already_on:
+            h.set(True)
+            with _state_lock:
+                STATE["fan"] = True
+                STATE["changed_at"] = time.time()
+    if not already_on:
+        _log("FAIL-SAFE: no reading for %d min, ventilating" % mins)
+    # OUTSIDE the already_on check, deliberately. This alert is about the
+    # SENSOR having died, not about the plug being switched. Sitting it
+    # under the switch meant readings stopping while the fan happened to
+    # be running sent nothing at all - and that is the COMMON case, since
+    # high CO2 starts the fan and the fan is then on when the sensor goes
+    # quiet. Found in review, not by the tests, which is why there is now
+    # a test for exactly this.
+    _notify_stale(mins, already_on)
 
 
 
@@ -1355,14 +1356,22 @@ def _email_ready():
 def _send_mail(subject, body):
     """Send one message. Returns None on success or a reason string.
 
-    Runs on a throwaway thread, never on the control path. AUTH is left
-    to smtplib: it tries CRAM-MD5, then PLAIN, then LOGIN, and takes the
-    first the server offers. The relay here advertises CRAM-MD5 among
-    stronger CRAM-SHA variants that smtplib cannot speak, so CRAM-MD5 is
-    what gets negotiated - which matters because there is no STARTTLS on
-    that path, and CRAM never puts the password on the wire. Do not add
-    a PLAIN or LOGIN fallback to "fix" an auth failure: that would send
-    the password in the clear across the IoT VLAN.
+    Runs on a throwaway thread, never on the control path. AUTH is chosen
+    HERE and deliberately, not left to smtplib.
+
+    smtplib.login() looks like it picks the strongest mechanism the
+    server offers. It does not. It iterates CRAM-MD5, PLAIN, LOGIN,
+    catching SMTPAuthenticationError and CONTINUING - so a CRAM-MD5
+    attempt that fails for any reason, a mistyped password included,
+    silently retries as PLAIN. With no STARTTLS that puts the password
+    on the wire base64-encoded, and the first hop here is the IoT VLAN.
+    An earlier version of this comment asserted login() could not do
+    that. It was wrong; a review caught it.
+
+    So: use STARTTLS when the relay offers it, and otherwise require
+    CRAM-MD5 and REFUSE rather than degrade. A refused send is a logged
+    failure. A downgraded one is a leaked credential that looks like
+    success.
     """
     e = CFG["email"]
     to = _recipients()
@@ -1376,8 +1385,29 @@ def _send_mail(subject, body):
         return "connect failed: %s" % exc
     try:
         s.ehlo()
+        secure = False
+        if s.has_extn("starttls"):
+            # Not exercised against this relay, which offers none. Here
+            # so that repointing at one that does is an upgrade rather
+            # than a silent continuation in clear.
+            s.starttls()
+            s.ehlo()
+            secure = True
         if e.get("username"):
-            s.login(e["username"], e["password"])
+            if secure:
+                s.login(e["username"], e["password"])
+            else:
+                mechs = (s.esmtp_features.get("auth") or "").upper().split()
+                if "CRAM-MD5" not in mechs:
+                    return ("refusing to authenticate: the relay offers "
+                            "neither STARTTLS nor CRAM-MD5, so the "
+                            "password would cross the network in clear. "
+                            "Offered: %s" % (" ".join(mechs) or "nothing"))
+                # Called directly rather than through login(), which
+                # falls back to PLAIN when this fails.
+                s.user = e["username"]
+                s.password = e["password"]
+                s.auth("CRAM-MD5", s.auth_cram_md5)
         s.sendmail(e["sender"], to, msg)
         return None
     except Exception as exc:
@@ -1420,6 +1450,28 @@ def _notify(subject, body):
             _log("Alert email could not be queued: %s" % exc)
         except Exception:
             pass
+
+
+def _notify_stale(mins, already_on):
+    """Say once that readings have stopped. Not about the plug.
+
+    Fires whether or not the fail-safe had to switch anything: the news
+    is that the sensor is silent and automatic control is running blind.
+    """
+    global _stale_notified
+    if _stale_notified:
+        return
+    _stale_notified = True
+    _notify("Sensor readings stopped - fan running as a precaution",
+            "No reading for %d minutes.\n\n%s\n\nThe air quality "
+            "sensor or the Protect console is the place to look. Normal "
+            "control resumes on its own once readings come back, and "
+            "there will be an all-clear when it does."
+            % (mins,
+               "The fan was already running and will stay on."
+               if already_on else
+               "The fan has been switched on as a precaution and will "
+               "stay on until readings return."))
 
 
 _unsaved_notified = False
