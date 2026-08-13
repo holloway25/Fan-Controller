@@ -28,12 +28,36 @@ def wire(C, **cfg):
     C.CFG["email"].update(**cfg)
     sent = []
 
-    def fake_notify(subject, body):
-        if C._email_ready():
-            sent.append((subject, body))
+    def fake_notify(subject, body, on_sent=None):
+        if not C._email_ready():
+            return
+        sent.append((subject, body))
+        # Delivery is simulated by default. Tests that care about a
+        # FAILED send use wire_failing() instead - the distinction
+        # matters, because recording delivery optimistically is what
+        # produced an all-clear for a warning nobody received.
+        if on_sent:
+            on_sent()
 
     C._notify = fake_notify
     return sent
+
+
+def wire_failing(C, **cfg):
+    """As wire(), but the relay never accepts the message."""
+    C.CFG["email"].update(enabled=True, host="relay.invalid", port=25,
+                          sender="fan@invalid",
+                          recipients="someone@invalid")
+    C.CFG["email"].update(**cfg)
+    attempts = []
+
+    def fake_notify(subject, body, on_sent=None):
+        if C._email_ready():
+            attempts.append((subject, body))
+        # on_sent deliberately not called: the send failed.
+
+    C._notify = fake_notify
+    return attempts
 
 
 def raise_draw_fault(C, watts, lo=15.0, hi=22.0):
@@ -146,17 +170,38 @@ def test_restart_notice_is_rate_limited():
     now = C.time.time()
     with C._state_lock:
         C.STATE["fault"] = {"msg": "draw fault", "at": now,
-                            "notified_at": now}
+                            "attempted_at": now, "delivered_at": now}
     C._notify_restart_fault()
     assert sent == [], "notified inside the suppression window"
 
     with C._state_lock:
-        C.STATE["fault"]["notified_at"] = now - C.RESTART_NOTICE_SUPPRESS - 1
+        C.STATE["fault"]["delivered_at"] = \
+            now - C.RESTART_NOTICE_SUPPRESS - 1
     C._notify_restart_fault()
     assert len(sent) == 1, "no notice once the window had passed"
     assert "not" in sent[0][1].lower() and "clear" in sent[0][1].lower(), \
         "the notice does not say a restart will not clear it"
     return "one an hour at most"
+
+
+def test_a_failed_restart_notice_does_not_buy_an_hour_of_silence():
+    """Rate limiting on the ATTEMPT meant broken mail silenced itself.
+
+    A fault outliving a restart could then go unreported precisely
+    because the relay was down - the moment the notice matters most.
+    """
+    C = harness.load()
+    attempts = wire_failing(C)
+    now = C.time.time()
+    with C._state_lock:
+        C.STATE["fault"] = {"msg": "draw fault", "at": now,
+                            "attempted_at": None, "delivered_at": None}
+    C._notify_restart_fault()
+    assert len(attempts) == 1, "did not try"
+    C._notify_restart_fault()
+    assert len(attempts) == 2, \
+        "a failed send suppressed the next attempt"
+    return "retries while undelivered"
 
 
 def test_restart_notice_stays_silent_with_no_fault():
@@ -302,7 +347,13 @@ class FakeSMTP(object):
     def has_extn(self, name):
         return name.lower() == "starttls" and self._starttls
 
-    def starttls(self):
+    def starttls(self, context=None):
+        # The context is the point: without one, smtplib builds an
+        # unverified context and any relay can impersonate the real one.
+        assert context is not None, "starttls called without a context"
+        assert context.check_hostname, "context does not check the hostname"
+        assert context.verify_mode == __import__("ssl").CERT_REQUIRED, \
+            "context does not verify the certificate"
         self.calls.append("starttls")
 
     def ehlo(self, *a):
@@ -475,6 +526,23 @@ def test_stale_alert_is_sent_once_not_every_cycle():
     return "one alert per outage"
 
 
+def test_the_failsafe_records_the_fan_as_on_when_it_was_already_on():
+    """The relay was on while /api/state said off.
+
+    _failsafe returned early when the plug reported on, without
+    updating STATE - so the dashboard showed a stopped fan, and the
+    draw check, which only runs when STATE says the fan is on, stayed
+    asleep over a running one.
+    """
+    C = harness.load()
+    with C._state_lock:
+        C.STATE["fan"] = False
+    stale_setup(C, fan_already_on=True)
+    assert C.STATE["fan"] is True, \
+        "cached state still says off while the relay is on"
+    return "cached state matches the relay"
+
+
 def test_no_stale_alert_outside_auto_or_with_the_failsafe_off():
     """Two documented silences, asserted so they stay deliberate."""
     C = harness.load()
@@ -495,21 +563,76 @@ def test_no_stale_alert_outside_auto_or_with_the_failsafe_off():
 
 # ------------------------------------------------------- recovery alerts
 
-def test_recovery_alert_only_follows_an_alert_that_was_sent():
-    """A blip that never alerted must not produce an all-clear."""
+def feed_a_reading(C):
+    """Drive a real poll with a usable reading, as recovery requires."""
+
+    class Sensor:
+        def readings(self, sid):
+            return {"co2": 700.0}, "path"
+
+    class Plug:
+        def state(self):
+            return False
+
+        def set(self, v):
+            return v
+
+        def power_w(self):
+            return 0.0
+
+    C._clients = lambda: (Sensor(), Plug())
+    C.CFG["protect"]["sensor_id"] = "x"
+    C.CFG["control"].update(mode="auto", co2_enabled=True,
+                            on_at=1000, off_at=700)
+    C.tick()
+
+
+def test_a_real_reading_produces_the_all_clear():
+    """The recovery alert follows an actual poll, not a flag flip.
+
+    The previous version of this test cleared the flag by hand and
+    called _notify_stale again, so it asserted nothing about recovery
+    and would have passed with the recovery path deleted.
+    """
     C = harness.load()
     sent = wire(C)
-
-    C._stale_notified = False
     C._notify_stale(30, True)
-    assert len(sent) == 1
+    assert len(sent) == 1, "no stale warning to recover from"
 
-    # Recovery resets the edge and announces.
-    C._stale_notified = False
-    assert C._stale_notified is False
+    feed_a_reading(C)
+    subjects = [s for s, _ in sent]
+    assert len(sent) == 2, "no all-clear after a real reading: %r" % subjects
+    assert "returned" in subjects[1].lower(), subjects[1]
+    return "a reading clears it"
+
+
+def test_no_all_clear_when_the_warning_was_never_delivered():
+    """An all-clear for a warning nobody received is worse than silence.
+
+    This is the bug: _stale_notified was set before the send, so a
+    failed warning still armed the recovery message. Someone would be
+    told the sensor was fine without ever being told it had stopped.
+    """
+    C = harness.load()
+    attempts = wire_failing(C)
     C._notify_stale(30, True)
-    assert len(sent) == 2, "a later outage did not alert again"
-    return "one all-clear per outage"
+    assert len(attempts) == 1, "did not attempt the warning"
+    assert C._stale_delivered is False, "recorded delivery of a failed send"
+
+    feed_a_reading(C)
+    subjects = [s for s, _ in attempts]
+    assert not any("returned" in s.lower() for s in subjects), \
+        "sent an all-clear for a warning that never arrived: %r" % subjects
+    return "no all-clear without a delivered warning"
+
+
+def test_a_failed_warning_is_retried_on_the_next_cycle():
+    C = harness.load()
+    attempts = wire_failing(C)
+    C._notify_stale(30, True)
+    C._notify_stale(30, True)
+    assert len(attempts) == 2, "gave up after one failed attempt"
+    return "retries during the outage"
 
 
 if __name__ == "__main__":

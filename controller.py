@@ -9,7 +9,7 @@ private /proxy/protect/api/bootstrap endpoint. That is undocumented and may
 break on firmware updates; use the Debug view to inspect the live payload.
 """
 import atexit, copy, hashlib, hmac, json, math, os, signal, smtplib
-import socket, sys
+import socket, ssl, sys
 import threading, time
 import requests, urllib3
 from flask import Flask, Response, jsonify, request, render_template
@@ -907,7 +907,7 @@ def _redact(text):
     """
     out = str(text)
     for section, key in (("plug", "password"), ("protect", "password"),
-                         ("ui", "password_hash")):
+                         ("email", "password"), ("ui", "password_hash")):
         secret = (CFG.get(section) or {}).get(key)
         if secret and len(str(secret)) >= 4:
             out = out.replace(str(secret), "***")
@@ -1200,9 +1200,9 @@ def tick():
     # Recovery is an edge too, and only announced if the stale alert
     # actually went out - so a blip that never alerted stays silent both
     # ways.
-    global _stale_notified
-    if _stale_notified:
-        _stale_notified = False
+    global _stale_delivered
+    if _stale_delivered:
+        _stale_delivered = False
         _notify("Sensor readings have returned",
                 "Readings are arriving again and normal control has "
                 "resumed. No action needed - this is the all-clear for "
@@ -1313,7 +1313,13 @@ def _failsafe():
             pass                 # unreadable: assert ON anyway
         if not already_on:
             h.set(True)
-            with _state_lock:
+        # Recorded either way. When the plug was ALREADY on this used to
+        # return without touching STATE, so the relay could be on while
+        # /api/state and the dashboard both said off - and the draw
+        # check, which only runs when STATE says the fan is on, stayed
+        # asleep over a running fan.
+        with _state_lock:
+            if STATE["fan"] is not True:
                 STATE["fan"] = True
                 STATE["changed_at"] = time.time()
     if not already_on:
@@ -1330,9 +1336,11 @@ def _failsafe():
 
 
 # The fail-safe re-asserts every cycle while readings stay stale, so it
-# has no natural edge. This gives it one: set when it first ventilates,
-# cleared when a reading arrives.
-_stale_notified = False
+# has no natural edge. These give it one. _delivered is the one that
+# gates the all-clear, and it is only ever set from the sending thread
+# once the relay has accepted the message.
+_stale_delivered = False
+_stale_inflight = False
 
 SMTP_TIMEOUT = 20
 # Long enough that a slow relay still delivers, short enough that a
@@ -1340,10 +1348,19 @@ SMTP_TIMEOUT = 20
 # there is no realistic way to accumulate them.
 
 
+def _split_recipients(raw):
+    """Split the stored recipient string. Pure; takes no config."""
+    return [a for a in (raw or "").replace(",", " ").split() if a]
+
+
 def _recipients():
-    """The recipient list, split from the single stored string."""
-    raw = (CFG["email"].get("recipients") or "").replace(",", " ")
-    return [a for a in raw.split() if a]
+    """The recipient list as currently configured.
+
+    For callers that want the live value - the readiness check and the
+    test-send endpoint. _send_mail deliberately does NOT use this: it
+    splits its own snapshot, so one send cannot straddle a save.
+    """
+    return _split_recipients(CFG["email"].get("recipients"))
 
 
 def _email_ready():
@@ -1373,8 +1390,16 @@ def _send_mail(subject, body):
     failure. A downgraded one is a leaked credential that looks like
     success.
     """
-    e = CFG["email"]
-    to = _recipients()
+    # ONE snapshot, taken under the lock that guards writes. Reading
+    # CFG["email"] here and calling _recipients() - which reads CFG
+    # again - meant a save landing between them could send to the new
+    # recipients through the old relay, or authenticate with a password
+    # that had just been cleared by a host change.
+    with _cfg_lock:
+        e = copy.deepcopy(CFG["email"])
+    to = _split_recipients(e.get("recipients"))
+    if not to:
+        return "no recipients configured"
     msg = ("From: %s\r\nTo: %s\r\nSubject: %s\r\n"
            "Content-Type: text/plain; charset=utf-8\r\n\r\n%s"
            % (e["sender"], ", ".join(to), subject, body))
@@ -1390,7 +1415,15 @@ def _send_mail(subject, body):
             # Not exercised against this relay, which offers none. Here
             # so that repointing at one that does is an upgrade rather
             # than a silent continuation in clear.
-            s.starttls()
+            #
+            # THE CONTEXT IS NOT OPTIONAL. starttls() with context=None
+            # builds ssl._create_stdlib_context(), which has
+            # check_hostname False and verify_mode CERT_NONE - encrypted
+            # against a passive listener and useless against an active
+            # one. Anything that could redirect port 25 could present
+            # its own certificate and collect the password, which is the
+            # exact outcome the CRAM-MD5 branch below exists to prevent.
+            s.starttls(context=ssl.create_default_context())
             s.ehlo()
             secure = True
         if e.get("username"):
@@ -1419,8 +1452,14 @@ def _send_mail(subject, body):
             pass
 
 
-def _notify(subject, body):
+def _notify(subject, body, on_sent=None):
     """Queue a notification. Returns immediately; never raises.
+
+    on_sent, if given, is called on the sending thread AFTER the relay
+    has accepted the message. Anything that records "they have been
+    told" belongs in there rather than at the call site: a flag set
+    optimistically turns a failed send into permanent silence, and in
+    one case produced an all-clear for a warning that never arrived.
 
     Called from the draw thread and the poll thread, sometimes with a
     fault just written. Nothing here may block or throw: the fan being
@@ -1442,7 +1481,16 @@ def _notify(subject, body):
             except Exception as exc:
                 why = "%s: %s" % (type(exc).__name__, exc)
             if why:
-                _log("Alert email failed (%s): %s" % (subject, why))
+                # Redacted: a relay's rejection can quote what it was
+                # given, and the activity log is served without a
+                # password.
+                _log(_redact("Alert email failed (%s): %s"
+                             % (subject, why)))
+            elif on_sent:
+                try:
+                    on_sent()
+                except Exception as exc:    # pragma: no cover
+                    _log("Alert bookkeeping failed: %s" % exc)
         threading.Thread(target=run, daemon=True,
                          name="notify").start()
     except Exception as exc:            # pragma: no cover - belt and braces
@@ -1457,11 +1505,24 @@ def _notify_stale(mins, already_on):
 
     Fires whether or not the fail-safe had to switch anything: the news
     is that the sensor is silent and automatic control is running blind.
+
+    TWO FLAGS, NOT ONE. _stale_inflight stops the fail-safe queueing a
+    fresh send every poll; _stale_delivered records that one actually
+    arrived, and ONLY that gates the all-clear. Recording delivery
+    optimistically meant a failed warning still produced a recovery
+    email later - an all-clear for something nobody was told about.
+    A send that fails is retried on the next fail-safe cycle, which is
+    the behaviour you want during an outage.
     """
-    global _stale_notified
-    if _stale_notified:
+    global _stale_inflight
+    if _stale_delivered or _stale_inflight:
         return
-    _stale_notified = True
+    _stale_inflight = True
+
+    def sent():
+        global _stale_delivered, _stale_inflight
+        _stale_delivered = True
+        _stale_inflight = False
     _notify("Sensor readings stopped - fan running as a precaution",
             "No reading for %d minutes.\n\n%s\n\nThe air quality "
             "sensor or the Protect console is the place to look. Normal "
@@ -1471,7 +1532,11 @@ def _notify_stale(mins, already_on):
                "The fan was already running and will stay on."
                if already_on else
                "The fan has been switched on as a precaution and will "
-               "stay on until readings return."))
+               "stay on until readings return."),
+            on_sent=sent)
+    # Cleared even when the send failed, so the next cycle retries.
+    if not _stale_delivered:
+        _stale_inflight = False
 
 
 _unsaved_notified = False
@@ -1536,10 +1601,21 @@ def _notify_restart_fault():
             f = dict(STATE["fault"]) if STATE["fault"] else None
         if not f:
             return
-        if time.time() - (f.get("notified_at") or 0) < RESTART_NOTICE_SUPPRESS:
+        # Suppress on DELIVERY, not on the attempt. Rate limiting on
+        # the attempt meant a send that failed still bought an hour of
+        # silence, so a fault that outlived a restart could go
+        # unreported precisely because the mail was broken.
+        if time.time() - (f.get("delivered_at") or 0) < RESTART_NOTICE_SUPPRESS:
             return
-        f["notified_at"] = time.time()
+        f["attempted_at"] = time.time()
         _store_fault(f)
+
+        def sent():
+            with _state_lock:
+                cur = dict(STATE["fault"]) if STATE["fault"] else None
+            if cur:
+                cur["delivered_at"] = time.time()
+                _store_fault(cur)
         _notify("Fan fault still standing after a restart",
                 "%s\n\nThe service has restarted and the fault is still "
                 "there.\n\nRESTARTING DOES NOT CLEAR A DRAW FAULT. It is "
@@ -1548,7 +1624,7 @@ def _notify_restart_fault():
                 "dashboard.\n\nIf this arrives repeatedly the service is "
                 "restarting in a loop, which is a separate problem from "
                 "the fault itself."
-                % f.get("msg", "A fault is standing."))
+                % f.get("msg", "A fault is standing."), on_sent=sent)
     except Exception as exc:        # pragma: no cover - must never escape
         try:
             _log("Restart fault notice failed: %s" % exc)
@@ -1777,7 +1853,8 @@ def _draw_check(plug):
     reading = "no reading" if w is None else ("%g W" % w)
     msg = ("Draw fault - %s outside %g-%g W for %ds"
            % (reading, lo, hi, int(now - _oob_since)))
-    f = {"at": now, "msg": msg, "stopped": False, "notified_at": now}
+    f = {"at": now, "msg": msg, "stopped": False,
+         "attempted_at": now, "delivered_at": None}
     prev = _store_fault(f)
     _oob_since = None
     _log(msg)
@@ -1797,12 +1874,20 @@ def _draw_check(plug):
     # lo/hi are the LIVE band, read from CFG a few lines above and passed
     # in, never stored on the fault and never parsed back out of msg.
     # The dashboard edits that band, so a copy would drift.
+    def _fault_sent():
+        with _state_lock:
+            cur = dict(STATE["fault"]) if STATE["fault"] else None
+        if cur:
+            cur["delivered_at"] = time.time()
+            _store_fault(cur)
+
     if prev is None:
         _notify("Fan stopped - %s" % ("plug not answering" if w is None
                                       else "not drawing correctly"),
                 "%s\n\n%s\n\nThe fan has been stopped and will stay "
                 "stopped until this is acknowledged in the dashboard."
-                % (msg, _draw_fault_cause(w, lo, hi)))
+                % (msg, _draw_fault_cause(w, lo, hi)),
+                on_sent=_fault_sent)
     _enforce_stop(plug)
 
 
@@ -2382,7 +2467,7 @@ def api_history():
 
 MODE_LABELS = {"auto": "Auto", "manual": "Manual", "on": "Force on"}
 SECRET_FIELDS = {("protect", "password"), ("plug", "password"),
-                 ("ui", "password_hash")}
+                 ("email", "password"), ("ui", "password_hash")}
 
 
 def _describe_changes(cand):

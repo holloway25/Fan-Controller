@@ -220,15 +220,42 @@ alerts, it sends synchronously and reports the actual error, because a
 mail path that has never been tested is the kind that fails exactly
 when it is needed.
 
-Authentication is left to `smtplib`, which tries CRAM-MD5, then PLAIN,
-then LOGIN, and takes the first the server offers. **Do not add a PLAIN
-or LOGIN fallback to work around an authentication failure.** If the
-relay offers no TLS, CRAM-MD5 keeps the password off the wire and PLAIN
-or LOGIN would not.
+Authentication is chosen explicitly, **not** left to `smtplib.login()`.
+
+`login()` looks like it picks the strongest mechanism on offer. It does
+not: it iterates CRAM-MD5, PLAIN, LOGIN, catching
+`SMTPAuthenticationError` and continuing. A CRAM-MD5 attempt that fails
+for any reason - a mistyped password included - silently retries as
+PLAIN, which on an unencrypted link puts the password on the wire
+base64-encoded.
+
+The policy instead is:
+
+- **STARTTLS when the relay offers it**, with a verified context, then
+  ordinary authentication. The context matters: `starttls()` with no
+  argument builds an unverified one, which stops a passive listener and
+  does nothing about a relay impersonating yours.
+- **Otherwise CRAM-MD5 only**, called directly, so a failure is a
+  failure rather than a downgrade.
+- **Otherwise refuse**, and log why. A refused send is a visible
+  failure. A downgraded one is a leaked credential that looks like
+  success.
+
+If authentication fails, find out why rather than reaching for a
+fallback.
 
 Alerts never block the control path: they are dispatched on a throwaway
 thread and a failure is logged and dropped. The fan being stopped
 matters more than the mail going out.
+
+**Delivery is recorded only once the relay has accepted the message.**
+Marking an alert as sent when it was merely attempted causes two
+specific faults, both of which existed here and were caught in review: a
+failed stale warning still armed the all-clear, so someone could be told
+the sensor had recovered without ever being told it had stopped; and a
+failed restart notice still bought an hour of silence, suppressing the
+next one at the moment mail was already known to be broken. Undelivered
+alerts are retried on the next cycle.
 
 ## ui
 
