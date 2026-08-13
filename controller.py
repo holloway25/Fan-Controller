@@ -1283,44 +1283,80 @@ def tick():
         raise ProtectError("No reading for %s. Open Debug to see what "
                            "Protect is returning." % why)
     now = time.time()
-    actual = _fan_status(h)
+    # BEFORE anything derived from this cycle's clients is consumed. The
+    # generation used to be checked only at the actuation block below,
+    # which left everything between here and there acting on a
+    # superseded cycle:
+    #
+    #   - reading_at was refreshed from the OLD sensor, resetting the
+    #     stale timer and delaying the fail-safe for a newly configured
+    #     one that may be unreachable. That is a safety timer being
+    #     reset by a reading that no longer applies.
+    #   - _fan_status read the OLD plug's relay, and a difference from
+    #     cached state was adopted as an external switch: wrong fan
+    #     state, a fresh minimum-run lease, and a log line describing a
+    #     device that is not ours.
+    #   - the readings-returned all-clear could be sent on the strength
+    #     of the old sensor answering.
+    #
+    # Under _act_lock because that is what the config commit holds while
+    # it swaps CFG and bumps the generation; checking outside it would
+    # narrow the window rather than close it.
     ext_msg = None
+    recovered = False
+    # ONE HOLD, covering the check, the plug read and everything derived
+    # from this cycle. Checking and then releasing would leave exactly
+    # the window this guards: a save landing between them and the
+    # recording below still writing a superseded reading.
+    #
+    # Order is _act_lock then _state_lock, as everywhere.
+    with _act_lock:
+        if gen != _cfg_generation:
+            _wake.set()
+            return
+        actual = _fan_status(h)
+        with _state_lock:
+            STATE.update(co2=co2, co2_path=path, reading_at=now,
+                         error=None,
+                         temperature=vals.get('temperature'),
+                         humidity=vals.get('humidity'),
+                         pm25=vals.get('pm25'))
+            STATE["history"].append({"t": now, "v": co2,
+                                     "tc": vals.get('temperature'),
+                                     "rh": vals.get('humidity'),
+                                     "pm": vals.get('pm25')})
+            STATE["history"][:] = prune_hist(STATE["history"], now)
+            STATE["history_rev"] += 1
+            hsnap = list(STATE["history"])
+            prev = STATE["fan"]
+            if actual is not None and actual != prev:
+                # Someone switched it outside this service. Trust the
+                # bridge, and restart the minimum-run clock from now.
+                STATE["fan"] = actual
+                if prev is not None:
+                    # Only a genuine external switch restarts the
+                    # minimum-run clock; the first reading after startup
+                    # must not grant a fresh lease to a fan that was
+                    # already running.
+                    STATE["changed_at"] = now
+                    ext_msg = ("Fan switched to %s outside this service"
+                               % ("on" if actual else "off"))
+            fan_on = STATE["fan"]
+            changed = STATE["changed_at"]
     # Recovery is an edge too, and only announced if the stale alert
     # actually went out - so a blip that never alerted stays silent both
-    # ways.
+    # ways. Dispatched OUTSIDE the locks, and only once this cycle has
+    # been accepted: a discarded cycle must not announce that readings
+    # have returned on the strength of the old sensor answering.
     global _stale_delivered
     if _stale_delivered:
         _stale_delivered = False
+        recovered = True
+    if recovered:
         _notify("Sensor readings have returned",
                 "Readings are arriving again and normal control has "
                 "resumed. No action needed - this is the all-clear for "
                 "the earlier alert.")
-    with _state_lock:
-        STATE.update(co2=co2, co2_path=path, reading_at=now, error=None,
-                     temperature=vals.get('temperature'),
-                     humidity=vals.get('humidity'),
-                     pm25=vals.get('pm25'))
-        STATE["history"].append({"t": now, "v": co2,
-                                 "tc": vals.get('temperature'),
-                                 "rh": vals.get('humidity'),
-                                 "pm": vals.get('pm25')})
-        STATE["history"][:] = prune_hist(STATE["history"], now)
-        STATE["history_rev"] += 1
-        hsnap = list(STATE["history"])
-        prev = STATE["fan"]
-        if actual is not None and actual != prev:
-            # Someone switched it outside this service. Trust the bridge,
-            # and restart the minimum-run clock from now.
-            STATE["fan"] = actual
-            if prev is not None:
-                # Only a genuine external switch restarts the minimum-run
-                # clock; the first reading after startup must not grant a
-                # fresh lease to a fan that was already running.
-                STATE["changed_at"] = now
-                ext_msg = ("Fan switched to %s outside this service"
-                           % ("on" if actual else "off"))
-        fan_on = STATE["fan"]
-        changed = STATE["changed_at"]
     maybe_save_hist(hsnap)
     if ext_msg:
         _log(ext_msg)

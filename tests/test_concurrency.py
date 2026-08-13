@@ -471,5 +471,75 @@ def test_a_helper_with_no_generation_still_acts():
     return "None means unguarded, not blocked"
 
 
+def test_a_superseded_cycle_records_nothing_at_all():
+    """A discarded cycle must leave no trace, not just skip the switch.
+
+    The generation was checked only at the actuation block, so
+    everything before it acted on a superseded cycle: reading_at was
+    refreshed from the OLD sensor - resetting the stale timer, and
+    delaying the fail-safe for a newly configured sensor that may be
+    unreachable - the OLD plug's relay was read and a difference adopted
+    as an external switch, and the readings-returned all-clear could be
+    sent because the old sensor answered.
+
+    The save lands DURING the Protect read, which is where a real one
+    would: that request is the slow part of the cycle.
+    """
+    C = harness.load()
+
+    class Plug:
+        def __init__(self):
+            self.commands = []
+            self.asked = 0
+
+        def state(self):
+            self.asked += 1
+            return True             # differs from cached False
+
+        def set(self, on):
+            self.commands.append(on)
+
+        def power_w(self):
+            return 0.0
+
+    plug = Plug()
+
+    class Sensor:
+        def readings(self, sid):
+            # The save happens while this request is in flight.
+            C._cfg_generation += 1
+            return {"co2": 1500.0}, "path"
+
+    C._clients = lambda: (Sensor(), plug)
+    C.CFG["protect"]["sensor_id"] = "x"
+    C.CFG["control"].update(mode="auto", co2_enabled=True, on_at=1000,
+                            off_at=700)
+
+    before_reading_at = 12345.0
+    with C._state_lock:
+        C.STATE["reading_at"] = before_reading_at
+        C.STATE["fan"] = False
+        C.STATE["history"] = []
+        C.STATE["co2"] = None
+    C._stale_delivered = True
+
+    sent = []
+    C._notify = lambda s, b, on_complete=None: sent.append(s)
+
+    C.tick()
+
+    assert C.STATE["reading_at"] == before_reading_at, \
+        "a superseded reading reset the stale timer"
+    assert C.STATE["history"] == [], "recorded a superseded reading"
+    assert C.STATE["co2"] is None, "published a superseded reading"
+    assert C.STATE["fan"] is False, \
+        "adopted the old plug's relay state as an external switch"
+    assert plug.commands == [], "commanded a superseded plug: %r" % plug.commands
+    assert sent == [], "announced recovery from a superseded cycle: %r" % sent
+    assert C._stale_delivered is True, \
+        "consumed the recovery edge without announcing it"
+    return "no reading, no adoption, no all-clear"
+
+
 if __name__ == "__main__":
     sys.exit(harness.run(dict(globals())))
