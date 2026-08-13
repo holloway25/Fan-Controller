@@ -711,6 +711,38 @@ def test_a_save_queues_behind_a_draw_decision_rather_than_splitting_it():
     return "the save waited its turn"
 
 
+class WatchedLock:
+    """Wraps a real lock and signals when an acquire actually blocks.
+
+    Waiting a fixed interval and assuming the other thread got as far as
+    the lock is not a test, it is a hope: on a loaded runner the thread
+    may not be scheduled inside the window, and a BROKEN implementation
+    then passes. This signals real contention, so the assertion that
+    follows is about the lock rather than about the scheduler.
+    """
+
+    def __init__(self, real):
+        self._real = real
+        self.contended = threading.Event()
+
+    def acquire(self, *a, **k):
+        if self._real.acquire(blocking=False):
+            return True
+        self.contended.set()
+        return self._real.acquire(*a, **k)
+
+    def release(self):
+        return self._real.release()
+
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, *exc):
+        self.release()
+        return False
+
+
 def test_an_acknowledgement_waits_for_an_enforcement_in_flight():
     """Two threads, genuinely overlapping, not two checks in sequence.
 
@@ -749,6 +781,8 @@ def test_an_acknowledgement_waits_for_an_enforcement_in_flight():
             return value
 
     plug = GatedPlug2()
+    watched = WatchedLock(C._act_lock)
+    C._act_lock = watched
     C.CFG["control"]["mode"] = "auto"
     with C._state_lock:
         C.STATE["fan"] = True
@@ -770,8 +804,16 @@ def test_an_acknowledgement_waits_for_an_enforcement_in_flight():
     acker = threading.Thread(target=ack, name="acker")
     acker.start()
 
-    # The acknowledgement must not complete while the stop holds the
-    # lock. This is the assertion the ownership tests cannot make.
+    # Waits for the acknowledgement to genuinely BLOCK on _act_lock,
+    # rather than for an interval in which it might not have been
+    # scheduled at all.
+    assert watched.contended.wait(10), (
+        "the acknowledgement never contended for _act_lock, so it was "
+        "not taking it - or it never reached the call")
+
+    # And having reached the lock, it must not get through while the
+    # stop is still in flight. This is the assertion the ownership
+    # tests cannot make.
     assert not cleared.wait(1.0), (
         "the acknowledgement completed while an enforcement stop was "
         "still in flight")

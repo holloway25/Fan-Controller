@@ -184,8 +184,8 @@ reappear at the next restart.
 _cfg_lock   -> _act_lock        settings saves
 _cfg_lock   -> _clients_lock    client snapshots
 _act_lock   -> _state_lock      five actuation paths
-_act_lock   -> _fault_lock      the draw decision only
-_fault_lock -> _state_lock      six paths, including the restart check
+_act_lock   -> _fault_lock      draw decisions and acknowledgements
+_fault_lock -> _state_lock      eight paths, including the restart check
 ```
 
 **`_act_lock -> _fault_lock` is new, and the line above used to say the
@@ -216,15 +216,20 @@ Nothing takes `_cfg_lock` while holding `_act_lock`. The generation is
 therefore read as a plain integer under `_act_lock` rather than by
 re-entering `_cfg_lock`, which would invert that order.
 
-The fault paths are: raising one, acknowledging one, confirming the stop,
-the retry after a failed write, the last-chance write on a signalled
-stop, and a requested restart - which takes the lock not to write but to
-stop a restart landing midway through someone else's fault transaction.
-The count grew as those paths were added; if it looks wrong, count the
-ACQUISITIONS in `controller.py` - `with _fault_lock` and
-`_fault_lock.acquire` - rather than trusting this line. A plain grep for
-the name returns seven, because `_persist_fault_locked` mentions it in a
-docstring to say its caller already holds it.
+The fault paths are: raising one, acknowledging one, confirming the
+stop, the retry after a failed write, the last-chance write on a
+signalled stop, a requested restart - which takes the lock not to write
+but to stop a restart landing midway through someone else's fault
+transaction - and the two that stamp an alert as attempted and as
+delivered.
+
+The count grew as those paths were added, and this line has been wrong
+about it once already: it said six after the email annotations brought
+it to eight. **If it looks wrong, count the ACQUISITIONS** -
+`with _fault_lock` and `_fault_lock.acquire` - rather than trusting the
+number here. A plain grep for the name returns one more than that,
+because `_persist_fault_locked` mentions it in a docstring to say its
+caller already holds it.
 
 `_state_lock` is an RLock because nested acquisition previously deadlocked
 the poll thread. Nothing takes `_act_lock` or `_fault_lock` while holding

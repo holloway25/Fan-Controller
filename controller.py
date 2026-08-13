@@ -2071,6 +2071,7 @@ def _confirm_fault_stopped():
     saw stopped already true and returned early - so it was never
     retried and disk and memory disagreed for good.
     """
+    report_unsaved = False
     with _fault_lock:
         with _state_lock:
             cur = STATE["fault"]
@@ -2084,12 +2085,20 @@ def _confirm_fault_stopped():
             # Not confirmed. Left for the next cycle to try again.
             with _state_lock:
                 STATE["fault_unsaved"] = True
-            _unsaved_edge()
-            return False
-        with _state_lock:
-            if STATE["fault"] is not None:
-                STATE["fault"]["stopped"] = True
-                STATE["fault_unsaved"] = False
+            # Reported AFTER the lock, not here. _unsaved_edge can start
+            # a mail thread and can log, and doing that under
+            # _fault_lock blocked acknowledgement, the retry loop and a
+            # requested restart - during a disk failure, which is the
+            # only way to reach this line and the moment it is slowest.
+            report_unsaved = True
+        else:
+            with _state_lock:
+                if STATE["fault"] is not None:
+                    STATE["fault"]["stopped"] = True
+                    STATE["fault_unsaved"] = False
+    if report_unsaved:
+        _unsaved_edge()
+        return False
     return True
 
 
