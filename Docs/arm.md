@@ -15,7 +15,7 @@ Raspberry Pi OS (Debian 13 trixie), kernel 6.18, aarch64, Python
 | `import flask` | 74.9 ms | 805 ms | 10.8x |
 | parse a ~189KB `history.json` | 1.86 ms | 31 ms | 16.8x |
 | service RSS, 4 threads | ~45 MB | ~40 MB | - |
-| full test suite | - | 155/155 pass, 246MB peak | - |
+| full test suite | - | 182/182 pass, ~56s | - |
 
 Nothing in the code is architecture specific. No source change has ever
 been needed to run on ARM.
@@ -130,29 +130,35 @@ Either way it is not a constraint on a 1GB board.
 
 ## The test suite on ARM
 
-All 11 modules, 155 tests, pass. No failures and no skips.
+All 12 modules, 182 tests, pass. No failures and no skips.
+
+Remeasured 2026-08-13 at 729c936. These figures move as the suite
+grows, so they carry the commit they were taken at: a timing without
+one is not a measurement, it is a memory.
 
 | module | tests | time |
 |---|---|---|
-| `test_data` | 12 | <1s |
+| `test_data` | 12 | 2s |
 | `test_dashboard` | 6 | <1s |
-| `test_control` | 20 | <1s |
-| `test_plug_parse` | 22 | <1s |
-| `test_history` | 14 | 3s |
-| `test_failures` | 12 | 3s |
-| `test_actuation` | 15 | 4s |
+| `test_control` | 20 | 2s |
+| `test_plug_parse` | 22 | 1s |
+| `test_email` | 27 | 5s |
+| `test_history` | 14 | 4s |
+| `test_failures` | 12 | 4s |
+| `test_actuation` | 15 | 3s |
 | `test_concurrency` | 5 | 4s |
-| `test_durability` | 16 | 5s |
+| `test_durability` | 16 | 6s |
 | `test_restart_sh` | 5 | 16s |
 | `test_restart` | 28 | 9s |
-| **total** | **155** | peak 246 MB, peak load 0.26 |
+| **total** | **182** | ~56s end to end |
 
 **One module runs at a time — `run_all.py` already guarantees that.**
 It starts each module as its own process with `subprocess.call`, which
 blocks until that module exits, so the suite never runs modules
 concurrently. It is the standard way to run the full suite and it is
-safe here: a complete sequential pass peaks at 246 MB and never took
-load above 0.26 on a 3B+.
+safe here: a complete sequential pass of all 182 tests takes about 56
+seconds on a 3B+, with around 300 MB in use at peak against 905 MB
+available, and load never above 0.35.
 
 **What is not safe is two suite runs at once.** That is what once drove
 the x86 VM into swap exhaustion — a second full run launched while the
