@@ -1987,6 +1987,25 @@ def _store_fault(value):
 
 
 def _clear_fault():
+    """Acknowledge a fault. Takes _act_lock before _fault_lock.
+
+    The lock is not for the fault - _fault_lock covers that - it is to
+    serialise against ENFORCEMENT. _enforce_stop re-checks the fault
+    while holding _act_lock, so acquiring it here means an acknowledgement
+    and a stop cannot interleave: either the stop runs and then the
+    fault clears, or the fault clears and the stop finds nothing to
+    enforce. Previously the stop could land afterwards and switch the
+    fan off with the fault already gone from the screen.
+
+    Order is _act_lock -> _fault_lock, as the draw decision established.
+    Nothing that holds _fault_lock takes _act_lock, so this cannot
+    invert.
+    """
+    with _act_lock:
+        return _clear_fault_locked()
+
+
+def _clear_fault_locked():
     """Acknowledge a fault. Returns (had, ok).
 
     Deletes from disk BEFORE clearing memory. The other order cleared
@@ -2078,6 +2097,17 @@ def _enforce_stop(plug, gen=None):
             # the fan on, flapping it off until the next draw cycle put
             # it back.
             return
+        with _state_lock:
+            if not STATE["fault"]:
+                # THE FAULT ITSELF is re-checked for the same reason as
+                # the mode. _draw_check sees a fault, releases the lock
+                # and calls this - and an acknowledgement can land in
+                # between. Without this the fan was switched OFF after
+                # the dashboard had reported the fault cleared, with
+                # nothing left to explain why. _clear_fault takes
+                # _act_lock, so a clear cannot now complete between this
+                # check and the command below.
+                return
         try:
             if plug.state() is not False:
                 plug.set(False)

@@ -61,11 +61,22 @@ def events(C):
     return " | ".join(e["msg"] for e in C.STATE["events"])
 
 
-def setup(C, mode="on", fan=False):
+def setup(C, mode="on", fan=False, fault=False):
+    """Put the module in a known state.
+
+    fault defaults False, and that USED to be fine for the enforcement
+    tests: _enforce_stop switched the fan off whether or not a fault was
+    standing, so they passed with nothing to enforce. It now re-checks
+    the fault under _act_lock - an acknowledgement could otherwise land
+    between _draw_check seeing the fault and this stop, switching the
+    fan off after the dashboard said it was clear. So a test that
+    expects a stop has to say what it is enforcing.
+    """
     C.CFG["control"]["mode"] = mode
     with C._state_lock:
         C.STATE["fan"] = fan
-        C.STATE["fault"] = None
+        C.STATE["fault"] = ({"at": C.time.time(), "msg": "draw fault",
+                             "stopped": False} if fault else None)
         C.STATE["events"] = []
         C.STATE["changed_at"] = None
         C.STATE["manual_off_pending"] = False
@@ -313,7 +324,7 @@ def test_force_on_overrides_a_fault_stop():
 
 def test_enforce_stop_switches_a_running_fan_off():
     C = harness.load()
-    setup(C, mode="auto", fan=True)
+    setup(C, mode="auto", fan=True, fault=True)
     plug = Plug(on=True)
 
     C._enforce_stop(plug)
@@ -326,7 +337,7 @@ def test_enforce_stop_switches_a_running_fan_off():
 def test_enforce_stop_does_not_re_command_a_fan_already_off():
     """It runs every cycle while a fault stands."""
     C = harness.load()
-    setup(C, mode="auto", fan=False)
+    setup(C, mode="auto", fan=False, fault=True)
     plug = Plug(on=False)
 
     C._enforce_stop(plug)
@@ -335,6 +346,60 @@ def test_enforce_stop_does_not_re_command_a_fan_already_off():
         "re-commanded a fan already confirmed off: %r" % plug.calls)
     assert C.STATE["fan"] is False
     return "confirmed off is left alone"
+
+
+def test_enforce_stop_does_nothing_once_the_fault_is_acknowledged():
+    """A stop must not outlive the fault it was enforcing.
+
+    _draw_check sees a fault, releases _act_lock, and calls
+    _enforce_stop. An acknowledgement landing in between used to be
+    ignored: the fan was switched OFF after the dashboard had reported
+    the fault cleared, with nothing on screen to explain it. The fault
+    is now re-checked inside the hold, and _clear_fault takes _act_lock
+    so the two cannot interleave.
+    """
+    C = harness.load()
+    setup(C, mode="auto", fan=True, fault=True)
+    plug = Plug(on=True)
+
+    # The acknowledgement lands first, exactly as the dashboard would.
+    had, ok = C._clear_fault()
+    assert had and ok, "the fault was not acknowledged"
+
+    C._enforce_stop(plug)
+
+    assert plug.calls == [], (
+        "stopped the fan after the fault was acknowledged: %r"
+        % plug.calls)
+    assert plug.on is True, "the fan was switched off with no fault"
+    return "acknowledgement wins"
+
+
+def test_clear_fault_serialises_against_enforcement():
+    """_clear_fault takes _act_lock, so a stop cannot be mid-flight."""
+    C = harness.load()
+    setup(C, mode="auto", fan=True, fault=True)
+
+    seen = {}
+    real = C._clear_fault_locked
+
+    def watched():
+        free = C._act_lock.acquire(blocking=False)
+        seen["free"] = free
+        if free:
+            C._act_lock.release()
+        return real()
+
+    C._clear_fault_locked = watched
+    try:
+        C._clear_fault()
+    finally:
+        C._clear_fault_locked = real
+
+    assert seen.get("free") is False, (
+        "the fault was cleared without holding _act_lock, so an "
+        "enforcement stop could be running at the same time")
+    return "cleared under the lock"
 
 
 def test_a_plug_that_cannot_be_commanded_leaves_the_stop_unconfirmed():
