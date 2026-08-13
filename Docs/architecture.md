@@ -112,13 +112,53 @@ fault detector and the Force on re-assertion; and a settings save that
 changes the mode. That is five paths that touch the relay, and every one
 of them follows the same rule:
 
-> take `_act_lock`, re-check the mode, then touch the plug.
+> take `_act_lock`, re-check the mode **and the config generation**,
+> then touch the plug.
 
 The re-check is not defensive padding. Checking the mode before taking the
 lock and acting after it is a race: Manual's stop runs exactly once and
 then clears its flag, so a Force on that had already passed its check
 could land afterwards and leave the fan running in the one mode whose
 purpose is to stop touching it.
+
+Re-checking the mode alone was not enough, and the gap took a long time
+to see. **The settings are re-read under the lock; the CLIENT was not.**
+A cycle builds its Protect and plug clients from whatever config is
+current when it starts, then makes a request that can take seconds. If
+the plug's address changes during that request, re-reading the settings
+gives the new rules — applied through a client still pointed at the
+**old physical device**. The new rules would command someone else's
+plug.
+
+So `CFG` carries a generation, bumped whenever it is replaced.
+`_client_snapshot()` returns the clients together with the generation
+they were built from, taken under `_cfg_lock` so the pair is coherent,
+and every path that can command or read a plug carries that generation
+and re-checks it while holding `_act_lock`. That is the right lock
+because a settings save swaps `CFG` and bumps the generation while
+holding it, so nothing can slip between the check and the switch —
+checking outside `_act_lock` narrows the window rather than closing it.
+
+An integer rather than comparing configs: cheap, and it changes even
+when a save rewrites identical values, which is the conservative
+direction. A discarded cycle costs one poll interval.
+
+The refusals are deliberately not uniform. `_manual_off` does **not**
+discharge its one-time promise — the flag stays set and the next cycle
+owes the same stop through the right plug. `_force_on` simply skips; it
+re-asserts every cycle anyway. `_enforce_stop` retries next cycle, on
+the reasoning that one more cycle of a faulted fan already being
+watched beats stopping a device that is not ours.
+
+The check also has to come **before the cycle's side effects**, not just
+before the switch. `tick()` originally checked only at the actuation
+block, so a superseded cycle still refreshed `reading_at` from the old
+sensor — resetting a safety timer, and delaying the stale-reading
+fail-safe for a newly configured sensor that may be unreachable — read
+the old plug's relay and could adopt it as an external switch, and could
+send the readings-returned all-clear because the old sensor answered.
+The check, the plug read and the whole recording now share one
+`_act_lock` hold.
 
 Settings saves commit the mode under the same lock, so an in-flight switch
 completes before a new mode takes effect. A save can therefore block for
@@ -141,10 +181,15 @@ snapshot - clearing the fault on screen while leaving it on disk, to
 reappear at the next restart.
 
 ```
+_cfg_lock   -> _act_lock        settings saves, and _client_snapshot
 _act_lock   -> _state_lock      five actuation paths
 _fault_lock -> _state_lock      six paths, including the restart check
 _act_lock and _fault_lock are never held together
 ```
+
+Nothing takes `_cfg_lock` while holding `_act_lock`. The generation is
+therefore read as a plain integer under `_act_lock` rather than by
+re-entering `_cfg_lock`, which would invert that order.
 
 The fault paths are: raising one, acknowledging one, confirming the stop,
 the retry after a failed write, the last-chance write on a signalled

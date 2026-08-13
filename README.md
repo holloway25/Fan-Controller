@@ -292,7 +292,9 @@ against a live install.
 - `test_control.py` - `decide()`, the per-rule latches, the min-run
   lease
 - `test_data.py` - `_coerce` validation, `prune_hist`, `find_metric`
-- `test_concurrency.py` - the actuation paths under `_act_lock`
+- `test_concurrency.py` - the actuation paths under `_act_lock`,
+  including that a settings change mid-cycle can neither command the
+  previous plug nor record a reading from the previous sensor
 - `test_actuation.py` - `_force_on` and `_enforce_stop`: the mode
   re-checks under the lock, the fault write kept outside it, and an
   unreadable plug never being mistaken for a fan that is off
