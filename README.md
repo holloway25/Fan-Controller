@@ -139,10 +139,11 @@ threads are mostly idle or blocked on I/O, not parallel work.
 **So size both memory and time against the Pi.** This used to say to
 size memory against the VM, which had half the RAM; the 2026-08-13
 resize reversed that, and the Pi is now the smaller box on both axes.
-Resident memory and anything that accumulates should be judged there -
-though note that service RSS has only ever been measured on the VM,
-where it sits around 45MB with four threads, and has NOT yet been
-measured on ARM. Startup, JSON parsing and anything CPU-bound should be
+Resident memory and anything that accumulates should be judged there.
+The service has now been measured on both: about 40MB with four threads
+on a 3B+, against about 45MB on the VM. The ARM figure is a floor - it
+was taken with no history file and no sensor connection - so expect it
+nearer the VM number in service. Startup, JSON parsing and anything CPU-bound should be
 judged on the Pi. Nothing in the code is architecture specific.
 
 Measurements below are x86 unless stated. ARM was measured for the
