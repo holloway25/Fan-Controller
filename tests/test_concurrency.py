@@ -115,18 +115,52 @@ class StubProtect:
                 "humidity": 50.0, "pm25": 1.0}, "co2"
 
 
-def test_tick_decides_on_the_config_in_force():
-    """A save landing mid-tick must not switch on superseded thresholds.
+class GatedProtect:
+    """Protect client whose read blocks until released.
+
+    The Protect request is the slow part of a cycle and happens OUTSIDE
+    _act_lock, which is what makes it the honest place to land a
+    concurrent save. Gating the PLUG read instead deadlocks the test
+    itself now that _fan_status runs inside the lock: the saver waits
+    for _act_lock, the poll thread waits for the gate, and which one
+    wins depends on the join timeouts. That is what made this module
+    fail on 3.10 in CI and pass everywhere else.
+    """
+
+    def __init__(self, co2):
+        self.co2 = co2
+        self.entered = threading.Event()
+        self.gate = threading.Event()
+
+    def readings(self, sid):
+        self.entered.set()
+        self.gate.wait(10)
+        return {"co2": self.co2, "temperature": 20.0,
+                "humidity": 50.0, "pm25": 1.0}, "co2"
+
+
+def test_a_save_mid_tick_neither_switches_nor_latches():
+    """A save landing mid-cycle must not decide on superseded thresholds.
 
     decide() latches in place, and the latch is sticky inside the
-    hysteresis band. Deciding on thresholds a save has already replaced
-    therefore sets a latch from numbers no longer in force, which would
-    start the fan on the next tick as well - so the decision, not just
-    the switch, has to happen under _act_lock.
+    hysteresis band, so a decision made on numbers a save has already
+    replaced would set a latch from thresholds no longer in force - and
+    start the fan on the NEXT tick too, after the save had taken effect.
+
+    Since every save bumps the config generation, the cycle is now
+    discarded outright rather than re-deciding, which is the stronger
+    guarantee: nothing from a superseded cycle reaches the plug or the
+    latch.
+
+    This replaces a test that committed CFG without bumping the
+    generation - something api_config cannot do - and that gated the
+    plug read, which now sits inside _act_lock and so could not be
+    reached while the saver held it.
     """
     C = harness.load()
-    plug = GatedPlug("poll")
-    C._clients = lambda: (StubProtect(830.0), plug)
+    protect = GatedProtect(830.0)
+    plug = GatedPlug("never")
+    C._clients = lambda: (protect, plug)
 
     C.CFG["control"].update(mode="auto", on_at=800.0, off_at=700.0,
                             min_run_minutes=15, temp_enabled=False,
@@ -138,20 +172,25 @@ def test_tick_decides_on_the_config_in_force():
         C.STATE["latch"] = {"co2": False, "temp": False}
 
     def save():
-        """Raise on_at above the reading, as api_config does."""
+        """Raise on_at above the reading, exactly as api_config does."""
         with C._act_lock:
             fresh = dict(C.CFG["control"])
             fresh["on_at"] = 1000.0
             C.CFG["control"] = fresh
+            C._cfg_generation += 1
 
     poll = threading.Thread(target=C.tick, name="poll")
     poll.start()
-    plug.entered.wait(5)
+    assert protect.entered.wait(10), "the poll never reached the read"
+
     saver = threading.Thread(target=save)
     saver.start()
-    saver.join(5)
-    plug.gate.set()
+    saver.join(10)
+    assert not saver.is_alive(), "the save could not commit"
+
+    protect.gate.set()
     poll.join(10)
+    assert not poll.is_alive(), "tick did not finish"
 
     assert not plug.on, "fan started on superseded thresholds: %r" % (
         plug.calls,)

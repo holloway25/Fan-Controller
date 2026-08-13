@@ -415,6 +415,11 @@ def save_fault(f):
 
 
 _oob_since = None
+# Which config the out-of-band timer belongs to. A timer accumulated
+# against one plug and one draw band must not carry into another: the
+# elapsed seconds would be counted against limits they were never
+# measured under.
+_oob_generation = None
 
 
 EVENTS_PATH = os.path.join(DIR, "events.json")
@@ -2090,8 +2095,26 @@ def _draw_check(plug, gen=None):
 
     Force on takes precedence: it is how a repaired fan gets tested, so
     the detector stands down there rather than fighting it.
+
+    THE GENERATION IS CHECKED HERE, not merely handed to _enforce_stop.
+    This function accepted gen and passed it on, which stopped it
+    COMMANDING a superseded plug but not JUDGING one: it still read the
+    cached watts, ran the timer, and could raise and persist a draw
+    fault describing a device that is no longer configured. A false
+    fault blocks automatic running, emails that the fan was stopped, and
+    is then enforced against the NEW plug on the next cycle. Not
+    commanding the wrong plug is not the same as not faulting because of
+    it.
     """
-    global _oob_since
+    global _oob_since, _oob_generation
+    with _act_lock:
+        if _stale_client(gen):
+            return
+        # In the same hold as the check: a save landing between them
+        # would leave the timer in the state this is guarding against.
+        if gen is not None and _oob_generation != gen:
+            _oob_since = None
+            _oob_generation = gen
     if CFG["control"]["mode"] == "on":
         _oob_since = None
         return
