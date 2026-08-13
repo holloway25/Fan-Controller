@@ -198,11 +198,20 @@ widened to 90–110 W. The fan is never commanded through the old plug,
 but that fault blocks Auto, emails that the fan was stopped, and is
 enforced against the new plug on the next cycle.
 
-Audited when it was introduced: **no function that takes `_fault_lock`
-ever takes `_act_lock`**, so the pair cannot invert. `_enforce_stop`,
-the log, the email and the fault-stop confirmation all run after the
-hold is released, because `_enforce_stop` takes `_act_lock` itself and
-the rest must not extend a hold a settings save is waiting on.
+The rule is about **direction**: no code path acquires `_act_lock`
+while already holding `_fault_lock`, and every combined acquisition goes
+`_act_lock -> _fault_lock`.
+
+This paragraph used to say "no function that takes `_fault_lock` ever
+takes `_act_lock`", which `_draw_check` falsifies — it holds `_act_lock`
+and reaches `_fault_lock` through `_store_fault`. That was the wrong way
+to state it: what prevents a deadlock is that the pair is never taken in
+the reverse order, not that they are never combined.
+
+`_enforce_stop`, the log, the email and the fault-stop confirmation all
+run after the hold is released, because `_enforce_stop` takes `_act_lock`
+itself and the rest must not extend a hold a settings save is waiting
+on.
 
 The cost is that a settings save can now wait on a fault write as well
 as on a plug call. Bounded, visible, and preferable to a fault raised
@@ -225,11 +234,22 @@ delivered.
 
 The count grew as those paths were added, and this line has been wrong
 about it once already: it said six after the email annotations brought
-it to eight. **If it looks wrong, count the ACQUISITIONS** -
-`with _fault_lock` and `_fault_lock.acquire` - rather than trusting the
-number here. A plain grep for the name returns one more than that,
-because `_persist_fault_locked` mentions it in a docstring to say its
-caller already holds it.
+it to eight. **If it looks wrong, count them** rather than trusting the
+number here:
+
+```
+grep -nE '^[[:space:]]*(with _fault_lock:|if not _fault_lock\.acquire\()' controller.py
+```
+
+That returns exactly the eight. Two looser recipes do not, and both were
+suggested here before this one. A plain grep for the name matches every
+mention including this paragraph's — dozens, and the figure moves every
+time someone edits a comment; a draft of this very sentence quoted a
+count that was stale by the time it was saved. And
+`with _fault_lock\|_fault_lock.acquire` returns one too many, because
+`_persist_fault_locked` mentions it in a docstring to say its caller
+already holds it. Anchoring to the start of the line is what excludes
+prose.
 
 `_state_lock` is an RLock because nested acquisition previously deadlocked
 the poll thread. Nothing takes `_act_lock` or `_fault_lock` while holding

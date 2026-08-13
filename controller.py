@@ -2184,11 +2184,19 @@ def _draw_check(plug, gen=None):
         # was stopped, and is enforced against the NEW plug next cycle.
         #
         # THIS ESTABLISHES _act_lock -> _fault_lock, through
-        # _store_fault. Audited when it was introduced: no function that
-        # takes _fault_lock ever takes _act_lock, so the pair cannot
-        # invert. A settings save can now wait on a fault write as well
-        # as on a plug call - bounded, visible, and preferable to a fault
-        # raised against limits that no longer exist.
+        # _store_fault. The rule is about DIRECTION: no code path
+        # acquires _act_lock while already holding _fault_lock, and
+        # every combined acquisition goes _act_lock -> _fault_lock.
+        #
+        # An earlier version of this comment said "no function that
+        # takes _fault_lock ever takes _act_lock", which THIS FUNCTION
+        # falsifies - it holds _act_lock and reaches _fault_lock through
+        # _store_fault. Audited by direction, which is the property that
+        # prevents a deadlock.
+        #
+        # A settings save can now wait on a fault write as well as on a
+        # plug call - bounded, visible, and preferable to a fault raised
+        # against limits that no longer exist.
         if CFG["control"]["mode"] == "on":
             _oob_since = None
             return
