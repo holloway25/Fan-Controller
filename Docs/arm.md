@@ -132,20 +132,40 @@ Either way it is not a constraint on a 1GB board.
 
 All 11 modules, 155 tests, pass. No failures and no skips.
 
-| module | tests | time | | module | tests | time |
-|---|---|---|---|---|---|---|
-| `test_data` | 12 | <1s | | `test_durability` | 16 | 5s |
-| `test_dashboard` | 6 | <1s | | `test_restart_sh` | 5 | 16s |
-| `test_control` | 20 | <1s | | `test_restart` | 28 | 9s |
-| `test_plug_parse` | 22 | <1s | | | | |
-| `test_history` | 14 | 3s | | peak RSS | | 246 MB |
-| `test_failures` | 12 | 3s | | peak load | | 0.26 |
-| `test_actuation` | 15 | 4s | | | | |
+| module | tests | time |
+|---|---|---|
+| `test_data` | 12 | <1s |
+| `test_dashboard` | 6 | <1s |
+| `test_control` | 20 | <1s |
+| `test_plug_parse` | 22 | <1s |
+| `test_history` | 14 | 3s |
+| `test_failures` | 12 | 3s |
+| `test_actuation` | 15 | 4s |
+| `test_concurrency` | 5 | 4s |
+| `test_durability` | 16 | 5s |
+| `test_restart_sh` | 5 | 16s |
+| `test_restart` | 28 | 9s |
+| **total** | **155** | peak 246 MB, peak load 0.26 |
 
-**Run one module at a time.** Never `run_all.py` on a small box, and
-never two runs concurrently — that is what once drove the x86 VM into
-swap exhaustion, on a single core with no headroom to absorb the
-second. A sequential pass is cheap; overlapping passes are not.
+**One module runs at a time — `run_all.py` already guarantees that.**
+It starts each module as its own process with `subprocess.call`, which
+blocks until that module exits, so the suite never runs modules
+concurrently. It is the standard way to run the full suite and it is
+safe here: a complete sequential pass peaks at 246 MB and never took
+load above 0.26 on a 3B+.
+
+**What is not safe is two suite runs at once.** That is what once drove
+the x86 VM into swap exhaustion — a second full run launched while the
+first was still going, on a single core with no headroom to absorb it.
+Before relaunching anything that looks stuck, check it is actually
+gone:
+
+```
+pgrep -af run_all
+```
+
+While iterating on one area, running just that module is quicker than
+the full suite — but that is convenience, not a safety rule.
 
 `test_restart_sh` is the slow one — 16 s for 5 tests, nearly twice
 `test_restart` with 28 — because it spawns real bash and waits on real
