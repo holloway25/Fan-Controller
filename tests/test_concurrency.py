@@ -291,5 +291,105 @@ def test_events_on_disk_match_memory_under_concurrent_logs():
     return "disk matches memory"
 
 
+def test_a_settings_change_mid_cycle_does_not_command_the_old_plug():
+    """The cycle re-read the settings but kept the client it started with.
+
+    tick() builds its Protect and plug clients, then makes a network
+    request that can take seconds. It re-reads CFG["control"] under
+    _act_lock before deciding - but a plug ADDRESS change in that window
+    left the new rules commanding the old physical plug. Reproduced by
+    holding the sensor read open and saving a new plug host.
+    """
+    C = harness.load()
+    started = threading.Event()
+    release = threading.Event()
+    old_commands = []
+    new_commands = []
+
+    class SlowSensor:
+        def readings(self, sid):
+            started.set()
+            release.wait(5)
+            return {"co2": 1500.0}, "path"
+
+    class OldPlug:
+        def state(self):
+            return False
+
+        def set(self, v):
+            old_commands.append(v)
+            return v
+
+        def power_w(self):
+            return 0.0
+
+    class NewPlug(OldPlug):
+        def set(self, v):
+            new_commands.append(v)
+            return v
+
+    C.CFG["protect"]["sensor_id"] = "x"
+    C.CFG["control"].update(mode="auto", co2_enabled=True,
+                            on_at=1000, off_at=700, min_run_minutes=0)
+    C._clients = lambda: (SlowSensor(), OldPlug())
+
+    done = []
+    th = threading.Thread(target=lambda: done.append(C.tick()))
+    th.start()
+    assert started.wait(5), "the poll never reached the sensor"
+
+    # A settings save lands while the read is in flight.
+    with C._cfg_lock:
+        with C._act_lock:
+            C.CFG["plug"] = dict(C.CFG["plug"], host="plug-new")
+            C._cfg_generation += 1
+    C._clients = lambda: (SlowSensor(), NewPlug())
+
+    release.set()
+    th.join(10)
+
+    assert old_commands == [], \
+        "commanded the plug that was replaced: %r" % old_commands
+    assert new_commands == [], "commanded anything at all this cycle"
+    return "stale cycle discarded"
+
+
+def test_history_writes_are_serialised():
+    """Two writers share one history.json.tmp.
+
+    The poll thread and the restart or shutdown path can both call
+    maybe_save_hist. save_hist writes through one fixed temporary path,
+    so interleaved writers can lose the graph or make the restart path
+    report a failure that did not happen.
+    """
+    C = harness.load()
+    overlap = []
+    inside = []
+    real = C.save_hist
+
+    def watched(hist):
+        inside.append(1)
+        if len(inside) > 1:
+            overlap.append(1)
+        time.sleep(0.05)
+        inside.pop()
+        return real(hist)
+
+    C.save_hist = watched
+    C._last_flush = 0
+
+    threads = [threading.Thread(
+        target=lambda: C.maybe_save_hist([{"t": time.time(), "v": 1}],
+                                         force=True))
+        for _ in range(6)]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join(10)
+
+    assert overlap == [], "two writers were inside save_hist at once"
+    return "one writer at a time"
+
+
 if __name__ == "__main__":
     sys.exit(harness.run(dict(globals())))

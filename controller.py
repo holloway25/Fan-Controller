@@ -451,9 +451,30 @@ def prune_hist(hist, now=None):
     remains as a memory bound, not as the retention policy.
     """
     cutoff = (now or time.time()) - HIST_HOURS * 3600
-    kept = [p for p in hist
-            if isinstance(p, dict) and (p.get("t") or 0) >= cutoff]
+    kept = [p for p in hist if _usable_point(p, cutoff)]
     return kept[-HIST_CAP:]
+
+
+def _usable_point(point, cutoff):
+    """True for a history sample that can be compared and plotted.
+
+    A string, list or None where a timestamp belongs used to raise
+    TypeError from the comparison. This runs during module import, so
+    one malformed entry in history.json took the whole service down -
+    and with Restart=on-failure, took it down repeatedly. A graph point
+    is not worth a crash loop: drop it and keep serving.
+
+    bool is excluded explicitly because it is a subclass of int, and
+    True would otherwise pass as the timestamp 1. NaN is excluded
+    because every comparison against it is False, which would silently
+    drop the point anyway, and infinity because it would never expire.
+    """
+    if not isinstance(point, dict):
+        return False
+    ts = point.get("t")
+    if isinstance(ts, bool) or not isinstance(ts, (int, float)):
+        return False
+    return math.isfinite(ts) and ts >= cutoff
 
 
 def load_hist():
@@ -483,17 +504,32 @@ def save_hist(hist):
 
 
 
+_hist_write_lock = threading.Lock()
+
+
 def maybe_save_hist(hist, force=False):
-    """Batch writes: one full rewrite per poll was 2,880 a day at 30s."""
+    """Batch writes: one full rewrite per poll was 2,880 a day at 30s.
+
+    SERIALISED. The poll thread and the restart or shutdown path can
+    both arrive here, and save_hist writes through one fixed temporary
+    path - two writers interleaving on history.json.tmp can lose the
+    graph, or make the restart path report that history could not be
+    saved when it could. _last_flush was also read and written without
+    synchronisation, so both could pass the interval check.
+
+    Innermost lock: nothing is taken while holding it, so it cannot
+    participate in an ordering problem with _act_lock or _state_lock.
+    """
     global _last_flush
-    now = time.time()
-    if not force and now - _last_flush < HIST_FLUSH_SECONDS:
-        return False
-    ok = save_hist(hist)
-    # Advanced either way. A failing disk should not turn every poll
-    # into a full rewrite of 20,000 points.
-    _last_flush = now
-    return ok
+    with _hist_write_lock:
+        now = time.time()
+        if not force and now - _last_flush < HIST_FLUSH_SECONDS:
+            return False
+        ok = save_hist(hist)
+        # Advanced either way. A failing disk should not turn every poll
+        # into a full rewrite of 20,000 points.
+        _last_flush = now
+        return ok
 
 
 def _persist_fault_on_exit():
@@ -889,6 +925,32 @@ _events_lock = threading.Lock()
 # config.json.tmp. Order is _cfg_lock then _act_lock; nothing takes
 # _cfg_lock while holding _act_lock.
 _cfg_lock = threading.Lock()
+
+# Bumped every time CFG is replaced. A cycle captures it alongside its
+# clients and re-checks before actuating: the settings are already
+# re-read under _act_lock, but the CLIENT was not, so a plug address
+# changing during a Protect read left the new rules commanding the OLD
+# physical plug. Re-reading CFG cannot fix that - the client is built
+# from the config that was current when the cycle started.
+#
+# An integer rather than comparing configs: cheap, and it changes even
+# when a save rewrites the same values, which is the conservative
+# direction. A discarded cycle costs one poll interval.
+_cfg_generation = 0
+
+
+def _client_snapshot():
+    """Clients, and the config generation they were built from.
+
+    Taken under _cfg_lock so the pair is coherent. Lock order is
+    _cfg_lock then _clients_lock; nothing takes _clients_lock first.
+    """
+    with _cfg_lock:
+        gen = _cfg_generation
+        p, g = _clients()
+    return p, g, gen
+
+
 CFG = load_cfg()
 STATE["history"] = load_hist()
 # Reloaded, not reset: a fault must survive a restart or the acknowledgement
@@ -1159,7 +1221,7 @@ def _force_on(plug):
 
 
 def tick():
-    p, h = _clients()
+    p, h, gen = _client_snapshot()
     c = CFG["control"]
     # Before the sensor read: a manual stop must not depend on Protect,
     # and neither may the override that exists for when Protect is the
@@ -1249,6 +1311,13 @@ def tick():
         cur = CFG["control"]
         if cur["mode"] != "auto":
             return
+        # The settings are current; the PLUG may not be. If anything was
+        # saved while the Protect read was in flight, h may address a
+        # plug that is no longer ours. Discard the cycle rather than
+        # command it, and wake the loop so the replacement runs at once.
+        if gen != _cfg_generation:
+            _wake.set()
+            return
         want, why = decide(co2, vals.get('temperature'), fan_on, cur,
                            ran_for, STATE["latch"], STATE["fault"],
                            humidity=vals.get('humidity'))
@@ -1286,7 +1355,7 @@ def _failsafe():
         return
     # Ask the plug rather than trusting cached state: it may have rebooted
     # off, or been switched off while Protect was unreachable.
-    _, h = _clients()
+    _, h, gen = _client_snapshot()
     # Re-checked under _act_lock: the plug read below can take up to its
     # 12s timeout, and a mode change landing in that window could leave
     # this switching the fan on just after Manual ran its one-time stop -
@@ -1295,6 +1364,10 @@ def _failsafe():
     # mode: setting it to 0 disables the fail-safe, and a save doing that
     # while this call sits in the plug read must not still ventilate.
     with _act_lock:
+        # Same reasoning as tick(): a save during the plug read can leave
+        # h pointing at a plug that is no longer configured.
+        if gen != _cfg_generation:
+            return
         cur = CFG["control"]
         mins = int(cur.get("stale_minutes") or 0)
         if not mins or cur["mode"] != "auto":
@@ -2074,8 +2147,19 @@ def watts_loop():
         _retry_fault_persist()
         plug = None
         try:
-            _, plug = _clients()
+            _, plug, gen = _client_snapshot()
             w = plug.power_w()
+            # A reading from a plug that is no longer configured is not
+            # this fan's draw. Discarding it here covers the stored value
+            # AND the draw check below, which would otherwise raise a
+            # fault about the wrong device.
+            #
+            # This skips the sleep at the end of the loop, deliberately:
+            # the next iteration takes a fresh snapshot and will match,
+            # so it costs one early retry rather than spinning, and the
+            # new plug gets read at once instead of 5s late.
+            if gen != _cfg_generation:
+                continue
             with _state_lock:
                 STATE["watts"] = w
                 STATE["watts_at"] = time.time()
@@ -2780,6 +2864,8 @@ def _api_config_locked():
         was = CFG["control"].get("mode")
         for section in cand:
             CFG[section] = cand[section]
+        global _cfg_generation
+        _cfg_generation += 1
         now_mode = CFG["control"].get("mode")
         if now_mode == "manual" and was != "manual":
             # Entering manual switches the fan off once, then hands to the

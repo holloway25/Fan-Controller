@@ -100,5 +100,43 @@ def test_find_metric_ignores_booleans_and_misses():
     assert C.find_metric({"humidity": 55}, C.CO2_HINTS) is None
 
 
+def test_a_malformed_timestamp_does_not_crash_the_load():
+    """One bad point used to take the whole service down, repeatedly.
+
+    prune_hist compared every timestamp with a number, so a string, a
+    list or a None raised TypeError - during module import, which with
+    Restart=on-failure means a crash loop. A graph point is not worth
+    that: drop it and keep serving.
+    """
+    C = harness.load()
+    now = C.time.time()
+    good = {"t": now, "v": 800}
+    bad = [
+        {"t": "bad"},
+        {"t": None},
+        {"t": [1]},
+        {"t": {"nested": 1}},
+        {"t": True},                     # bool is an int subclass
+        {"t": float("nan")},
+        {"t": float("inf")},
+        {"t": float("-inf")},
+        "not a dict",
+        None,
+        42,
+    ]
+    kept = C.prune_hist(bad + [good], now)
+    assert kept == [good], "kept something unusable: %r" % kept
+    return "%d malformed points dropped" % len(bad)
+
+
+def test_a_good_point_survives_alongside_rubbish():
+    C = harness.load()
+    now = C.time.time()
+    pts = [{"t": now - 10, "v": 1}, {"t": "x"}, {"t": now - 5, "v": 2}]
+    kept = C.prune_hist(pts, now)
+    assert [p["v"] for p in kept] == [1, 2], kept
+    return "order and content preserved"
+
+
 if __name__ == "__main__":
     sys.exit(harness.run(dict(globals())))

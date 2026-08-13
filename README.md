@@ -122,9 +122,10 @@ Two targets, both first class:
 - **x86-64 Debian or Ubuntu.** What it is developed and run on. The
   current host is an Ubuntu 26.04 VM with two cores and 1024MB.
 - **A Raspberry Pi 3B+ on the 64-bit image.** 1.4GHz quad-core
-  Cortex-A53, 1GB. A plain 3B is the same design a little slower and
-  works fine; a 4 or a 5 is more machine than this needs and will run it
-  without complaint. Prefer the 64-bit image over the 32-bit one: both
+  Cortex-A53, 1GB. This is the board the ARM measurements were taken on
+  - see `Docs/arm.md`. A plain 3B is the same design a little slower and
+  is expected to work, but has not been verified; a 4 or a 5 is more
+  machine than this needs and will run it without complaint. Prefer the 64-bit image over the 32-bit one: both
   boards are ARMv8 so either boots, but wheel coverage on PyPI is much
   better for arm64, and that is not hypothetical: MarkupSafe, already a
   dependency, publishes aarch64 wheels for every Python here and no
