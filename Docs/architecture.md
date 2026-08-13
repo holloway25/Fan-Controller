@@ -184,9 +184,29 @@ reappear at the next restart.
 _cfg_lock   -> _act_lock        settings saves
 _cfg_lock   -> _clients_lock    client snapshots
 _act_lock   -> _state_lock      five actuation paths
+_act_lock   -> _fault_lock      the draw decision only
 _fault_lock -> _state_lock      six paths, including the restart check
-_act_lock and _fault_lock are never held together
 ```
+
+**`_act_lock -> _fault_lock` is new, and the line above used to say the
+two were never held together.** The draw decision needs it: checking the
+generation, reading the band, running the out-of-band timer and
+committing the fault have to be one transaction, or a settings save
+landing in the middle produces a persistent fault quoting limits that no
+longer exist — `Draw fault - 99 W outside 10-20 W` after the range was
+widened to 90–110 W. The fan is never commanded through the old plug,
+but that fault blocks Auto, emails that the fan was stopped, and is
+enforced against the new plug on the next cycle.
+
+Audited when it was introduced: **no function that takes `_fault_lock`
+ever takes `_act_lock`**, so the pair cannot invert. `_enforce_stop`,
+the log, the email and the fault-stop confirmation all run after the
+hold is released, because `_enforce_stop` takes `_act_lock` itself and
+the rest must not extend a hold a settings save is waiting on.
+
+The cost is that a settings save can now wait on a fault write as well
+as on a plug call. Bounded, visible, and preferable to a fault raised
+against limits that have been replaced.
 
 `_client_snapshot()` takes `_cfg_lock` and then `_clients_lock` - it
 does **not** take `_act_lock`, and an earlier version of this table said

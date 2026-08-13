@@ -2115,53 +2115,79 @@ def _draw_check(plug, gen=None):
         if gen is not None and _oob_generation != gen:
             _oob_since = None
             _oob_generation = gen
-    if CFG["control"]["mode"] == "on":
-        _oob_since = None
-        return
-    with _state_lock:
-        fault = STATE["fault"]
-    if fault:
+
+        # EVERYTHING that decides whether to fault stays in this hold,
+        # not just the check that opens it. Checking the generation and
+        # then releasing left the band, the timer and _store_fault
+        # outside: a save widening the range to 90-110W while a 99W
+        # reading was being judged still produced a persistent
+        # "Draw fault - 99 W outside 10-20 W". The old plug was never
+        # commanded, but the false fault blocks Auto, emails that the fan
+        # was stopped, and is enforced against the NEW plug next cycle.
+        #
+        # THIS ESTABLISHES _act_lock -> _fault_lock, through
+        # _store_fault. Audited when it was introduced: no function that
+        # takes _fault_lock ever takes _act_lock, so the pair cannot
+        # invert. A settings save can now wait on a fault write as well
+        # as on a plug call - bounded, visible, and preferable to a fault
+        # raised against limits that no longer exist.
+        if CFG["control"]["mode"] == "on":
+            _oob_since = None
+            return
+        with _state_lock:
+            fault = STATE["fault"]
+        if fault:
+            standing = True
+        else:
+            standing = False
+            pg = CFG["plug"]
+            if not pg.get("watts_enabled"):
+                _oob_since = None
+                return
+            now = time.time()
+            with _state_lock:
+                fan, w = STATE["fan"], STATE["watts"]
+                w_at, changed = STATE["watts_at"], STATE["changed_at"]
+            # A motor spinning up draws nothing yet, and a fan meant to
+            # be off is not a fault. changed_at is deliberately left
+            # unset when startup finds the fan already running, so fall
+            # back to START_TIME: treating None as never-settled
+            # disabled draw protection for as long as that run lasted,
+            # which on a high-CO2 day is hours.
+            since = changed if changed is not None else START_TIME
+            if fan is not True or now - since <= SETTLE_SECONDS:
+                _oob_since = None
+                return
+            # Freshness is judged here, not taken from the cached value:
+            # when the plug stops answering, STATE keeps the last good
+            # reading and would otherwise look healthy for as long as
+            # the outage lasted. No reading is out of band, since an
+            # unanswering plug is what this catches.
+            if w_at is None or (now - w_at) > WATTS_STALE:
+                w = None
+            lo, hi = float(pg["watts_min"]), float(pg["watts_max"])
+            if w is not None and lo <= w <= hi:
+                _oob_since = None
+                return
+            if _oob_since is None:
+                _oob_since = now
+                return
+            if now - _oob_since < float(pg["watts_fault_seconds"]):
+                return
+            reading = "no reading" if w is None else ("%g W" % w)
+            msg = ("Draw fault - %s outside %g-%g W for %ds"
+                   % (reading, lo, hi, int(now - _oob_since)))
+            f = {"at": now, "msg": msg, "stopped": False,
+                 "attempted_at": now, "delivered_at": None}
+            prev = _store_fault(f)
+            _oob_since = None
+
+    # Out of the hold. _enforce_stop takes _act_lock itself, and the
+    # log, the email and the fault-stop confirmation are all things that
+    # must not extend a hold a settings save is waiting on.
+    if standing:
         _enforce_stop(plug, gen)
         return
-    pg = CFG["plug"]
-    if not pg.get("watts_enabled"):
-        _oob_since = None
-        return
-    now = time.time()
-    with _state_lock:
-        fan, w = STATE["fan"], STATE["watts"]
-        w_at, changed = STATE["watts_at"], STATE["changed_at"]
-    # A motor spinning up draws nothing yet, and a fan meant to be off is
-    # not a fault. changed_at is deliberately left unset when startup
-    # finds the fan already running, so fall back to START_TIME: treating
-    # None as never-settled disabled draw protection for as long as that
-    # run lasted, which on a high-CO2 day is hours.
-    since = changed if changed is not None else START_TIME
-    if fan is not True or now - since <= SETTLE_SECONDS:
-        _oob_since = None
-        return
-    # Freshness is judged here, not taken from the cached value: when the
-    # plug stops answering, STATE keeps the last good reading and would
-    # otherwise look healthy for as long as the outage lasted. No reading
-    # is out of band, since an unanswering plug is what this catches.
-    if w_at is None or (now - w_at) > WATTS_STALE:
-        w = None
-    lo, hi = float(pg["watts_min"]), float(pg["watts_max"])
-    if w is not None and lo <= w <= hi:
-        _oob_since = None
-        return
-    if _oob_since is None:
-        _oob_since = now
-        return
-    if now - _oob_since < float(pg["watts_fault_seconds"]):
-        return
-    reading = "no reading" if w is None else ("%g W" % w)
-    msg = ("Draw fault - %s outside %g-%g W for %ds"
-           % (reading, lo, hi, int(now - _oob_since)))
-    f = {"at": now, "msg": msg, "stopped": False,
-         "attempted_at": now, "delivered_at": None}
-    prev = _store_fault(f)
-    _oob_since = None
     _log(msg)
     # Only on the transition into a fault. _store_fault returns what was
     # there before, so a fault raised while one already stood - which

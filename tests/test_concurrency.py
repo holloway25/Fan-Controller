@@ -580,5 +580,136 @@ def test_a_superseded_cycle_records_nothing_at_all():
     return "no reading, no adoption, no all-clear"
 
 
+def test_the_draw_decision_commits_its_fault_under_the_lock():
+    """The opening generation check was not the whole decision.
+
+    _draw_check checked the generation under _act_lock, released it, and
+    then read the band, ran the timer and called _store_fault. A save
+    landing in that gap - widening the range so the reading was fine -
+    still produced a persistent fault quoting the OLD range:
+
+        Draw fault - 99 W outside 10-20 W
+
+    The old plug is never commanded, but that fault blocks Auto, emails
+    that the fan was stopped, and is enforced against the NEW plug on
+    the next cycle.
+
+    Asserting "no fault appears" cannot test this: once the decision is
+    atomic, a competing save simply queues behind it, and whether a
+    fault is right or wrong then depends on which went first - both
+    orders are correct. The INVARIANT is what matters, so that is what
+    is asserted: while the fault is being committed, _act_lock is held,
+    so no save can be interleaved with the decision that produced it.
+    """
+    C = harness.load()
+    now = C.time.time()
+
+    class Meter:
+        def __init__(self):
+            self.commands = []
+
+        def state(self):
+            return True
+
+        def set(self, on):
+            self.commands.append(on)
+
+        def power_w(self):
+            return 99.0
+
+    C.CFG["plug"].update(watts_enabled=True, watts_min=10.0,
+                         watts_max=20.0, watts_fault_seconds=0)
+    C.CFG["control"]["mode"] = "auto"
+    with C._state_lock:
+        C.STATE["fault"] = None
+        C.STATE["fan"] = True
+        C.STATE["watts"] = 99.0
+        C.STATE["watts_at"] = now
+        C.STATE["changed_at"] = now - 10000
+    C._oob_since = now - 600
+    C._oob_generation = C._cfg_generation
+    C._notify = lambda s, b, on_complete=None: None
+
+    held = []
+    real_store = C._store_fault
+
+    def watching_store(value):
+        # False means another thread could NOT have taken _act_lock at
+        # this moment - which is the property under test.
+        free = C._act_lock.acquire(blocking=False)
+        if free:
+            C._act_lock.release()
+        held.append(not free)
+        return real_store(value)
+
+    C._store_fault = watching_store
+    C._draw_check(Meter(), C._cfg_generation)
+    C._store_fault = real_store
+
+    assert held, "no fault was committed, so nothing was tested"
+    assert all(held), (
+        "the fault was committed with _act_lock released, so a save "
+        "could have replaced the limits it was judged against")
+    assert C.STATE["fault"] is not None
+    assert "10-20" in C.STATE["fault"]["msg"], C.STATE["fault"]["msg"]
+    return "committed under the lock"
+
+
+def test_a_save_queues_behind_a_draw_decision_rather_than_splitting_it():
+    """A settings save cannot land in the middle of the decision."""
+    C = harness.load()
+    now = C.time.time()
+
+    class Meter:
+        def state(self):
+            return True
+
+        def set(self, on):
+            return on
+
+        def power_w(self):
+            return 99.0
+
+    C.CFG["plug"].update(watts_enabled=True, watts_min=10.0,
+                         watts_max=20.0, watts_fault_seconds=0)
+    C.CFG["control"]["mode"] = "auto"
+    with C._state_lock:
+        C.STATE["fault"] = None
+        C.STATE["fan"] = True
+        C.STATE["watts"] = 99.0
+        C.STATE["watts_at"] = now
+        C.STATE["changed_at"] = now - 10000
+    C._oob_since = now - 600
+    C._oob_generation = C._cfg_generation
+    C._notify = lambda s, b, on_complete=None: None
+
+    seen = []
+    real_store = C._store_fault
+
+    def slow_store(value):
+        # A save attempted here must not be able to proceed.
+        done = threading.Event()
+
+        def save():
+            with C._act_lock:
+                fresh = dict(C.CFG["plug"])
+                fresh.update(watts_min=90.0, watts_max=110.0)
+                C.CFG["plug"] = fresh
+                C._cfg_generation += 1
+            done.set()
+
+        threading.Thread(target=save, name="saver").start()
+        seen.append(done.wait(1.0))     # True would mean it got in
+        return real_store(value)
+
+    C._store_fault = slow_store
+    C._draw_check(Meter(), C._cfg_generation)
+    C._store_fault = real_store
+
+    assert seen == [False], (
+        "a save completed while the draw decision was mid-flight")
+    return "the save waited its turn"
+
+
 if __name__ == "__main__":
     sys.exit(harness.run(dict(globals())))

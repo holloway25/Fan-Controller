@@ -1,15 +1,26 @@
 """A structural test: every function that can command or judge a plug
 must test the config generation.
 
-WHAT THIS PROVES AND WHAT IT DOES NOT. It proves the CHECK EXISTS. For
-the four direct actuators it also proves the check sits inside an
-_act_lock hold and before any plug call. It does NOT prove that every
-check is correctly ordered everywhere - tick() delegates its first two
-plug calls to helpers that check for themselves, and watts_loop
-deliberately checks outside _act_lock because it is discarding a
-reading rather than commanding anything. Those orderings are covered by
-the behavioural tests in test_concurrency.py, which remain the stronger
-protection. This is a fence around one hole, not a roof.
+WHAT THIS PROVES AND WHAT IT DOES NOT. It proves the CHECK EXISTS, and
+for the four direct actuators that it sits inside an _act_lock hold
+with no PLUG CALL before it.
+
+IT PROVES NOTHING ABOUT WHAT HAPPENS AFTER THE CHECK. That is not a
+quibble: _draw_check passed both tests here while committing a fault
+outside the lock, because raising a fault touches no plug and is
+therefore invisible to a walk that looks for plug calls. A settings save
+landing in that gap produced a persistent fault quoting limits that had
+already been replaced. Only test_concurrency.py caught it, and only
+because someone thought to ask.
+
+Nor does it prove ordering for tick() or watts_loop - tick delegates its
+first two plug calls to helpers that check for themselves, and
+watts_loop checks outside _act_lock on purpose because it is discarding
+a reading rather than commanding anything.
+
+THE BEHAVIOURAL TESTS ARE THE STRONGER PROTECTION. This is a fence
+around one hole, not a roof - and it has been wrong about itself twice,
+so read what it asserts rather than what its name suggests.
 
 This is deliberately unlike every other test here. It reads the source
 rather than running it, because the failure it guards against is a
@@ -162,12 +173,14 @@ def _first_plug_line(node):
 
 
 def test_the_direct_actuators_check_under_the_lock_and_first():
-    """Check existing is not enough; it has to happen at the right time.
+    """The guard precedes the first PLUG CALL. Nothing more.
 
     A function could command the plug and test the generation
-    afterwards, and the existence check above would pass. For the four
-    that touch a plug directly the rule is absolute: the test sits
-    inside an _act_lock hold, and nothing reaches the plug before it.
+    afterwards, and the existence check above would pass. This closes
+    that. What it does NOT close: anything after the check that is not a
+    plug call. _draw_check satisfied this test while committing a fault
+    outside the lock - a fault is not a plug call. See the module
+    docstring.
     """
     tree = ast.parse(open(SRC, encoding="utf-8").read())
     funcs = {n.name: n for n in tree.body
