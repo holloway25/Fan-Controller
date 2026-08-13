@@ -631,5 +631,112 @@ def test_a_manual_stop_that_is_not_owed_is_not_invented():
     return "truthy is not a promise"
 
 
+def test_the_restored_draw_timer_survives_the_first_draw_check():
+    """Restoring the timer is not enough; it has to still be there.
+
+    _apply_resume restored _oob_since, and the test for it stopped
+    at that. But _oob_generation was left at None, which differs from
+    generation 0, so the FIRST _draw_check treated the carried timer as
+    belonging to another config and reset it. A fan thirty seconds from
+    a draw fault got a fresh grace period on every ./restart.sh - the
+    opposite of what a requested restart promises.
+
+    So this asserts the timer after a draw check, not after the resume.
+    """
+    C = harness.load()
+    now = C.time.time()
+
+    class Plug:
+        def state(self):
+            return True
+
+        def set(self, on):
+            return on
+
+        def power_w(self):
+            return 99.0
+
+    C.CFG["plug"].update(watts_enabled=True, watts_min=10.0,
+                         watts_max=20.0, watts_fault_seconds=60)
+    C.CFG["control"]["mode"] = "auto"
+    with C._state_lock:
+        C.STATE["fault"] = None
+        C.STATE["fan"] = True
+        C.STATE["watts"] = 99.0
+        C.STATE["watts_at"] = now
+        C.STATE["changed_at"] = now - 10000
+
+    # Thirty seconds already accumulated, carried the way a real
+    # handover carries it - through _apply_resume, not by assignment.
+    # Setting the globals by hand would test the fix instead of the
+    # path, and the bug was that the PATH left _oob_generation at None.
+    os.environ[C.RESUME_ENV] = json.dumps({
+        "v": 1,
+        "latch": {"co2": True},
+        "changed_at": now - 10000,
+        "reading_at": now,
+        "manual_off_pending": False,
+        "oob_since": now - 30,
+        "start_time": now - 10000,
+    })
+    assert C._apply_resume() is True, "the handover was not applied"
+    assert C._oob_since is not None, "_apply_resume dropped the timer"
+
+    C._draw_check(Plug(), C._cfg_generation)
+
+    assert C._oob_since is not None, "the restored timer was discarded"
+    elapsed = C.time.time() - C._oob_since
+    assert elapsed > 25, (
+        "the timer restarted: %.1fs accumulated, expected about 30" % elapsed)
+
+    # And it still faults on the REMAINING delay rather than a fresh one.
+    C._oob_since = C.time.time() - 61
+    C._draw_check(Plug(), C._cfg_generation)
+    assert C.STATE["fault"] is not None, \
+        "no fault once the carried timer passed watts_fault_seconds"
+    return "timer carried, fault still due"
+
+
+def test_a_genuinely_new_generation_still_resets_the_timer():
+    """The guard must not be disabled by the fix above.
+
+    Seconds accumulated against one plug and one draw band must not be
+    spent against another's limits.
+    """
+    C = harness.load()
+    now = C.time.time()
+
+    class Plug:
+        def state(self):
+            return True
+
+        def set(self, on):
+            return on
+
+        def power_w(self):
+            return 99.0
+
+    C.CFG["plug"].update(watts_enabled=True, watts_min=10.0,
+                         watts_max=20.0, watts_fault_seconds=60)
+    C.CFG["control"]["mode"] = "auto"
+    with C._state_lock:
+        C.STATE["fault"] = None
+        C.STATE["fan"] = True
+        C.STATE["watts"] = 99.0
+        C.STATE["watts_at"] = now
+        C.STATE["changed_at"] = now - 10000
+
+    C._oob_since = now - 30
+    C._oob_generation = C._cfg_generation
+    C._cfg_generation += 1              # a save lands: new plug, new band
+
+    C._draw_check(Plug(), C._cfg_generation)
+    assert C._oob_since is None or (C.time.time() - C._oob_since) < 5, (
+        "seconds accumulated under the old config carried into the new "
+        "one")
+    assert C.STATE["fault"] is None, "faulted on the old config's timer"
+    return "new config, new timer"
+
+
 if __name__ == "__main__":
     sys.exit(harness.run(dict(globals())))

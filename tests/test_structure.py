@@ -1,5 +1,15 @@
 """A structural test: every function that can command or judge a plug
-must carry the config generation.
+must test the config generation.
+
+WHAT THIS PROVES AND WHAT IT DOES NOT. It proves the CHECK EXISTS. For
+the four direct actuators it also proves the check sits inside an
+_act_lock hold and before any plug call. It does NOT prove that every
+check is correctly ordered everywhere - tick() delegates its first two
+plug calls to helpers that check for themselves, and watts_loop
+deliberately checks outside _act_lock because it is discarding a
+reading rather than commanding anything. Those orderings are covered by
+the behavioural tests in test_concurrency.py, which remain the stronger
+protection. This is a fence around one hole, not a roof.
 
 This is deliberately unlike every other test here. It reads the source
 rather than running it, because the failure it guards against is a
@@ -42,6 +52,13 @@ EXEMPT = {
     # that has checked.
     "_manual_off_locked": "caller holds the lock and has checked",
 }
+
+# The four that command or judge a plug directly. For these the rule is
+# absolute and checkable: take _act_lock, test the generation, and only
+# then touch the plug. tick() and watts_loop are deliberately not here -
+# see the module docstring.
+DIRECT_ACTUATORS = {"_force_on", "_manual_off", "_enforce_stop",
+                    "_draw_check"}
 
 # What counts as touching a plug. "set" is shared with threading.Event
 # - _wake.set() is not a plug command - so it only counts with an
@@ -113,6 +130,73 @@ def test_every_plug_touching_function_carries_a_generation():
         "superseded one under _act_lock, or add it to EXEMPT in this "
         "file with a reason." % "\n    ".join(missing))
     return "all guarded"
+
+
+def _first_act_lock_with(node):
+    """The first `with _act_lock:` statement in a function body."""
+    for sub in ast.walk(node):
+        if not isinstance(sub, ast.With):
+            continue
+        for item in sub.items:
+            ctx = item.context_expr
+            if isinstance(ctx, ast.Name) and ctx.id == "_act_lock":
+                return sub
+    return None
+
+
+def _first_plug_line(node):
+    """Line of the first call that reaches a plug, or None."""
+    lines = []
+    for sub in ast.walk(node):
+        if not isinstance(sub, ast.Call):
+            continue
+        f = sub.func
+        if isinstance(f, ast.Attribute) and f.attr in PLUG_CALLS:
+            if (isinstance(f.value, ast.Name)
+                    and f.value.id not in NOT_PLUGS
+                    and not (f.attr == "set" and not sub.args)):
+                lines.append(sub.lineno)
+        elif isinstance(f, ast.Name) and f.id in PLUG_HELPERS:
+            lines.append(sub.lineno)
+    return min(lines) if lines else None
+
+
+def test_the_direct_actuators_check_under_the_lock_and_first():
+    """Check existing is not enough; it has to happen at the right time.
+
+    A function could command the plug and test the generation
+    afterwards, and the existence check above would pass. For the four
+    that touch a plug directly the rule is absolute: the test sits
+    inside an _act_lock hold, and nothing reaches the plug before it.
+    """
+    tree = ast.parse(open(SRC, encoding="utf-8").read())
+    funcs = {n.name: n for n in tree.body
+             if isinstance(n, ast.FunctionDef)}
+    problems = []
+    for name in sorted(DIRECT_ACTUATORS):
+        node = funcs.get(name)
+        if node is None:
+            problems.append("%s has gone; update DIRECT_ACTUATORS" % name)
+            continue
+        with_node = _first_act_lock_with(node)
+        if with_node is None:
+            problems.append("%s never takes _act_lock" % name)
+            continue
+        guarded = any(isinstance(s, ast.Name) and s.id == "_stale_client"
+                      for s in ast.walk(with_node))
+        if not guarded:
+            problems.append(
+                "%s takes _act_lock but does not test the generation "
+                "inside it" % name)
+            continue
+        first_plug = _first_plug_line(node)
+        if first_plug is not None and first_plug < with_node.lineno:
+            problems.append(
+                "%s reaches a plug at line %d, before the guarded "
+                "_act_lock hold at line %d"
+                % (name, first_plug, with_node.lineno))
+    assert not problems, "\n    ".join([""] + problems)
+    return "%d actuators guarded in order" % len(DIRECT_ACTUATORS)
 
 
 def test_the_exemptions_still_exist():

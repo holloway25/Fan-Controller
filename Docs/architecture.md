@@ -181,11 +181,16 @@ snapshot - clearing the fault on screen while leaving it on disk, to
 reappear at the next restart.
 
 ```
-_cfg_lock   -> _act_lock        settings saves, and _client_snapshot
+_cfg_lock   -> _act_lock        settings saves
+_cfg_lock   -> _clients_lock    client snapshots
 _act_lock   -> _state_lock      five actuation paths
 _fault_lock -> _state_lock      six paths, including the restart check
 _act_lock and _fault_lock are never held together
 ```
+
+`_client_snapshot()` takes `_cfg_lock` and then `_clients_lock` - it
+does **not** take `_act_lock`, and an earlier version of this table said
+it did.
 
 Nothing takes `_cfg_lock` while holding `_act_lock`. The generation is
 therefore read as a plain integer under `_act_lock` rather than by

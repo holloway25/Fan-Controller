@@ -11,6 +11,7 @@ without pinning the base path, load_cfg silently finds nothing and
 returns DEFAULTS instead of raising - so the assert here fails loudly
 rather than letting the tests run against defaults, or worse, live data.
 """
+import atexit
 import importlib.util
 import os
 import shutil
@@ -18,6 +19,28 @@ import sys
 import tempfile
 
 _LOADED = []
+# Every directory this process created, removed when it exits.
+#
+# These used to be left behind. One is 300KB and nobody notices; a day
+# of running the suite is thousands, and /tmp on the VM is TMPFS - so
+# they are not disk, they are RAM. 5,178 of them reached 1.4GB on a box
+# with 1GB, the OOM killer took the test process, and then it took the
+# FAN SERVICE, which systemd restarted eight times. A systemd restart
+# drops the latch and the minimum-run lease, so a leaking test harness
+# had become something that could stop a running fan.
+#
+# Removed at exit rather than after each load(): a test that fails
+# leaves its directory intact for the length of the run, which is what
+# makes a failure investigable.
+_TMPDIRS = []
+
+
+def _clean_tmpdirs():
+    for d in _TMPDIRS:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+atexit.register(_clean_tmpdirs)
 
 
 class Skip(Exception):
@@ -39,6 +62,7 @@ SRC = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 def load():
     """Import controller.py against a disposable data directory."""
     tmp = tempfile.mkdtemp(prefix="fanctl-test-")
+    _TMPDIRS.append(tmp)
     shutil.copy(os.path.join(SRC, "controller.py"),
                 os.path.join(tmp, "controller.py"))
     shutil.copy(os.path.join(SRC, "config.example.json"),

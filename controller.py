@@ -3114,7 +3114,7 @@ def _apply_resume():
     clean slate is the behaviour we had before this existed; not
     starting at all is worse.
     """
-    global _oob_since, START_TIME
+    global _oob_since, _oob_generation, START_TIME
     raw = os.environ.pop(RESUME_ENV, None)
     if not raw:
         return False
@@ -3144,6 +3144,15 @@ def _apply_resume():
         held = [k for k, v in sorted(STATE["latch"].items()) if v]
         lease = STATE["changed_at"] is not None
     _oob_since = _n(d.get("oob_since"))
+    # Stamped with the CURRENT generation, not left at None. The
+    # replacement loaded the same config.json the outgoing process was
+    # running, so the restored timer belongs to this generation - but
+    # _oob_generation starts as None, which differs from 0, so the first
+    # _draw_check treated the carried timer as belonging to another
+    # config and reset it. A draw fault that was 30 seconds from
+    # tripping got a fresh grace period on every ./restart.sh, which is
+    # precisely the guarantee a requested restart is supposed to make.
+    _oob_generation = _cfg_generation if _oob_since is not None else None
     st = _n(d.get("start_time"))
     if st is not None:
         START_TIME = st
