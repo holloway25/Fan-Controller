@@ -108,6 +108,8 @@ Email on fault is designed but not built.
 - [Docs/api.md](Docs/api.md) - HTTP endpoints
 - [Docs/troubleshooting.md](Docs/troubleshooting.md) - known failure
   modes
+- [Docs/arm.md](Docs/arm.md) - running on a Raspberry Pi: what has been
+  measured, and how to repeat it
 - [deploy/nginx.conf.example](deploy/nginx.conf.example) - reference
   nginx site config, since Flask binds loopback and needs a proxy
 
