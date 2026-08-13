@@ -391,5 +391,85 @@ def test_history_writes_are_serialised():
     return "one writer at a time"
 
 
+def test_the_actuating_helpers_refuse_a_superseded_plug():
+    """The generation check in tick() was not the whole story.
+
+    _manual_off, _force_on and _enforce_stop each take _act_lock and
+    each re-check the MODE there - but they did not re-check the CLIENT.
+    So a save landing after a cycle captured its plug still reached the
+    OLD physical device through them: tick() calls two of them BEFORE
+    the sensor read and before any generation check, and watts_loop
+    calls the others in separate lock holds, seconds after its own
+    check.
+
+    Each helper is given the generation its plug was built from and
+    refuses under the lock if CFG has moved on. Checked under _act_lock
+    because the config commit bumps the generation while holding it, so
+    nothing can slip between the check and the switch.
+    """
+    C = harness.load()
+
+    class Plug:
+        def __init__(self):
+            self.commands = []
+
+        def state(self):
+            return False
+
+        def set(self, on):
+            self.commands.append(on)
+
+    old = Plug()
+    stale = C._cfg_generation
+    C._cfg_generation += 1              # a save lands
+
+    C.CFG["control"]["mode"] = "on"
+    C._force_on(old, stale)
+    assert old.commands == [], \
+        "_force_on commanded a superseded plug: %r" % old.commands
+
+    C.CFG["control"]["mode"] = "manual"
+    C._manual_off(old, stale)
+    assert old.commands == [], \
+        "_manual_off commanded a superseded plug: %r" % old.commands
+
+    C.CFG["control"]["mode"] = "auto"
+    with C._state_lock:
+        C.STATE["fault"] = {"at": C.time.time(), "msg": "draw fault"}
+    C._enforce_stop(old, stale)
+    assert old.commands == [], \
+        "_enforce_stop commanded a superseded plug: %r" % old.commands
+
+    # And with a current generation they still work, or the guard would
+    # be silently disabling the feature rather than protecting it.
+    C.CFG["control"]["mode"] = "on"
+    C._force_on(old, C._cfg_generation)
+    assert old.commands == [True], \
+        "refused a current plug too: %r" % old.commands
+    return "refuses stale, acts on current"
+
+
+def test_a_helper_with_no_generation_still_acts():
+    """gen=None means "no window to guard", not "refuse"."""
+    C = harness.load()
+
+    class Plug:
+        def __init__(self):
+            self.commands = []
+
+        def state(self):
+            return False
+
+        def set(self, on):
+            self.commands.append(on)
+
+    plug = Plug()
+    C._cfg_generation += 5
+    C.CFG["control"]["mode"] = "on"
+    C._force_on(plug)
+    assert plug.commands == [True], "a caller with no generation was refused"
+    return "None means unguarded, not blocked"
+
+
 if __name__ == "__main__":
     sys.exit(harness.run(dict(globals())))

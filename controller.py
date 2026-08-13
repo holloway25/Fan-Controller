@@ -939,6 +939,22 @@ _cfg_lock = threading.Lock()
 _cfg_generation = 0
 
 
+def _stale_client(gen):
+    """True if CFG has been replaced since this cycle built its clients.
+
+    ONLY MEANINGFUL UNDER _act_lock. The config commit swaps CFG and
+    bumps the generation while holding that lock, so a check inside it
+    cannot be overtaken between the check and the plug.set() after it.
+    Checked outside, it is a race with a shorter window rather than a
+    guard.
+
+    gen is None for callers with no window to guard - a client built
+    inside the same lock hold, or a caller that has no generation to
+    offer. Those keep the old behaviour rather than being refused.
+    """
+    return gen is not None and gen != _cfg_generation
+
+
 def _client_snapshot():
     """Clients, and the config generation they were built from.
 
@@ -1137,7 +1153,7 @@ def _fan_status(plug):
         return None
 
 
-def _manual_off(plug):
+def _manual_off(plug, gen=None):
     """The one-time switch-off on entering manual mode.
 
     Runs before the sensor read, so a Protect outage cannot block a manual
@@ -1145,6 +1161,11 @@ def _manual_off(plug):
     switch - otherwise a failed call silently dropped the request forever.
     """
     with _act_lock:
+        if _stale_client(gen):
+            # The plug address changed after this cycle built its client.
+            # The promise is NOT discharged: the flag stays set and the
+            # next cycle owes the same stop through the right plug.
+            return
         if CFG["control"].get("mode") != "manual":
             # Mirror of the guard in _force_on. The pending flag is left
             # set on purpose: if manual is entered again the one-time
@@ -1174,7 +1195,7 @@ def _manual_off_locked(plug):
     if not already_off:
         _log("Manual mode - switched off, now hands off")
 
-def _force_on(plug):
+def _force_on(plug, gen=None):
     """Hold the fan on without consulting Protect.
 
     Force on is reached for precisely when the sensor cannot be trusted -
@@ -1192,6 +1213,11 @@ def _force_on(plug):
     so the two callers cannot both switch and both log.
     """
     with _act_lock:
+        if _stale_client(gen):
+            # Re-asserting through a plug that is no longer configured
+            # would switch on someone else's device. Skipped, not
+            # deferred: this is re-asserted every cycle anyway.
+            return
         if CFG["control"].get("mode") != "on":
             # Re-checked under the lock, not just by the caller. Manual's
             # stop is one-shot: if it has already run and cleared its
@@ -1228,9 +1254,9 @@ def tick():
     # thing that has failed. Both actuate here, then fall through so the
     # reading is still recorded.
     if c["mode"] == "manual":
-        _manual_off(h)
+        _manual_off(h, gen)
     elif c["mode"] == "on":
-        _force_on(h)
+        _force_on(h, gen)
     sid = CFG["protect"]["sensor_id"]
     if not sid:
         raise ProtectError("No air-quality sensor selected yet")
@@ -1988,7 +2014,7 @@ def _confirm_fault_stopped():
     return True
 
 
-def _enforce_stop(plug):
+def _enforce_stop(plug, gen=None):
     """Keep a faulted fan off until the fault is acknowledged.
 
     Runs every cycle while a fault stands, not once when it is raised:
@@ -1999,6 +2025,11 @@ def _enforce_stop(plug):
     if plug is None:
         return
     with _act_lock:
+        if _stale_client(gen):
+            # Retried next cycle against the right plug. Stopping a
+            # device that is not ours is worse than one more cycle of a
+            # fan that is already faulted and already being watched.
+            return
         if CFG["control"].get("mode") == "on":
             # Force on overrides a fault by design, and the mode can move
             # between _draw_check reading it and this point. Without the
@@ -2018,7 +2049,7 @@ def _enforce_stop(plug):
     if _confirm_fault_stopped():
         _log("Draw fault - fan stop confirmed")
 
-def _draw_check(plug):
+def _draw_check(plug, gen=None):
     """Fault the fan if it runs outside its expected draw for long enough.
 
     Force on takes precedence: it is how a repaired fan gets tested, so
@@ -2031,7 +2062,7 @@ def _draw_check(plug):
     with _state_lock:
         fault = STATE["fault"]
     if fault:
-        _enforce_stop(plug)
+        _enforce_stop(plug, gen)
         return
     pg = CFG["plug"]
     if not pg.get("watts_enabled"):
@@ -2103,7 +2134,7 @@ def _draw_check(plug):
                 "stopped until this is acknowledged in the dashboard."
                 % (msg, _draw_fault_cause(w, lo, hi)),
                 on_complete=_fault_sent)
-    _enforce_stop(plug)
+    _enforce_stop(plug, gen)
 
 
 def _retry_fault_persist():
@@ -2177,14 +2208,14 @@ def watts_loop():
                 # 300s while Protect is unreachable, so tick() alone could
                 # leave a fan switched off elsewhere stopped for minutes
                 # while the mode says otherwise.
-                _force_on(plug)
+                _force_on(plug, gen)
         except Exception:
             pass
         # Called even in Force on, where it stands down and clears the
         # out-of-band timer. Skipping it there would leave a stale start
         # time to resume from and could fault the fan early on the way out.
         try:
-            _draw_check(plug)
+            _draw_check(plug, gen)
         except Exception:
             pass
         time.sleep(WATTS_SECONDS)
