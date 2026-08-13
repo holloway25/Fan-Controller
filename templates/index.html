@@ -248,6 +248,43 @@ header{flex-direction:column;align-items:stretch;gap:10px}
   <div class="msg" id="hmsg"></div>
   </div>
 </details>
+
+<details class="card" id="sec_email">
+<summary>Email alerts</summary>
+<div class="body">
+  <div class="row"><label>Send alerts
+    <span class="hint">Off means nothing is ever sent, whatever else is filled in here.</span></label>
+    <input type="checkbox" id="e_enabled" style="width:auto"></div>
+  <div class="row"><label>Mail server
+    <span class="hint">Hostname of the relay. Changing it clears the stored password.</span></label>
+    <input type="text" id="e_host" autocomplete="off"></div>
+  <div class="row"><label>Port
+    <span class="hint">25 for a local relay.</span></label>
+    <input type="number" id="e_port" min="1" max="65535" step="1"></div>
+  <div class="row"><label>Username
+    <span class="hint">Leave blank if the relay needs no login.</span></label>
+    <input type="text" id="e_user" autocomplete="off"></div>
+  <div class="row"><label>Password
+    <span class="hint">Stored on this machine only, never shown again once saved.</span></label>
+    <input type="password" id="e_pass" autocomplete="new-password"></div>
+  <div class="row"><label>From address
+    <span class="hint">Who the alerts appear to come from.</span></label>
+    <input type="text" id="e_sender" autocomplete="off"></div>
+  <div class="row"><label>Send to
+    <span class="hint">One or more addresses, separated by commas.</span></label>
+    <input type="text" id="e_to" autocomplete="off"></div>
+  <p class="hint">Sent when the fan is stopped by a draw fault, when a
+  fault cannot be saved, when readings stop for long enough to force the
+  fan on, and again when readings return. Mode changes and normal
+  switching are not sent - they are in the activity log.</p>
+  <p class="hint">The stale-readings alert follows "Ventilate if readings
+  stop": setting that to 0 turns off the fail-safe <em>and</em> this
+  warning, and neither applies outside Auto.</p>
+  <div class="actions"><button id="emailtest">Send test email</button>
+    <button id="save4">Save</button></div>
+  <div class="msg" id="emsg"></div>
+</div>
+</details>
 </div>
 </div>
 <script>
@@ -675,12 +712,21 @@ function render(s){
   $("watts_min").value=s.config.plug.watts_min;
   $("watts_max").value=s.config.plug.watts_max;
   if(s.config.plug.password==="SET"&&!$("g_pass").value)$("g_pass").placeholder="unchanged";
+  const e=s.config.email||{};
+  $("e_enabled").checked=!!e.enabled;
+  $("e_host").value=e.host||"";
+  $("e_port").value=e.port==null?25:e.port;
+  $("e_user").value=e.username||"";
+  $("e_sender").value=e.sender||"";
+  $("e_to").value=e.recipients||"";
+  if(e.password==="SET"&&!$("e_pass").value)$("e_pass").placeholder="unchanged";
 }
 
 // Checkboxes and selects fire "change", not "input". Listening for both
 // stops the 5s refresh from overwriting a control the user just touched.
 ["on_at","off_at","min_run_minutes","poll_seconds","p_host",
- "p_user","p_pass","g_host","g_user","g_pass","p_sensor","co2_enabled","temp_enabled","temp_on","temp_off","humidity_enabled","humidity_on","humidity_off","p_verify","stale_minutes","watts_min","watts_max","watts_enabled","watts_fault_seconds"].forEach(id=>{
+ "p_user","p_pass","g_host","g_user","g_pass","p_sensor","co2_enabled","temp_enabled","temp_on","temp_off","humidity_enabled","humidity_on","humidity_off","p_verify","stale_minutes","watts_min","watts_max","watts_enabled","watts_fault_seconds",
+ "e_enabled","e_host","e_port","e_user","e_pass","e_sender","e_to"].forEach(id=>{
   $(id).addEventListener("input",dirty);
   $(id).addEventListener("change",dirty);});
 // The warning answers the tickboxes, not the 5s poll: turning the last
@@ -715,7 +761,14 @@ async function saveAll(msgEl){
       watts_enabled:$("watts_enabled").checked,
       watts_fault_seconds:+$("watts_fault_seconds").value,
       watts_min:+$("watts_min").value,
-      watts_max:+$("watts_max").value}};
+      watts_max:+$("watts_max").value},
+    email:{enabled:$("e_enabled").checked,
+      host:$("e_host").value.trim(),
+      port:+$("e_port").value,
+      username:$("e_user").value.trim(),
+      sender:$("e_sender").value.trim(),
+      recipients:$("e_to").value.trim()}};
+  if($("e_pass").value)body.email.password=$("e_pass").value;
   if($("g_pass").value)body.plug.password=$("g_pass").value;
   if($("p_pass").value)body.protect.password=$("p_pass").value;
   // Only send a selection when the picker is actually populated, so a
@@ -778,6 +831,20 @@ $("plugtest").addEventListener("click",async()=>{
     say("hmsg","Plug responded. Relay is "+(j.on?"ON":"off")+
         ", drawing "+w+".","ok");
   }catch(e){say("hmsg",e.message,"err")}
+});
+
+$("save4").addEventListener("click",()=>saveAll("emsg")
+  .then(()=>say("emsg","Saved","ok")).catch(e=>say("emsg",e.message,"err")));
+// Saves first: testing what is on screen rather than what was last
+// saved is the whole point, and the password only reaches the server
+// through a save.
+$("emailtest").addEventListener("click",async()=>{
+  say("emsg","Sending...","ok");
+  try{
+    await saveAll("emsg");
+    const j=await post("/api/email/test");
+    say("emsg","Sent to "+j.sent_to.join(", ")+".","ok");
+  }catch(e){say("emsg",e.message,"err")}
 });
 
 let HIST=[], HIST_REV=null, HIST_BUSY=false, HIST_GEN=null;

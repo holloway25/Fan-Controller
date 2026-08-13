@@ -8,7 +8,8 @@ Protect 7.1's documented API omits air-quality metrics, so this reads the
 private /proxy/protect/api/bootstrap endpoint. That is undocumented and may
 break on firmware updates; use the Debug view to inspect the live payload.
 """
-import atexit, copy, hashlib, hmac, json, math, os, signal, socket, sys
+import atexit, copy, hashlib, hmac, json, math, os, signal, smtplib
+import socket, sys
 import threading, time
 import requests, urllib3
 from flask import Flask, Response, jsonify, request, render_template
@@ -28,6 +29,12 @@ DEFAULTS = {
              "watts_enabled": False, "watts_min": 15.0,
              "watts_max": 25.0, "watts_fault_seconds": 60},
     "ui": {"password_hash": ""},
+    # Off until it is configured deliberately: an install that upgrades
+    # into this must not start trying to send. Every other key can be
+    # blank and enabled stays False, so nothing is sent by accident.
+    "email": {"enabled": False, "host": "", "port": 25,
+              "username": "", "password": "", "sender": "",
+              "recipients": ""},
     "control": {"mode": "auto", "on_at": 1000, "off_at": 800,
                 "poll_seconds": 30, "min_run_minutes": 5,
                 # Must stay True: load_cfg fills missing keys from
@@ -70,6 +77,18 @@ PROTECT_SCHEMA = {
     "verify_tls": ("bool",),
 }
 UI_SCHEMA = {"password_hash": ("str", 0, 200)}
+EMAIL_SCHEMA = {
+    "enabled": ("bool",),
+    "host": ("str", 0, 253),
+    "port": ("int", 1, 65535),
+    "username": ("str", 0, 128),
+    "password": ("str", 0, 256),
+    "sender": ("str", 0, 320),
+    # Comma or space separated. Kept as one string rather than a list so
+    # it round-trips through a single text input, and is split at send
+    # time - the split is not policy, just formatting.
+    "recipients": ("str", 0, 1024),
+}
 PLUG_SCHEMA = {
     "host": ("str", 1, 253), "user": ("str", 0, 64),
     "password": ("str", 0, 128),
@@ -79,7 +98,7 @@ PLUG_SCHEMA = {
     "watts_fault_seconds": ("int", 5, 3600),
 }
 SCHEMAS = {"protect": PROTECT_SCHEMA, "plug": PLUG_SCHEMA, "ui": UI_SCHEMA,
-           "control": CONTROL_SCHEMA}
+           "control": CONTROL_SCHEMA, "email": EMAIL_SCHEMA}
 
 
 def _coerce(name, spec, v):
@@ -1178,6 +1197,16 @@ def tick():
     now = time.time()
     actual = _fan_status(h)
     ext_msg = None
+    # Recovery is an edge too, and only announced if the stale alert
+    # actually went out - so a blip that never alerted stays silent both
+    # ways.
+    global _stale_notified
+    if _stale_notified:
+        _stale_notified = False
+        _notify("Sensor readings have returned",
+                "Readings are arriving again and normal control has "
+                "resumed. No action needed - this is the all-clear for "
+                "the earlier alert.")
     with _state_lock:
         STATE.update(co2=co2, co2_path=path, reading_at=now, error=None,
                      temperature=vals.get('temperature'),
@@ -1287,7 +1316,218 @@ def _failsafe():
             STATE["fan"] = True
             STATE["changed_at"] = time.time()
     _log("FAIL-SAFE: no reading for %d min, ventilating" % mins)
+    global _stale_notified
+    if not _stale_notified:
+        _stale_notified = True
+        _notify("Sensor readings stopped - fan forced on",
+                "No reading for %d minutes, so the fan has been switched "
+                "on as a precaution and will stay on until readings "
+                "return.\n\nThe air quality sensor or the Protect "
+                "console is the place to look. Normal control resumes on "
+                "its own once readings come back." % mins)
 
+
+
+# The fail-safe re-asserts every cycle while readings stay stale, so it
+# has no natural edge. This gives it one: set when it first ventilates,
+# cleared when a reading arrives.
+_stale_notified = False
+
+SMTP_TIMEOUT = 20
+# Long enough that a slow relay still delivers, short enough that a
+# wedged one cannot pile threads up: at one alert per fault transition
+# there is no realistic way to accumulate them.
+
+
+def _recipients():
+    """The recipient list, split from the single stored string."""
+    raw = (CFG["email"].get("recipients") or "").replace(",", " ")
+    return [a for a in raw.split() if a]
+
+
+def _email_ready():
+    """True when there is enough configuration to attempt a send."""
+    e = CFG["email"]
+    return bool(e.get("enabled") and e.get("host") and e.get("sender")
+                and _recipients())
+
+
+def _send_mail(subject, body):
+    """Send one message. Returns None on success or a reason string.
+
+    Runs on a throwaway thread, never on the control path. AUTH is left
+    to smtplib: it tries CRAM-MD5, then PLAIN, then LOGIN, and takes the
+    first the server offers. The relay here advertises CRAM-MD5 among
+    stronger CRAM-SHA variants that smtplib cannot speak, so CRAM-MD5 is
+    what gets negotiated - which matters because there is no STARTTLS on
+    that path, and CRAM never puts the password on the wire. Do not add
+    a PLAIN or LOGIN fallback to "fix" an auth failure: that would send
+    the password in the clear across the IoT VLAN.
+    """
+    e = CFG["email"]
+    to = _recipients()
+    msg = ("From: %s\r\nTo: %s\r\nSubject: %s\r\n"
+           "Content-Type: text/plain; charset=utf-8\r\n\r\n%s"
+           % (e["sender"], ", ".join(to), subject, body))
+    try:
+        s = smtplib.SMTP(e["host"], int(e["port"] or 25),
+                         timeout=SMTP_TIMEOUT)
+    except Exception as exc:
+        return "connect failed: %s" % exc
+    try:
+        s.ehlo()
+        if e.get("username"):
+            s.login(e["username"], e["password"])
+        s.sendmail(e["sender"], to, msg)
+        return None
+    except Exception as exc:
+        return "%s: %s" % (type(exc).__name__, exc)
+    finally:
+        try:
+            s.quit()
+        except Exception:
+            pass
+
+
+def _notify(subject, body):
+    """Queue a notification. Returns immediately; never raises.
+
+    Called from the draw thread and the poll thread, sometimes with a
+    fault just written. Nothing here may block or throw: the fan being
+    stopped matters more than the mail going out, and an exception
+    escaping into _store_fault's caller would leave the fault path
+    half-run.
+    """
+    try:
+        if not _email_ready():
+            return
+        def run():
+            # _send_mail reports failures by returning a reason rather
+            # than raising, so this guard is redundant today. It is here
+            # because a daemon thread that DOES raise prints a traceback
+            # to stderr and dies silently otherwise, and the next edit
+            # to _send_mail should not be able to cause that.
+            try:
+                why = _send_mail(subject, body)
+            except Exception as exc:
+                why = "%s: %s" % (type(exc).__name__, exc)
+            if why:
+                _log("Alert email failed (%s): %s" % (subject, why))
+        threading.Thread(target=run, daemon=True,
+                         name="notify").start()
+    except Exception as exc:            # pragma: no cover - belt and braces
+        try:
+            _log("Alert email could not be queued: %s" % exc)
+        except Exception:
+            pass
+
+
+_unsaved_notified = False
+
+
+def _unsaved_edge():
+    """Notify once when fault_unsaved rises. CALL OUTSIDE ALL LOCKS.
+
+    Three sites raise this flag and four clear it, so instead of an
+    edge check at each, this reads the live value and keeps its own
+    memory of what it last announced. Clearing resets it, so a second
+    write failure later does send again - which is right: each one is a
+    fresh window where a restart would lose the fault.
+
+    This is the alert that matters most and reads as the dullest. The
+    fan IS protected right now; what is at risk is that protection
+    surviving a restart, which is invisible until the restart happens
+    and the fan starts up against a fault nobody remembers.
+    """
+    global _unsaved_notified
+    with _state_lock:
+        now = bool(STATE["fault_unsaved"])
+    if not now:
+        _unsaved_notified = False
+        return
+    if _unsaved_notified:
+        return
+    _unsaved_notified = True
+    _notify("Fan fault could not be saved to disk",
+            "A fault is active and the fan is stopped, but it could not "
+            "be written to fault.json.\n\nThe fan is protected NOW. The "
+            "risk is a restart: the fault would be forgotten and normal "
+            "control would resume as though nothing were wrong.\n\nThe "
+            "service retries the write on its own. If this does not "
+            "clear, the disk is the thing to look at - full, read-only, "
+            "or a permissions change on the install directory.")
+
+
+RESTART_NOTICE_SUPPRESS = 3600
+
+
+def _notify_restart_fault():
+    """Announce a fault that survived a restart. Never raises.
+
+    RESTARTING DOES NOT CLEAR A DRAW FAULT - the dashboard
+    acknowledgement does - so a fault still standing after a restart
+    means either someone tried the wrong remedy, or the service is
+    looping under one. Both are worth saying.
+
+    Rate limited on notified_at, which the raise path stamps. The unit
+    is Restart=on-failure with RestartSec=10, and systemd's start limit
+    (5 in 10s) does NOT catch a loop spaced that widely - so without
+    this a crash-looping service would mail about six times a minute,
+    which is how an alert address gets muted before the next real fault.
+
+    CONSEQUENCE, DELIBERATE: a genuine restart within the suppression
+    window sends nothing. Whoever restarted has almost certainly just
+    read the original alert.
+    """
+    try:
+        with _state_lock:
+            f = dict(STATE["fault"]) if STATE["fault"] else None
+        if not f:
+            return
+        if time.time() - (f.get("notified_at") or 0) < RESTART_NOTICE_SUPPRESS:
+            return
+        f["notified_at"] = time.time()
+        _store_fault(f)
+        _notify("Fan fault still standing after a restart",
+                "%s\n\nThe service has restarted and the fault is still "
+                "there.\n\nRESTARTING DOES NOT CLEAR A DRAW FAULT. It is "
+                "written to disk and reloaded on purpose, so the fan stays "
+                "stopped until the fault is acknowledged in the "
+                "dashboard.\n\nIf this arrives repeatedly the service is "
+                "restarting in a loop, which is a separate problem from "
+                "the fault itself."
+                % f.get("msg", "A fault is standing."))
+    except Exception as exc:        # pragma: no cover - must never escape
+        try:
+            _log("Restart fault notice failed: %s" % exc)
+        except Exception:
+            pass
+
+
+def _draw_fault_cause(watts, lo, hi):
+    """Explain a draw fault in terms someone can act on.
+
+    The band is read LIVE from CFG by the caller and passed in, never
+    persisted onto the fault and never parsed back out of its message.
+    It is user-editable in the dashboard, so a stored copy would drift -
+    the same mistake this project has made about live settings before.
+    """
+    if watts is None:
+        return ("The plug stopped answering, so no reading was available.\n"
+                "This is a plug or network problem rather than a fan "
+                "problem - the fan may well still be running.")
+    if watts < 1.0:
+        return ("The plug is switched on but nothing is drawing power, so "
+                "the fan did not start.\nLikely a failed motor, something "
+                "unplugged, or the plug's relay not actually closing.")
+    if watts < lo:
+        return ("The fan is drawing power but less than expected, so it is "
+                "running weakly or stalling.\nWorth checking for an "
+                "obstruction before assuming the motor has failed.")
+    return ("The fan is drawing more power than expected, which suggests a "
+            "straining motor or an obstruction.\nCHECK THE BAND FIRST: if "
+            "the fan was recently changed, the draw range may simply still "
+            "be set for the old one, and nothing is wrong with the fan.")
 
 
 WATTS_SECONDS = 5
@@ -1328,7 +1568,9 @@ def _store_fault(value):
                 warn = ("WARNING: fault could not be saved (%s). Active "
                         "now but would be lost on restart." % e)
     # Outside _fault_lock, like the stop-confirmed log: an event append
-    # must not extend a hold another writer may be waiting on.
+    # must not extend a hold another writer may be waiting on. The edge
+    # check goes here too, and covers CLEARING as well as raising.
+    _unsaved_edge()
     if warn:
         _log(warn)
     return had
@@ -1359,6 +1601,7 @@ def _clear_fault():
             # made again once the disk is healthy.
             with _state_lock:
                 STATE["fault_unsaved"] = True
+            _unsaved_edge()
             return had, False
         except OSError:
             return had, False
@@ -1393,6 +1636,7 @@ def _confirm_fault_stopped():
             # Not confirmed. Left for the next cycle to try again.
             with _state_lock:
                 STATE["fault_unsaved"] = True
+            _unsaved_edge()
             return False
         with _state_lock:
             if STATE["fault"] is not None:
@@ -1481,10 +1725,32 @@ def _draw_check(plug):
     reading = "no reading" if w is None else ("%g W" % w)
     msg = ("Draw fault - %s outside %g-%g W for %ds"
            % (reading, lo, hi, int(now - _oob_since)))
-    f = {"at": now, "msg": msg, "stopped": False}
-    _store_fault(f)
+    f = {"at": now, "msg": msg, "stopped": False, "notified_at": now}
+    prev = _store_fault(f)
     _oob_since = None
     _log(msg)
+    # Only on the transition into a fault. _store_fault returns what was
+    # there before, so a fault raised while one already stood - which
+    # cannot currently happen, but is one refactor away - stays silent.
+    # Dispatched HERE rather than inside _store_fault: that holds
+    # _fault_lock and _state_lock, and nothing that can block belongs
+    # under them.
+    #
+    # prev is None IS the duplicate guard - a fault raised while one
+    # already stands cannot send. notified_at is not needed for that;
+    # it is stamped for the RESTART notice below, which rate limits on
+    # it. Do not add a "have I sent" flag to this path expecting it to
+    # do work: it would read as protection and provide none.
+    #
+    # lo/hi are the LIVE band, read from CFG a few lines above and passed
+    # in, never stored on the fault and never parsed back out of msg.
+    # The dashboard edits that band, so a copy would drift.
+    if prev is None:
+        _notify("Fan stopped - %s" % ("plug not answering" if w is None
+                                      else "not drawing correctly"),
+                "%s\n\n%s\n\nThe fan has been stopped and will stay "
+                "stopped until this is acknowledged in the dashboard."
+                % (msg, _draw_fault_cause(w, lo, hi)))
     _enforce_stop(plug)
 
 
@@ -1509,6 +1775,11 @@ def _retry_fault_persist():
         with _state_lock:
             STATE["fault_unsaved"] = False
     _log("Fault saved on retry; it will survive a restart.")
+    # Resets the alert edge. Without this the flag stayed raised after a
+    # successful retry, and a LATER write failure sent nothing - the one
+    # thing this alert exists to catch. Found by test_email.py rather
+    # than by reading the code.
+    _unsaved_edge()
     return True
 
 
@@ -1746,6 +2017,7 @@ def _safe_cfg():
     c["ui"]["password_hash"] = "SET" if CFG["ui"]["password_hash"] else ""
     c["protect"]["password"] = "SET" if CFG["protect"]["password"] else ""
     c["plug"]["password"] = "SET" if CFG["plug"]["password"] else ""
+    c["email"]["password"] = "SET" if CFG["email"]["password"] else ""
     return c
 
 
@@ -2102,6 +2374,12 @@ def _guard_credentials(cand, body):
         cand["plug"]["password"] = ""
         notes.append("Plug address changed, so its password was cleared. "
                      "Enter it again.")
+    be = body.get("email") or {}
+    if (cand["email"]["host"] != CFG["email"]["host"]
+            and be.get("password") in (None, "", "SET")):
+        cand["email"]["password"] = ""
+        notes.append("Mail server changed, so the SMTP password was "
+                     "cleared. Enter it again.")
     return " ".join(notes) or None
 
 
@@ -2125,7 +2403,7 @@ def _api_config_locked():
     if bad:
         return bad
     cand = copy.deepcopy(CFG)
-    for section in ("protect", "plug", "control"):
+    for section in ("protect", "plug", "control", "email"):
         raw_section = body.get(section)
         if raw_section is None:
             raw_section = {}
@@ -2277,6 +2555,34 @@ def api_plug_test():
         return jsonify(ok=True, on=state, watts=watts)
     except PlugError as e:
         return jsonify(error=str(e)), 400
+
+
+@app.route("/api/email/test", methods=["POST"])
+def api_email_test():
+    """Send a test message, synchronously, and report what happened.
+
+    Deliberately NOT routed through _notify: that returns immediately and
+    swallows failures, which is right for the fault path and useless for
+    a button whose whole purpose is to show the error. An untested mail
+    path is the kind that fails exactly when it is needed.
+    """
+    if not CFG["email"].get("enabled"):
+        return jsonify(error="Email alerts are switched off."), 400
+    missing = [k for k in ("host", "sender") if not CFG["email"].get(k)]
+    if not _recipients():
+        missing.append("recipients")
+    if missing:
+        return jsonify(
+            error="Not configured yet: %s." % ", ".join(missing)), 400
+    why = _send_mail(
+        "Fan controller test message",
+        "This is a test from the fan controller.\n\nIf you are reading "
+        "it, alerts will reach you: a stopped fan, a fault that could not "
+        "be saved, readings drying up, and the all-clear when they "
+        "return.")
+    if why:
+        return jsonify(error="Send failed - %s" % why), 400
+    return jsonify(ok=True, sent_to=_recipients())
 
 
 @app.route("/api/debug/sensor")
@@ -2585,6 +2891,11 @@ if __name__ == "__main__":
         with _state_lock:
             STATE["manual_off_pending"] = True
         _log("Manual stop was still owed from before the restart")
+    # A fault that outlived the restart. Said out loud because
+    # restarting is not how one gets cleared, and whoever just restarted
+    # may well have been trying exactly that. Before the threads, so it
+    # cannot race the first draw cycle.
+    _notify_restart_fault()
     atexit.register(flush_hist)
     for _sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(_sig, flush_hist)

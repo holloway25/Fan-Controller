@@ -151,13 +151,20 @@ the whole trace rather than a delta.
 
 ## Nothing told me the fan had stopped
 
-Expected, for now. There is no alerting of any kind: a draw fault stops
-the fan, leaves it stopped until someone acknowledges it, and says so
-only on the dashboard and in the activity log. Nothing is emailed, and
-nothing is pushed. If the fan stops at 2am the first sign is the room
-being stale in the morning.
+Check the email settings first. Alerts are off until configured, and an
+install that has never had them filled in sends nothing: `enabled`
+false, a blank relay, a blank from address or no recipients each mean
+silence. The **Send test email** button reports the real error and is
+the fastest way to find out which.
 
-Until that changes, the ways to find out are:
+If alerts ARE configured and nothing arrived, the likely causes in
+order: the fault was raised while a previous one still stood, so there
+was no transition to alert on; the readings-stopped alert was suppressed
+because `stale_minutes` is 0 or the mode was not Auto; or the send
+failed, which is logged as `Alert email failed` in the activity log
+rather than retried.
+
+Without email at all, the ways to find out are:
 
 - the dashboard, which shows the fault banner and, separately, `Fault
   not saved to disk` when a fault could not be persisted
@@ -166,9 +173,8 @@ Until that changes, the ways to find out are:
 - `journalctl -u office-fan-controller`, which is also where a fault
   lost during a signalled stop is reported
 
-Email on fault is designed but not built. The design, the relay it will
-use and what remains to be settled are in the handoff notes, which are
-deliberately outside this repository.
+What sends, what does not, and the three deliberate silences are in
+`Docs/configuration.md`.
 
 ## "Saved and in use, but the disk did not confirm..."
 

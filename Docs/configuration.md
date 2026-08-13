@@ -26,7 +26,7 @@ differs in a few places on purpose.
 | `humidity_enabled` | false | Use humidity as a trigger |
 | `humidity_on` | 70.0 | Percent RH that starts the fan |
 | `humidity_off` | 60.0 | Percent RH that releases it |
-| `stale_minutes` | 0 | Minutes without a reading before the fan is turned on as a fail-safe; 0 disables it |
+| `stale_minutes` | 0 | Minutes without a reading before the fan is turned on as a fail-safe; 0 disables it, **and disables the readings-stopped email with it** |
 
 Every rule's on level must be above its off level - `on_at` over
 `off_at`, `temp_on` over `temp_off`, `humidity_on` over `humidity_off`.
@@ -139,15 +139,91 @@ ventilation is measurably inadequate. A gap of at least 150-200 ppm between
 on and off avoids short-cycling; 300 works well if the fan can shift that
 much within a reasonable run.
 
-## Notifications
+## email
 
-Not implemented. There is no notification configuration, and no section
-for it in `config.json`. A fault is visible on the dashboard and in the
-activity log and nowhere else.
+Alerts by email when something needs a person. Its own section, and
+`enabled` defaults to false so an unconfigured install sends nothing.
 
-When it is added it will be its own section rather than more keys under
-`control`, and its `enabled` flag will default to false so that an
-unconfigured install sends nothing.
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | false | Master switch. False sends nothing whatever else is set |
+| `host` | "" | Relay hostname. Changing it clears the stored password |
+| `port` | 25 | Relay port |
+| `username` | "" | Blank if the relay needs no login |
+| `password` | "" | Returned by the API as `SET`, never echoed back |
+| `sender` | "" | From address |
+| `recipients` | "" | One or more addresses, separated by commas or spaces |
+
+### What sends
+
+Five things, each on the TRANSITION into the state and once only:
+
+- a draw fault is raised, stopping the fan
+- a fault could not be written to disk (`fault_unsaved`)
+- readings stop for long enough to trigger the fail-safe
+- readings return and the fail-safe stands down
+- a fault is still standing after a restart
+
+The last one exists because **restarting does not clear a draw fault** -
+it is reloaded from `fault.json` on purpose. Someone restarting the
+service was quite possibly trying to clear one, and should be told it
+did not work. It is rate limited to one an hour via `notified_at` on the
+fault, because the unit is `Restart=on-failure` with `RestartSec=10`
+and systemd's start limit does not catch a loop spaced that widely.
+
+### What does not send
+
+Mode changes, threshold edits and normal switching. They are in the
+activity log and nobody needs them at 2am.
+
+Acknowledging a fault sends nothing either. A fault is only ever
+cleared by a person pressing the button, so an all-clear would tell
+them what they just did. Worth revisiting only if several people are on
+the recipient list.
+
+### Three deliberate silences
+
+These are choices, not oversights:
+
+1. **`stale_minutes = 0` disables the fail-safe AND the readings-stopped
+   email.** One number, two effects.
+2. **The fail-safe only runs in Auto.** In Force on the fan runs
+   regardless, and in Manual a person is driving, so a dead sensor
+   changes nothing. The alert earns its place only when automation is
+   relying on the reading.
+3. **A restart within an hour of a fault being raised sends no restart
+   notice.** Whoever restarted has almost certainly just read the
+   original alert.
+
+### The draw fault message
+
+It says what the reading was and what that implies: no reading at all
+means the plug stopped answering rather than the fan failing; about 0 W
+means the fan did not start; below the band means it is running weakly;
+above the band means strain, an obstruction, **or a draw band still set
+for a fan that has since been replaced.**
+
+The band is read live from `plug` at the moment the message is
+composed. It is not copied onto the fault and not parsed back out of
+the fault text, because the dashboard can change it and a copy would
+drift.
+
+### Sending
+
+There is a **Send test email** button beside the settings. Unlike the
+alerts, it sends synchronously and reports the actual error, because a
+mail path that has never been tested is the kind that fails exactly
+when it is needed.
+
+Authentication is left to `smtplib`, which tries CRAM-MD5, then PLAIN,
+then LOGIN, and takes the first the server offers. **Do not add a PLAIN
+or LOGIN fallback to work around an authentication failure.** If the
+relay offers no TLS, CRAM-MD5 keeps the password off the wire and PLAIN
+or LOGIN would not.
+
+Alerts never block the control path: they are dispatched on a throwaway
+thread and a failure is logged and dropped. The fan being stopped
+matters more than the mail going out.
 
 ## ui
 

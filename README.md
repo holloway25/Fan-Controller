@@ -89,12 +89,14 @@ a few lines against the documented API.
 
 ## What it does not do
 
-It does not tell you anything. A draw fault stops the fan and keeps it
-stopped until acknowledged, and the only places that is visible are the
-dashboard and the activity log. No email, no push, no alert of any kind.
-Plan to look at it, or plan for the room to be stale by morning.
+It does not push, and there is no mobile app or home automation
+integration. Alerting is email only.
 
-Email on fault is designed but not built.
+Email alerts are off until they are configured, and an install that has
+not filled them in still tells you nothing: a draw fault stops the fan
+and says so on the dashboard and in the activity log, and nowhere else.
+What sends, and what deliberately does not, is in
+`Docs/configuration.md`.
 
 ## Documentation
 

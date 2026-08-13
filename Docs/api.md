@@ -18,6 +18,7 @@ Werkzeug's own 413 page.
 | POST | `/api/fault/clear` | required | Acknowledge a draw fault and allow automatic runs again |
 | POST | `/api/protect/sensors` | required | Adopted sensors with their current CO2 value |
 | POST | `/api/plug/test` | required | Check the plug answers; returns relay state and watts |
+| POST | `/api/email/test` | required | Send a test message; reports the real error on failure |
 | POST | `/api/ui/password` | required | Set or clear the UI password |
 | GET | `/api/debug/sensor` | required | Raw Protect payload for the selected sensor |
 
@@ -37,7 +38,8 @@ raw Protect payload, which is diagnostic rather than dashboard data.
 
 ## Secrets
 
-`protect.password`, `plug.password` and `ui.password_hash` return the
+`protect.password`, `plug.password`, `email.password` and
+`ui.password_hash` return the
 literal `SET` when present, and a posted `SET` is ignored rather than
 written back, so a client can round-trip the config without erasing them.
 
