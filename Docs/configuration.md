@@ -144,6 +144,11 @@ much within a reasonable run.
 Alerts by email when something needs a person. Its own section, and
 `enabled` defaults to false so an unconfigured install sends nothing.
 
+In the dashboard this is the **Fault Handling** card. The config key
+stays `email` deliberately: renaming it would invalidate every existing
+`config.json` for a cosmetic gain. The card is named for what it is
+about - something going wrong - and the key for how it is delivered.
+
 | Key | Default | Meaning |
 |---|---|---|
 | `enabled` | false | Master switch. False sends nothing whatever else is set |

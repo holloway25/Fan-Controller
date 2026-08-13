@@ -151,11 +151,16 @@ the whole trace rather than a delta.
 
 ## Nothing told me the fan had stopped
 
-Check the email settings first. Alerts are off until configured, and an
-install that has never had them filled in sends nothing: `enabled`
-false, a blank relay, a blank from address or no recipients each mean
-silence. The **Send test email** button reports the real error and is
-the fastest way to find out which.
+Check the **Fault Handling** card first. Alerts are off until
+configured, and an install that has never had them filled in sends
+nothing: **Send alerts** unticked, a blank mail server, a blank from
+address or no recipients each mean silence. The **Send test email**
+button reports the real error and is the fastest way to find out which.
+
+A test message proves the transport - DNS, the firewall, authentication
+and delivery. It does NOT prove the alerts themselves: it sends
+directly, bypassing the transitions that decide when to send. A relay
+that works and an alert that never fires are different problems.
 
 If alerts ARE configured and nothing arrived, the likely causes in
 order: the fault was raised while a previous one still stood, so there

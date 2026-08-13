@@ -13,6 +13,14 @@ CO2 sits with the other readings rather than as a headline number. The
 charts below carry the same values over 24 hours, each with its current
 value in the left gutter.
 
+Below the charts are the settings cards, each collapsible and each
+remembering whether it was left open. The last of them is **Fault
+Handling**: who gets told when the fan stops, and the **Send test
+email** button. It is named for the situation rather than the
+transport, because what it configures is what happens when something
+goes wrong - email is only how it reaches you. Its settings live under
+the `email` key in `config.json`.
+
 ## Colour
 
 One meaning per colour, used the same way everywhere it appears.

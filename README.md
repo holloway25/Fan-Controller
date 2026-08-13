@@ -92,11 +92,11 @@ a few lines against the documented API.
 It does not push, and there is no mobile app or home automation
 integration. Alerting is email only.
 
-Email alerts are off until they are configured, and an install that has
-not filled them in still tells you nothing: a draw fault stops the fan
-and says so on the dashboard and in the activity log, and nowhere else.
-What sends, and what deliberately does not, is in
-`Docs/configuration.md`.
+Alerts are off until configured in the **Fault Handling** card, and an
+install that has not filled them in still tells you nothing: a draw
+fault stops the fan and says so on the dashboard and in the activity
+log, and nowhere else. What sends, and what deliberately does not, is
+in `Docs/configuration.md`.
 
 ## Documentation
 
