@@ -1452,14 +1452,31 @@ def _send_mail(subject, body):
             pass
 
 
-def _notify(subject, body, on_sent=None):
+def _notify_or_skip(subject, body, on_complete):
+    """_notify, but tell the caller if nothing was queued.
+
+    _notify is a no-op when alerts are off or unconfigured, and no
+    worker runs - so on_complete would never fire and an inflight flag
+    would stick on for the life of the process.
+    """
+    if not _email_ready():
+        on_complete(False)
+        return
+    _notify(subject, body, on_complete=on_complete)
+
+
+def _notify(subject, body, on_complete=None):
     """Queue a notification. Returns immediately; never raises.
 
-    on_sent, if given, is called on the sending thread AFTER the relay
-    has accepted the message. Anything that records "they have been
-    told" belongs in there rather than at the call site: a flag set
-    optimistically turns a failed send into permanent silence, and in
-    one case produced an all-clear for a warning that never arrived.
+    on_complete(ok), if given, is called on the sending thread once the
+    send has FINISHED, with True if the relay accepted the message and
+    False otherwise. It is always called exactly once.
+
+    Bookkeeping belongs in there, not at the call site. _notify returns
+    as soon as the thread starts, so anything written after the call
+    runs while the send is still in flight: a flag cleared there is
+    cleared too early and lets a second send queue behind the first, and
+    a flag set there records a delivery that may never happen.
 
     Called from the draw thread and the poll thread, sometimes with a
     fault just written. Nothing here may block or throw: the fan being
@@ -1486,9 +1503,9 @@ def _notify(subject, body, on_sent=None):
                 # password.
                 _log(_redact("Alert email failed (%s): %s"
                              % (subject, why)))
-            elif on_sent:
+            if on_complete:
                 try:
-                    on_sent()
+                    on_complete(why is None)
                 except Exception as exc:    # pragma: no cover
                     _log("Alert bookkeeping failed: %s" % exc)
         threading.Thread(target=run, daemon=True,
@@ -1513,17 +1530,24 @@ def _notify_stale(mins, already_on):
     email later - an all-clear for something nobody was told about.
     A send that fails is retried on the next fail-safe cycle, which is
     the behaviour you want during an outage.
+
+    BOTH FLAGS ARE CLEARED BY THE WORKER, never by this function after
+    the call. _notify returns as soon as the thread starts, so clearing
+    _stale_inflight here let the next poll queue a second warning while
+    the first was still talking to the relay.
     """
     global _stale_inflight
     if _stale_delivered or _stale_inflight:
         return
     _stale_inflight = True
 
-    def sent():
+    def completed(ok):
         global _stale_delivered, _stale_inflight
-        _stale_delivered = True
+        if ok:
+            _stale_delivered = True
         _stale_inflight = False
-    _notify("Sensor readings stopped - fan running as a precaution",
+    _notify_or_skip(
+            "Sensor readings stopped - fan running as a precaution",
             "No reading for %d minutes.\n\n%s\n\nThe air quality "
             "sensor or the Protect console is the place to look. Normal "
             "control resumes on its own once readings come back, and "
@@ -1533,10 +1557,7 @@ def _notify_stale(mins, already_on):
                if already_on else
                "The fan has been switched on as a precaution and will "
                "stay on until readings return."),
-            on_sent=sent)
-    # Cleared even when the send failed, so the next cycle retries.
-    if not _stale_delivered:
-        _stale_inflight = False
+            on_complete=completed)
 
 
 _unsaved_notified = False
@@ -1575,6 +1596,53 @@ def _unsaved_edge():
             "or a permissions change on the install directory.")
 
 
+def _mark_fault_delivered(expected_at):
+    """Record that the alert for THIS fault reached the relay.
+
+    Runs on a sending thread, long after the fault was raised. Two
+    things can have happened in between, and both were possible before
+    this checked:
+
+      - the operator ACKNOWLEDGED the fault. Snapshotting it, releasing
+        the lock and storing the copy afterwards wrote the cleared fault
+        back to memory and disk. The fan then stayed blocked on a fault
+        the dashboard said was gone.
+      - a DIFFERENT fault replaced it. Without an identity check the
+        callback stamped the new one as delivered, so its own restart
+        notice was suppressed for an hour.
+
+    "at" is the identity: it is set once when the fault is raised and
+    never rewritten.
+
+    HOLDS _fault_lock ACROSS THE CHECK AND THE WRITE, and therefore
+    cannot call _store_fault, which takes the same non-reentrant lock.
+    The body below is _store_fault's inner half, deliberately duplicated
+    rather than refactored: this path must not become a second way to
+    SET a fault, only to annotate the one already there.
+    """
+    with _fault_lock:
+        with _state_lock:
+            cur = dict(STATE["fault"]) if STATE["fault"] else None
+        if not cur or cur.get("at") != expected_at:
+            return                  # acknowledged, or replaced
+        cur["delivered_at"] = time.time()
+        with _state_lock:
+            if not STATE["fault"] or STATE["fault"].get("at") != expected_at:
+                return              # changed while we were copying
+            STATE["fault"] = cur
+        try:
+            save_fault(cur)
+            with _state_lock:
+                STATE["fault_unsaved"] = False
+        except OSError:
+            # Only the delivery stamp is at risk, and losing it costs at
+            # most one duplicate restart notice. The fault itself is
+            # already on disk.
+            with _state_lock:
+                STATE["fault_unsaved"] = True
+    _unsaved_edge()
+
+
 RESTART_NOTICE_SUPPRESS = 3600
 
 
@@ -1586,7 +1654,11 @@ def _notify_restart_fault():
     means either someone tried the wrong remedy, or the service is
     looping under one. Both are worth saying.
 
-    Rate limited on notified_at, which the raise path stamps. The unit
+    Rate limited on delivered_at, which is stamped only once the relay
+    has accepted a message about this fault; attempted_at records the
+    try. Suppressing on the attempt meant a FAILED send bought an hour
+    of silence, at the moment mail was already known to be broken. The
+    unit
     is Restart=on-failure with RestartSec=10, and systemd's start limit
     (5 in 10s) does NOT catch a loop spaced that widely - so without
     this a crash-looping service would mail about six times a minute,
@@ -1609,13 +1681,11 @@ def _notify_restart_fault():
             return
         f["attempted_at"] = time.time()
         _store_fault(f)
+        expected_at = f.get("at")
 
-        def sent():
-            with _state_lock:
-                cur = dict(STATE["fault"]) if STATE["fault"] else None
-            if cur:
-                cur["delivered_at"] = time.time()
-                _store_fault(cur)
+        def completed(ok):
+            if ok:
+                _mark_fault_delivered(expected_at)
         _notify("Fan fault still standing after a restart",
                 "%s\n\nThe service has restarted and the fault is still "
                 "there.\n\nRESTARTING DOES NOT CLEAR A DRAW FAULT. It is "
@@ -1624,7 +1694,8 @@ def _notify_restart_fault():
                 "dashboard.\n\nIf this arrives repeatedly the service is "
                 "restarting in a loop, which is a separate problem from "
                 "the fault itself."
-                % f.get("msg", "A fault is standing."), on_sent=sent)
+                % f.get("msg", "A fault is standing."),
+                on_complete=completed)
     except Exception as exc:        # pragma: no cover - must never escape
         try:
             _log("Restart fault notice failed: %s" % exc)
@@ -1866,20 +1937,20 @@ def _draw_check(plug):
     # under them.
     #
     # prev is None IS the duplicate guard - a fault raised while one
-    # already stands cannot send. notified_at is not needed for that;
-    # it is stamped for the RESTART notice below, which rate limits on
-    # it. Do not add a "have I sent" flag to this path expecting it to
-    # do work: it would read as protection and provide none.
+    # already stands cannot send. attempted_at and delivered_at are not
+    # needed for that; they exist for the RESTART notice, which rate
+    # limits on delivery. Do not add a "have I sent" flag to this path
+    # expecting it to do work: it would read as protection and provide
+    # none.
     #
     # lo/hi are the LIVE band, read from CFG a few lines above and passed
     # in, never stored on the fault and never parsed back out of msg.
     # The dashboard edits that band, so a copy would drift.
-    def _fault_sent():
-        with _state_lock:
-            cur = dict(STATE["fault"]) if STATE["fault"] else None
-        if cur:
-            cur["delivered_at"] = time.time()
-            _store_fault(cur)
+    raised_at = f["at"]
+
+    def _fault_sent(ok):
+        if ok:
+            _mark_fault_delivered(raised_at)
 
     if prev is None:
         _notify("Fan stopped - %s" % ("plug not answering" if w is None
@@ -1887,7 +1958,7 @@ def _draw_check(plug):
                 "%s\n\n%s\n\nThe fan has been stopped and will stay "
                 "stopped until this is acknowledged in the dashboard."
                 % (msg, _draw_fault_cause(w, lo, hi)),
-                on_sent=_fault_sent)
+                on_complete=_fault_sent)
     _enforce_stop(plug)
 
 

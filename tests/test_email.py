@@ -28,18 +28,21 @@ def wire(C, **cfg):
     C.CFG["email"].update(**cfg)
     sent = []
 
-    def fake_notify(subject, body, on_sent=None):
+    def fake_notify(subject, body, on_complete=None):
         if not C._email_ready():
+            if on_complete:
+                on_complete(False)
             return
         sent.append((subject, body))
         # Delivery is simulated by default. Tests that care about a
         # FAILED send use wire_failing() instead - the distinction
         # matters, because recording delivery optimistically is what
         # produced an all-clear for a warning nobody received.
-        if on_sent:
-            on_sent()
+        if on_complete:
+            on_complete(True)
 
     C._notify = fake_notify
+    C._notify_or_skip = fake_notify
     return sent
 
 
@@ -51,12 +54,15 @@ def wire_failing(C, **cfg):
     C.CFG["email"].update(**cfg)
     attempts = []
 
-    def fake_notify(subject, body, on_sent=None):
+    def fake_notify(subject, body, on_complete=None):
         if C._email_ready():
             attempts.append((subject, body))
-        # on_sent deliberately not called: the send failed.
+        # Completed, but NOT delivered.
+        if on_complete:
+            on_complete(False)
 
     C._notify = fake_notify
+    C._notify_or_skip = fake_notify
     return attempts
 
 
@@ -633,6 +639,150 @@ def test_a_failed_warning_is_retried_on_the_next_cycle():
     C._notify_stale(30, True)
     assert len(attempts) == 2, "gave up after one failed attempt"
     return "retries during the outage"
+
+
+# ------------------------------------------------ real asynchronous timing
+#
+# Every test above replaces _notify with something synchronous, which
+# makes "sent once" pass even when production can queue two. These use
+# the REAL _notify and a _send_mail held open on an Event, so the window
+# between starting a send and finishing it is a window the test controls.
+
+
+class Gate(object):
+    """A _send_mail that blocks until released, recording each call."""
+
+    def __init__(self):
+        self.started = __import__("threading").Event()
+        self.release = __import__("threading").Event()
+        self.calls = []
+        self.result = None          # None means delivered
+
+    def __call__(self, subject, body):
+        self.calls.append(subject)
+        self.started.set()
+        self.release.wait(5)
+        return self.result
+
+
+def live_email(C):
+    """Configure email for real _notify use, with no relay involved."""
+    C.CFG["email"].update(enabled=True, host="relay.invalid", port=25,
+                          username="", password="",
+                          sender="fan@invalid", recipients="a@invalid")
+
+
+def test_a_second_warning_cannot_queue_while_the_first_is_in_flight():
+    """_notify returns as soon as the thread starts.
+
+    Clearing the inflight flag after that call - rather than from the
+    worker - let the next fail-safe cycle queue a second warning while
+    the first was still talking to the relay. Every fake in this file is
+    synchronous, so none of them could see it.
+    """
+    C = harness.load()
+    live_email(C)
+    gate = Gate()
+    C._send_mail = gate
+
+    C._notify_stale(30, True)
+    assert gate.started.wait(5), "first send never started"
+    C._notify_stale(30, True)
+    C._notify_stale(30, True)
+    assert len(gate.calls) == 1, \
+        "queued %d sends while one was in flight" % len(gate.calls)
+
+    gate.release.set()
+    for _ in range(50):
+        if C._stale_delivered:
+            break
+        C.time.sleep(0.05)
+    assert C._stale_delivered is True, "delivery never recorded"
+    assert C._stale_inflight is False, "inflight never cleared"
+    return "one in flight at a time"
+
+
+def test_a_failed_send_clears_inflight_so_the_next_cycle_retries():
+    C = harness.load()
+    live_email(C)
+    gate = Gate()
+    gate.result = "relay refused"
+    C._send_mail = gate
+
+    C._notify_stale(30, True)
+    assert gate.started.wait(5)
+    gate.release.set()
+    for _ in range(50):
+        if not C._stale_inflight:
+            break
+        C.time.sleep(0.05)
+    assert C._stale_inflight is False, "stuck in flight after a failure"
+    assert C._stale_delivered is False, "recorded delivery of a failure"
+    return "retries after a failure"
+
+
+def test_an_unconfigured_alert_does_not_stick_in_flight():
+    """_notify does nothing when alerts are off, so no worker runs."""
+    C = harness.load()
+    C.CFG["email"]["enabled"] = False
+    C._notify_stale(30, True)
+    assert C._stale_inflight is False, \
+        "inflight stuck on with alerts disabled - no worker to clear it"
+    return "no worker, no stuck flag"
+
+
+def test_an_acknowledged_fault_is_not_resurrected_by_a_late_callback():
+    """The callback writes back a fault the operator has cleared.
+
+    Snapshotting the fault, releasing the lock and storing the copy
+    afterwards meant an acknowledgement landing in between was undone:
+    the dashboard said clear, the file said faulted, and automatic
+    running stayed blocked.
+    """
+    C = harness.load()
+    now = C.time.time()
+    fault = {"at": now, "msg": "draw fault", "stopped": True,
+             "attempted_at": now, "delivered_at": None}
+    C._store_fault(fault)
+
+    # The operator acknowledges while the send is still in flight.
+    C._clear_fault()
+    assert C.STATE["fault"] is None, "precondition: fault not cleared"
+
+    # The callback lands afterwards, referring to the fault it was
+    # raised for.
+    C._mark_fault_delivered(now)
+    assert C.STATE["fault"] is None, \
+        "a late callback resurrected an acknowledged fault"
+    assert C.load_fault() is None, "resurrected it on disk too"
+    return "acknowledgement wins"
+
+
+def test_a_replacement_fault_is_not_marked_delivered():
+    """Without an identity check the callback stamps the wrong fault.
+
+    The new fault would then look as though someone had been told about
+    it, and its own restart notice would be suppressed for an hour.
+    """
+    C = harness.load()
+    first = C.time.time() - 100
+    C._store_fault({"at": first, "msg": "old", "stopped": True,
+                    "attempted_at": first, "delivered_at": None})
+    C._clear_fault()
+
+    second = C.time.time()
+    C._store_fault({"at": second, "msg": "new", "stopped": True,
+                    "attempted_at": second, "delivered_at": None})
+
+    C._mark_fault_delivered(first)          # the OLD fault's callback
+    assert C.STATE["fault"]["delivered_at"] is None, \
+        "stamped a different fault as delivered"
+    assert C.STATE["fault"]["msg"] == "new", "overwrote the newer fault"
+
+    C._mark_fault_delivered(second)
+    assert C.STATE["fault"]["delivered_at"] is not None, \
+        "the matching callback did not record delivery"
+    return "identity checked on at"
 
 
 if __name__ == "__main__":

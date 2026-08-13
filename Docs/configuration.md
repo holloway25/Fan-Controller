@@ -172,9 +172,21 @@ Five things, each on the TRANSITION into the state and once only:
 The last one exists because **restarting does not clear a draw fault** -
 it is reloaded from `fault.json` on purpose. Someone restarting the
 service was quite possibly trying to clear one, and should be told it
-did not work. It is rate limited to one an hour via `notified_at` on the
-fault, because the unit is `Restart=on-failure` with `RestartSec=10`
-and systemd's start limit does not catch a loop spaced that widely.
+did not work. It is rate limited to one an hour, because the unit is
+`Restart=on-failure` with `RestartSec=10` and systemd's start limit does
+not catch a loop spaced that widely.
+
+The fault carries two timestamps for this. `attempted_at` records that a
+send was tried; **`delivered_at` records that the relay accepted it, and
+only `delivered_at` suppresses the next notice.** Rate limiting on the
+attempt would mean a failed send bought an hour of silence at the moment
+mail was already known to be broken.
+
+Delivery is recorded against the fault's `at` value, which never
+changes. A callback arriving after the fault has been acknowledged, or
+after a different fault has replaced it, does nothing - otherwise it
+would write a cleared fault back to disk, or stamp the wrong fault as
+already reported.
 
 ### What does not send
 
