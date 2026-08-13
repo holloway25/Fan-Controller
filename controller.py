@@ -913,9 +913,19 @@ _wake = threading.Event()  # set to make the poll loop act at once
 # the read-decide-switch has to be atomic or the two can each see the fan
 # off, both switch it, and both log the same event.
 _act_lock = threading.Lock()
-# Guards the fault as one transaction across memory and disk. Held with
-# _state_lock inside it, and never together with _act_lock, so the two
-# stay independent and there is no ordering between them to get wrong.
+# Guards the fault as one transaction across memory and disk.
+#
+# THE FULL ORDER, when more than one is held:
+#
+#     _cfg_lock -> _act_lock -> _fault_lock -> _state_lock
+#
+# NOTHING MAY TAKE _act_lock WHILE HOLDING _fault_lock. This comment
+# used to say the two were never held together at all, which stopped
+# being true when the draw decision and the fault acknowledgement each
+# had to be one transaction: a settings save landing mid-decision
+# produced a fault quoting limits that had already been replaced, and an
+# acknowledgement landing mid-enforcement let the fan be stopped after
+# the dashboard said the fault was clear.
 _fault_lock = threading.Lock()
 # Serialises the activity log: the poll thread, the draw thread and
 # Flask request threads all call _log, and save_events shares one
@@ -2002,7 +2012,11 @@ def _clear_fault():
     invert.
     """
     with _act_lock:
-        return _clear_fault_locked()
+        result = _clear_fault_locked()
+    # Outside both locks, deliberately: see _clear_fault_locked. A
+    # no-op unless the flag actually moved.
+    _unsaved_edge()
+    return result
 
 
 def _clear_fault_locked():
@@ -2030,7 +2044,12 @@ def _clear_fault_locked():
             # made again once the disk is healthy.
             with _state_lock:
                 STATE["fault_unsaved"] = True
-            _unsaved_edge()
+            # The edge is reported by the CALLER, once both locks are
+            # released. _unsaved_edge can start a mail thread and can
+            # log, and doing that here held _fault_lock - and, since the
+            # acknowledgement began taking _act_lock, the actuation lock
+            # as well - across a disk failure, which is exactly when it
+            # would be slowest.
             return had, False
         except OSError:
             return had, False

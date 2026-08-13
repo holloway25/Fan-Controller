@@ -711,5 +711,83 @@ def test_a_save_queues_behind_a_draw_decision_rather_than_splitting_it():
     return "the save waited its turn"
 
 
+def test_an_acknowledgement_waits_for_an_enforcement_in_flight():
+    """Two threads, genuinely overlapping, not two checks in sequence.
+
+    The other tests for this assert lock OWNERSHIP - that _clear_fault
+    holds _act_lock, that _enforce_stop re-checks the fault. Neither
+    puts the two on separate threads at the same moment, so neither
+    would notice if the locking were right and the sequencing still
+    wrong.
+
+    Here enforcement is paused inside plug.state(), holding _act_lock,
+    while an acknowledgement runs on another thread. The
+    acknowledgement must WAIT - and once it lands, the fault is gone and
+    the fan is off, which is the coherent outcome. The incoherent one,
+    before the fix, was the acknowledgement completing first and the
+    stop landing afterwards on a fault that no longer existed.
+    """
+    C = harness.load()
+    now = C.time.time()
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    class GatedPlug2:
+        def __init__(self):
+            self.calls = []
+            self.on = True
+
+        def state(self):
+            entered.set()
+            release.wait(10)
+            return self.on
+
+        def set(self, value):
+            self.calls.append(value)
+            self.on = value
+            return value
+
+    plug = GatedPlug2()
+    C.CFG["control"]["mode"] = "auto"
+    with C._state_lock:
+        C.STATE["fan"] = True
+        C.STATE["fault"] = {"at": now, "msg": "draw fault",
+                            "stopped": False}
+
+    stopper = threading.Thread(target=C._enforce_stop, args=(plug,),
+                               name="stopper")
+    stopper.start()
+    assert entered.wait(10), "enforcement never reached the plug read"
+
+    cleared = threading.Event()
+    result = {}
+
+    def ack():
+        result["r"] = C._clear_fault()
+        cleared.set()
+
+    acker = threading.Thread(target=ack, name="acker")
+    acker.start()
+
+    # The acknowledgement must not complete while the stop holds the
+    # lock. This is the assertion the ownership tests cannot make.
+    assert not cleared.wait(1.0), (
+        "the acknowledgement completed while an enforcement stop was "
+        "still in flight")
+
+    release.set()
+    stopper.join(10)
+    acker.join(10)
+    assert not stopper.is_alive() and not acker.is_alive(), "threads hung"
+
+    assert cleared.is_set(), "the acknowledgement never completed"
+    assert C.STATE["fault"] is None, "the fault survived acknowledgement"
+    assert plug.calls == [False], (
+        "expected exactly one stop, from the enforcement that held the "
+        "lock: %r" % plug.calls)
+    return "the acknowledgement waited its turn"
+
+
 if __name__ == "__main__":
     sys.exit(harness.run(dict(globals())))
