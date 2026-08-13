@@ -116,7 +116,7 @@ Email on fault is designed but not built.
 Two targets, both first class:
 
 - **x86-64 Debian or Ubuntu.** What it is developed and run on. The
-  current host is an Ubuntu 26.04 VM with one core and 512MB.
+  current host is an Ubuntu 26.04 VM with two cores and 1024MB.
 - **A Raspberry Pi 3B+ on the 64-bit image.** 1.4GHz quad-core
   Cortex-A53, 1GB. A plain 3B is the same design a little slower and
   works fine; a 4 or a 5 is more machine than this needs and will run it
@@ -127,19 +127,31 @@ Two targets, both first class:
   `armv7l` wheels at all, so a 32-bit image builds it from source and
   needs a compiler.
 
-Neither covers the other, and they are tight on different axes. The VM
-has half the memory. The Pi is slower at everything - one i5-12500T core
+Neither covers the other, and they are tight on different axes. Memory
+is close now - 1024MB on the VM against 905MB usable on the Pi, after
+the VM was resized on 2026-08-13 - so the Pi is the slightly smaller
+box. The Pi is slower at everything - one i5-12500T core
 against a 1.4GHz Cortex-A53 is not a close comparison, and the VM also
 has much faster memory and much faster storage than an SD card. The Pi's
 four cores do not close that gap, because this is one process whose
 threads are mostly idle or blocked on I/O, not parallel work.
 
-**So size memory against the VM and time against the Pi.** Resident
-memory, and anything that accumulates, should be judged on the VM, where
-the service currently sits around 45MB with four threads. Startup, JSON
-parsing and anything CPU-bound should be judged on the Pi. Nothing in
-the code is architecture specific, and none of the measurements below
-have been taken on ARM.
+**So size both memory and time against the Pi.** This used to say to
+size memory against the VM, which had half the RAM; the 2026-08-13
+resize reversed that, and the Pi is now the smaller box on both axes.
+Resident memory and anything that accumulates should be judged there -
+though note that service RSS has only ever been measured on the VM,
+where it sits around 45MB with four threads, and has NOT yet been
+measured on ARM. Startup, JSON parsing and anything CPU-bound should be
+judged on the Pi. Nothing in the code is architecture specific.
+
+Measurements below are x86 unless stated. ARM was measured for the
+first time on 2026-08-13, on a 3B+ running the 64-bit Trixie image with
+Python 3.13: imports roughly 11x slower than x86, JSON parsing roughly
+16x, and the full test suite passing 155/155 with a 246MB peak. Every
+pinned dependency installed from PyPI as a wheel with nothing built
+from source, which is the arm64 claim above, tested rather than
+assumed.
 
 What those targets mean for changes:
 
