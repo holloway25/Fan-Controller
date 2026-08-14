@@ -1,5 +1,12 @@
-# Secrets: UniFi and plug passwords
-config.json
+# Secrets: the UniFi and plug passwords, the SMTP password, and the UI
+# password hash. Wildcarded because the exact name was not the risk -
+# config.json.bak and config.local.json are what someone makes while
+# debugging, and neither was ignored. Note the TRAILING wildcard: a
+# pattern of config*.json does NOT match config.json.bak, because the
+# name has to end in .json. Tested, not assumed. The example file is
+# re-included: it holds placeholders only and must stay tracked.
+config*.json*
+!config.example.json
 
 # Runtime state and vendored dependencies
 history.json
