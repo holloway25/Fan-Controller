@@ -19,8 +19,10 @@ confirms the fan is actually drawing current. Flask listens on
     ./venv/bin/pip install -r requirements.txt
     cp config.example.json config.json
 
-Run it under systemd, editing the paths and user in the unit first:
+Run it under systemd. Copy the example unit and edit the user and paths
+in it, the same way you did with the config:
 
+    cp office-fan-controller.service.example office-fan-controller.service
     sudo cp office-fan-controller.service /etc/systemd/system/
     sudo systemctl enable --now office-fan-controller
 
@@ -210,7 +212,11 @@ repo without reaching the running service. Nothing breaks immediately -
 the process already has its code loaded - and the failure appears at the
 next restart or reboot, which then will not start.
 
-After any pull that touches the unit file, reinstall it:
+Since 2026-08-14 the tracked file is `office-fan-controller.service.example`
+and your edited copy is gitignored, so a pull can no longer overwrite
+your user and paths - but it also will not carry a unit change into
+your copy for you. After any pull that touches the example, diff it
+against your own and reapply, then reinstall:
 
     sudo cp office-fan-controller.service /etc/systemd/system/
     sudo systemctl daemon-reload

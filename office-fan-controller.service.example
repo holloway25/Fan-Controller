@@ -1,0 +1,24 @@
+[Unit]
+Description=Office Fan Controller (air-quality-driven fan control)
+Documentation=https://github.com/holloway25/Fan-Controller
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Copy this file to office-fan-controller.service and edit the four
+# lines below for your own account and install path. The concrete file
+# is gitignored, the same way config.json is, so your paths stay local.
+#
+# The user does NOT need sudo: restart.sh signals the running process
+# rather than going through systemd, precisely so that a restart needs
+# no privilege.
+User=fanctl
+Group=fanctl
+WorkingDirectory=/opt/fan-controller
+ExecStart=/opt/fan-controller/venv/bin/python controller.py
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

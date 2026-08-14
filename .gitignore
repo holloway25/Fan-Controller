@@ -6,6 +6,11 @@
 # name has to end in .json. Tested, not assumed. The example file is
 # re-included: it holds placeholders only and must stay tracked.
 config*.json*
+
+# The concrete systemd unit, with your account and paths in it. Copy
+# office-fan-controller.service.example and edit. Same reason as the
+# config file: the example is the tracked one.
+office-fan-controller.service
 !config.example.json
 
 # Runtime state and vendored dependencies
