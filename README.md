@@ -135,33 +135,26 @@ Two targets, both first class:
   needs a compiler.
 
 Neither covers the other, and they are tight on different axes. Memory
-is close now - 1024MB on the VM against 905MB usable on the Pi, after
-the VM was resized on 2026-08-13 - so the Pi is the slightly smaller
-box. The Pi is slower at everything - one i5-12500T core
+is close: a 1024MB VM against 905MB usable on a 3B+, so the Pi is the
+slightly smaller box. The Pi is slower at everything - one i5-12500T core
 against a 1.4GHz Cortex-A53 is not a close comparison, and the VM also
 has much faster memory and much faster storage than an SD card. The Pi's
 four cores do not close that gap, because this is one process whose
 threads are mostly idle or blocked on I/O, not parallel work.
 
-**So size both memory and time against the Pi.** This used to say to
-size memory against the VM, which had half the RAM; the 2026-08-13
-resize reversed that, and the Pi is now the smaller box on both axes.
-Resident memory and anything that accumulates should be judged there.
-The service has now been measured on both IN SERVICE, 2026-08-14:
-about 44MB with four threads on a 3B+, against about 49MB on the VM.
-Not like for like - the VM held a full 24h trace and the Pi twenty
-minutes of one - so expect the Pi to rise as its trace fills. The
-earlier 40MB figure was taken with no history and no sensor connection
-and was called a floor; that held. Startup, JSON parsing and anything CPU-bound should be
-judged on the Pi. Nothing in the code is architecture specific.
+**Size both memory and time against the smaller target.** Judge
+resident memory and anything that accumulates on whichever box has less
+of it, and judge startup, JSON parsing and anything CPU-bound on the
+slower one. In service the process is about 44MB with four threads on a
+3B+ and about 49MB on an x86 VM, but those are not like for like: the
+figure tracks how much history is currently held. Nothing in the code is
+architecture specific.
 
-Measurements below are x86 unless stated. ARM was measured for the
-first time on 2026-08-13, on a 3B+ running the 64-bit Trixie image with
-Python 3.13: imports roughly 11x slower than x86, JSON parsing roughly
-16x. The suite was remeasured on 2026-08-14 at d50a754, on the same
-board with a small heatsink: 217/217 passing, 227MB peak, about 67s. The
-earlier 246MB figure was inflated by a test-harness leak into tmpfs,
-fixed in c9460f5 - see `Docs/arm.md`. Every
+Measurements below are x86 unless stated. On a 3B+ running the 64-bit
+Trixie image with Python 3.13, imports are roughly 11x slower than x86
+and JSON parsing roughly 16x; the suite passes 217/217 in about 67s with
+a 227MB peak, measured at d50a754. See `Docs/arm.md` for the method and
+the per-module breakdown. Every
 pinned dependency installed from PyPI as a wheel with nothing built
 from source, which is the arm64 claim above, tested rather than
 assumed.
@@ -212,11 +205,11 @@ repo without reaching the running service. Nothing breaks immediately -
 the process already has its code loaded - and the failure appears at the
 next restart or reboot, which then will not start.
 
-Since 2026-08-14 the tracked file is `office-fan-controller.service.example`
-and your edited copy is gitignored, so a pull can no longer overwrite
-your user and paths - but it also will not carry a unit change into
-your copy for you. After any pull that touches the example, diff it
-against your own and reapply, then reinstall:
+The tracked file is `office-fan-controller.service.example` and your
+edited copy is gitignored, so a pull cannot overwrite your user and
+paths - and will not carry a unit change into your copy either. After a
+pull that touches the example, diff it against your own and reapply,
+then reinstall:
 
     sudo cp office-fan-controller.service /etc/systemd/system/
     sudo systemctl daemon-reload
