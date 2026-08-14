@@ -22,10 +22,10 @@ DIR = os.path.dirname(os.path.abspath(__file__))
 CFG_PATH = os.path.join(DIR, "config.json")
 
 DEFAULTS = {
-    "protect": {"host": "192.168.1.1", "username": "", "password": "",
+    "protect": {"host": "192.0.2.1", "username": "", "password": "",
                 "verify_tls": False,
                 "sensor_id": ""},
-    "plug": {"host": "192.168.1.10", "user": "admin", "password": "",
+    "plug": {"host": "192.0.2.10", "user": "admin", "password": "",
              "watts_enabled": False, "watts_min": 15.0,
              "watts_max": 25.0, "watts_fault_seconds": 60},
     "ui": {"password_hash": ""},

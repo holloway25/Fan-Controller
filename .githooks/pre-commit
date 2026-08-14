@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# Refuse to commit site detail or secrets.
+#
+# WHY THIS EXISTS: on 2026-08-14 a real LAN address, a hardware make and
+# a deployment description were committed to Docs/arm.md and pushed. Two
+# reviews were needed to find it, and removing it took a history rewrite.
+# .gitignore does not help - nothing was a forbidden FILE, it was
+# forbidden CONTENT pasted into documentation.
+#
+# NOTE WHAT IS NOT IN HERE: no domain, no VLAN numbering, no hostname, no
+# username. A hook is version-controlled, so anything written into it is
+# published permanently - which is exactly what it is meant to prevent.
+# The rules below are all GENERIC. For site-specific strings, see
+# "Local patterns" at the bottom: they live in an untracked file.
+#
+# Install once per clone (hooks are per-clone):  ./.githooks/install.sh
+# Bypass only when certain it is a false positive: git commit --no-verify
+set -u
+
+fail=0
+say() { echo "BLOCKED: $*" >&2; fail=1; }
+
+staged=$(git diff --cached --name-only --diff-filter=ACM)
+[ -z "$staged" ] && exit 0
+
+# 1. The secrets file itself, however it was added - git add -f included.
+for f in $staged; do
+  case "$f" in
+    config.example.json) : ;;
+    config*.json*) say "$f is a config file and must never be committed" ;;
+  esac
+done
+
+# 2. Private addressing in staged CONTENT.
+#    RFC1918 in full: 10/8, 172.16-31/12, 192.168/16. No allowlist and no
+#    exceptions - the examples in this repo use TEST-NET-1 (192.0.2.x,
+#    RFC5737) precisely so that this rule can be absolute. If you are
+#    adding a documentation address, use 192.0.2.x, 198.51.100.x or
+#    203.0.113.x. Loopback and 0.0.0.0 are fine and not matched.
+priv='(^|[^0-9.])(10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}|192\.168\.[0-9]{1,3}\.[0-9]{1,3}|172\.(1[6-9]|2[0-9]|3[01])\.[0-9]{1,3}\.[0-9]{1,3})([^0-9.]|$)'
+if git diff --cached -U0 | grep -E '^\+' | grep -vE '^\+\+\+' | grep -qE "$priv"; then
+  say "staged content contains a private (RFC1918) address"
+  git diff --cached -U0 | grep -E '^\+' | grep -vE '^\+\+\+' | grep -nE "$priv" | head -5 >&2
+fi
+
+# 3. A credential assignment with something that is not a placeholder.
+#    Matches password/passwd/api_key/apikey/token/secret followed by a
+#    value. Empty strings and obvious placeholders pass.
+cred='(password|passwd|api[_-]?key|token|secret)[[:space:]]*[:=][[:space:]]*["'"'"']?[^"'"'"'[:space:],}]{6,}'
+placeholder='(\{\{|<|\$\{|xxx|XXX|placeholder|PLACEHOLDER|example|EXAMPLE|changeme|CHANGEME|your[_-]|redacted|REDACTED|\.\.\.|SET)'
+if git diff --cached -U0 | grep -E '^\+' | grep -vE '^\+\+\+' \
+     | grep -EI "$cred" | grep -vE "$placeholder" | grep -q .; then
+  say "staged content looks like a credential with a real value"
+  git diff --cached -U0 | grep -E '^\+' | grep -vE '^\+\+\+' \
+    | grep -EI "$cred" | grep -vE "$placeholder" | head -5 >&2
+fi
+
+# 4. Local patterns - site-specific strings, NOT version controlled.
+#    Put one extended-regex per line in .git/private-patterns. Because it
+#    lives under .git it is never committed, never pushed, and never
+#    reaches anyone reading this repo. Blank lines and # comments ignored.
+#    This is the right home for a domain, a VLAN range, a hostname or a
+#    username. Do not move them into this file.
+localpat="$(git rev-parse --git-dir)/private-patterns"
+if [ -f "$localpat" ]; then
+  while IFS= read -r pat; do
+    case "$pat" in ''|'#'*) continue ;; esac
+    if git diff --cached -U0 | grep -E '^\+' | grep -vE '^\+\+\+' | grep -qiE "$pat"; then
+      say "staged content matches a local private pattern"
+    fi
+  done < "$localpat"
+fi
+
+if [ "$fail" -ne 0 ]; then
+  echo >&2
+  echo "Nothing was committed. See 'What may go in the repo, and what may" >&2
+  echo "not' in the handoff. If this is genuinely a false positive:" >&2
+  echo "    git commit --no-verify" >&2
+  exit 1
+fi
+exit 0

@@ -1,0 +1,51 @@
+name: privacy
+
+# Fails if site detail reaches the repository. This is the backstop for
+# .githooks/pre-commit, which is per-clone and therefore absent by
+# default in a fresh clone and skippable with --no-verify.
+#
+# It scans the WHOLE TREE, not a diff, so it also catches anything that
+# was committed before this workflow existed.
+#
+# NOTHING SITE-SPECIFIC IS WRITTEN HERE. A workflow file is public to
+# anyone who can read the repo, so listing the real domain or VLAN
+# numbering would publish exactly what the check protects. The rule is
+# generic instead: NO private addressing at all. Documentation examples
+# use the RFC5737 ranges reserved for the purpose.
+
+permissions:
+  contents: read
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  privacy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: No private (RFC1918) addresses
+        run: |
+          # 10/8, 172.16-31/12, 192.168/16. Loopback and 0.0.0.0 are
+          # fine. Use 192.0.2.x, 198.51.100.x or 203.0.113.x in docs.
+          if git grep -nE '(^|[^0-9.])(10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}|192\.168\.[0-9]{1,3}\.[0-9]{1,3}|172\.(1[6-9]|2[0-9]|3[01])\.[0-9]{1,3}\.[0-9]{1,3})([^0-9.]|$)' -- . ':!.github/workflows/privacy.yml' ':!.githooks/pre-commit'; then
+            echo "::error::A private address is in the tree. Documentation examples must use RFC5737 ranges (192.0.2.x)."
+            exit 1
+          fi
+          echo "no private addressing"
+
+      - name: No config file committed
+        run: |
+          if git ls-files | grep -E '^config.*\.json' | grep -v '^config\.example\.json$'; then
+            echo "::error::A config file is tracked. Only config.example.json may be."
+            exit 1
+          fi
+          echo "no config file tracked"
+
+      - name: Hook is present and executable
+        run: |
+          test -x .githooks/pre-commit || { echo "::error::.githooks/pre-commit missing or not executable"; exit 1; }
+          test -x .githooks/install.sh || { echo "::error::.githooks/install.sh missing or not executable"; exit 1; }
+          echo "hook present"

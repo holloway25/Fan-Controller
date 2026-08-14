@@ -1,13 +1,13 @@
 {
   "protect": {
-    "host": "192.168.1.1",
+    "host": "192.0.2.1",
     "username": "local-unifi-user",
     "password": "",
     "sensor_id": "",
     "verify_tls": false
   },
   "plug": {
-    "host": "192.168.1.10",
+    "host": "192.0.2.10",
     "user": "admin",
     "password": "",
     "watts_enabled": false,
