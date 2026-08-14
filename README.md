@@ -145,16 +145,21 @@ threads are mostly idle or blocked on I/O, not parallel work.
 size memory against the VM, which had half the RAM; the 2026-08-13
 resize reversed that, and the Pi is now the smaller box on both axes.
 Resident memory and anything that accumulates should be judged there.
-The service has now been measured on both: about 40MB with four threads
-on a 3B+, against about 45MB on the VM. The ARM figure is a floor - it
-was taken with no history file and no sensor connection - so expect it
-nearer the VM number in service. Startup, JSON parsing and anything CPU-bound should be
+The service has now been measured on both IN SERVICE, 2026-08-14:
+about 44MB with four threads on a 3B+, against about 49MB on the VM.
+Not like for like - the VM held a full 24h trace and the Pi twenty
+minutes of one - so expect the Pi to rise as its trace fills. The
+earlier 40MB figure was taken with no history and no sensor connection
+and was called a floor; that held. Startup, JSON parsing and anything CPU-bound should be
 judged on the Pi. Nothing in the code is architecture specific.
 
 Measurements below are x86 unless stated. ARM was measured for the
 first time on 2026-08-13, on a 3B+ running the 64-bit Trixie image with
 Python 3.13: imports roughly 11x slower than x86, JSON parsing roughly
-16x, and the full test suite passing 155/155 with a 246MB peak. Every
+16x. The suite was remeasured on 2026-08-14 at d50a754, on the same
+board with a small heatsink: 217/217 passing, 227MB peak, about 67s. The
+earlier 246MB figure was inflated by a test-harness leak into tmpfs,
+fixed in c9460f5 - see `Docs/arm.md`. Every
 pinned dependency installed from PyPI as a wheel with nothing built
 from source, which is the arm64 claim above, tested rather than
 assumed.
