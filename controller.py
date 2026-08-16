@@ -1744,6 +1744,11 @@ def _notify_stale(mins, already_on):
 
 
 _unsaved_notified = False
+# Delivered, not merely attempted. The all-clear is gated on this for
+# the same reason FC-100 is: an all-clear for a warning nobody
+# received is worse than silence, because it implies a first
+# message that was never read.
+_unsaved_delivered = False
 
 
 def _unsaved_edge():
@@ -1760,15 +1765,43 @@ def _unsaved_edge():
     surviving a restart, which is invisible until the restart happens
     and the fan starts up against a fault nobody remembers.
     """
-    global _unsaved_notified
+    global _unsaved_notified, _unsaved_delivered
     with _state_lock:
         now = bool(STATE["fault_unsaved"])
+        standing = STATE["fault"]
     if not now:
+        # FALLING EDGE. Two ways to get here and they are not the same
+        # news: the retry finally wrote the file, or the whole fault was
+        # acknowledged and the flag went with it. Only the first is an
+        # all-clear for FC-005 - the second is FC-101's story, and
+        # sending both would report one event twice.
+        if _unsaved_delivered and standing:
+            _notify("%s Fan fault has been saved to disk"
+                    % FC_FAULT_PERSISTED,
+                    _alert_body(
+                        FC_FAULT_PERSISTED, "Fault Persisted After All",
+                        time.time(),
+                        "The fault could not be written earlier, but the "
+                        "retry has now succeeded.\nIt will survive a "
+                        "restart. The fault itself still stands and the "
+                        "fan is still stopped.",
+                        [("Standing fault", standing.get("code")
+                          or "unknown"),
+                         ("Action taken", "Fault written to disk"),
+                         ("Manual action", "No"),
+                         ("How to clear", "Acknowledge in the dashboard"),
+                         ("Controller mode", _mode_now())]))
         _unsaved_notified = False
+        _unsaved_delivered = False
         return
     if _unsaved_notified:
         return
     _unsaved_notified = True
+
+    def _unsaved_sent(ok):
+        global _unsaved_delivered
+        if ok:
+            _unsaved_delivered = True
     _notify("%s Fan fault could not be saved to disk" % FC_FAULT_UNSAVED,
             _alert_body(
                 FC_FAULT_UNSAVED, "Fault Not Persisted",
@@ -1787,7 +1820,8 @@ def _unsaved_edge():
                  ("Controller mode", _mode_now())],
                 ["Disk full",
                  "Filesystem mounted read-only",
-                 "Permissions changed on the install directory"]))
+                 "Permissions changed on the install directory"]),
+            on_complete=_unsaved_sent)
 
 
 def _mark_fault_attempted(expected_at):
@@ -1977,6 +2011,22 @@ FC_OVER_POWER = "FC-004"
 FC_FAULT_UNSAVED = "FC-005"
 FC_RESTART_FAULT = "FC-006"
 FC_SENSOR_RETURNED = "FC-100"
+FC_HARD_CLEARED = "FC-101"
+FC_FAULT_PERSISTED = "FC-102"
+
+
+def _duration(seconds):
+    """A span someone reads at a glance, not a float."""
+    s = int(max(0, seconds))
+    if s < 90:
+        return "%d seconds" % s
+    if s < 5400:
+        return "%d minutes" % round(s / 60.0)
+    return "%.1f hours" % (s / 3600.0)
+
+
+def _stamp(when):
+    return time.strftime("%Y-%m-%d %H:%M:%S %Z", time.localtime(when))
 
 
 def _mode_now():
@@ -2960,7 +3010,40 @@ def api_fault_clear():
                              "try again."), 503
     _oob_since = None
     if had:
-        _log("Draw fault cleared")
+        code = had.get("code") or "a draw fault"
+        _log("%s Draw fault cleared - %s" % (FC_HARD_CLEARED, code))
+        # GATED ON DELIVERY, exactly as FC-100 is. If the original alert
+        # never reached anyone there is nothing to stand down from, and
+        # a closure notice for an episode nobody was told about reads as
+        # a message that went missing.
+        #
+        # The person who clicked acknowledge learns nothing from this.
+        # It is for the OTHER recipients, who still believe the fan is
+        # stopped, and for the archive: an episode that opens FC-003 and
+        # closes FC-101 can be reconstructed later with a duration.
+        if had.get("delivered_at"):
+            raised = had.get("at") or time.time()
+            titles = {FC_PLUG_COMMS: "Plug Communications Fault",
+                      FC_UNDER_POWER: "Hard Fault - Under Power",
+                      FC_OVER_POWER: "Hard Fault - Over Power"}
+            _notify("%s Fault cleared - fan available again"
+                    % FC_HARD_CLEARED,
+                    _alert_body(
+                        FC_HARD_CLEARED, "Hard Fault Cleared",
+                        time.time(),
+                        "Acknowledged in the dashboard. The fan is "
+                        "available again and normal control has "
+                        "resumed.",
+                        [("Cleared fault", "%s %s"
+                          % (had.get("code") or "unknown",
+                             titles.get(had.get("code"), ""))),
+                         ("Raised at", _stamp(raised)),
+                         ("Fault duration",
+                          _duration(time.time() - raised)),
+                         ("Action taken",
+                          "Fault cleared, automatic control resumed"),
+                         ("Manual action", "No"),
+                         ("Controller mode", _mode_now())]))
     _wake.set()
     return jsonify(ok=True, cleared=bool(had))
 @app.route("/api/history")
