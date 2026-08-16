@@ -1768,7 +1768,10 @@ def _unsaved_edge():
     global _unsaved_notified, _unsaved_delivered
     with _state_lock:
         now = bool(STATE["fault_unsaved"])
-        standing = STATE["fault"]
+        # Copied, not referenced: an acknowledgement landing between
+        # here and the send would otherwise leave the message naming a
+        # fault that no longer exists.
+        standing = dict(STATE["fault"]) if STATE["fault"] else {}
     if not now:
         # FALLING EDGE. Two ways to get here and they are not the same
         # news: the retry finally wrote the file, or the whole fault was
@@ -1812,7 +1815,8 @@ def _unsaved_edge():
                 "forgotten and normal control would resume as though "
                 "nothing were wrong.\nThe service retries the write on "
                 "its own.",
-                [("Action taken", "Fan stopped, fault held in memory "
+                [("Standing fault", standing.get("code") or "unknown"),
+                 ("Action taken", "Fan stopped, fault held in memory "
                                   "only"),
                  ("Manual action", "Yes"),
                  ("How to clear", "Fix the disk; the write retries "
@@ -1981,7 +1985,7 @@ def _notify_restart_fault():
                     "is acknowledged.\nIf this arrives repeatedly the "
                     "service is restarting in a loop, which is a "
                     "separate problem from the fault itself."
-                    % f.get("msg", "A fault is standing."),
+                    % _without_code(f.get("msg")),
                     [("Standing fault", f.get("code") or "unknown"),
                      ("Action taken", "Fan kept stopped"),
                      ("Manual action", "Yes"),
@@ -2063,6 +2067,22 @@ def _alert_body(code, title, when, summary, fields, causes=None):
         for c in causes[1:]:
             out.append("%-19s%s" % ("", c))
     return "\n".join(out) + "\n"
+
+
+def _without_code(msg):
+    """A fault message with its code prefix removed.
+
+    The code leads every stored message and is also carried as its own
+    field, so quoting the message verbatim printed it twice. Stripped
+    rather than stopping the message carrying it: the ACTIVITY LOG line
+    needs the code at the front, which is what the search relies on.
+    """
+    if not msg:
+        return "A fault is standing."
+    parts = msg.split(" ", 1)
+    if len(parts) == 2 and parts[0].startswith("FC-"):
+        return parts[1]
+    return msg
 
 
 def _draw_fault_code(watts, lo, hi):
@@ -2449,11 +2469,21 @@ def _draw_check(plug, gen=None):
             FC_PLUG_COMMS: ["Plug offline or rebooting",
                             "Wi-Fi or network connectivity",
                             "Plug power lost"],
-            FC_UNDER_POWER: ["Fan failed to start",
-                             "Fan unplugged or disconnected",
-                             "Seized motor or obstruction",
-                             "Failed capacitor",
-                             "Wiring fault"],
+            # FC-003 covers nothing drawing at all AND drawing but
+            # not enough. _draw_fault_cause already tells them apart in
+            # prose; the causes have to agree with the sentence above
+            # them, or the message contradicts itself the way FC-002
+            # once did.
+            FC_UNDER_POWER: (["Fan failed to start",
+                              "Fan unplugged or disconnected",
+                              "Plug relay not actually closing",
+                              "Failed motor"]
+                             if (w is not None and w < 1.0) else
+                             ["Obstruction slowing the fan",
+                              "Seized or dragging bearing",
+                              "Failed capacitor",
+                              "Wiring fault",
+                              "Draw band set for a different fan"]),
             FC_OVER_POWER: ["Mechanical obstruction",
                             "Bearing failure or excessive load",
                             "Motor fault",

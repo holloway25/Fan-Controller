@@ -322,5 +322,82 @@ def test_a_duration_reads_as_a_span_not_a_float():
     return "seconds, minutes, hours"
 
 
+# ------------------------------------------------ the message reads right
+
+def test_nothing_drawing_and_drawing_weakly_get_different_causes():
+    """FC-003 covers both, and they look nothing alike at the fan.
+
+    The prose already distinguished them. A causes list that says "fan
+    failed to start" under a sentence saying it is running weakly sends
+    someone looking for the wrong thing.
+    """
+    C = harness.load()
+    sent = E.wire(C)
+    E.raise_draw_fault(C, 0.0, lo=15.0, hi=22.0)
+    _, dead = sent[0]
+
+    C2 = harness.load()
+    sent2 = E.wire(C2)
+    E.raise_draw_fault(C2, 8.2, lo=15.0, hi=22.0)
+    _, weak = sent2[0]
+
+    assert "failed to start" in dead, dead
+    assert "failed to start" not in weak, weak
+    assert "Obstruction slowing" in weak, weak
+    assert "Obstruction slowing" not in dead, dead
+    return "nothing drawing and drawing weakly differ"
+
+
+def test_the_causes_agree_with_the_sentence_above_them():
+    C = harness.load()
+    sent = E.wire(C)
+    E.raise_draw_fault(C, 8.2, lo=15.0, hi=22.0)
+    _, body = sent[0]
+    assert "running weakly or stalling" in body, body
+    assert "unplugged" not in body, "cause contradicts the prose: %r" % body
+    return "prose and causes agree"
+
+
+def test_the_unsaved_alert_names_the_fault_it_could_not_save():
+    """The most alarming message in the set was the least specific."""
+    C = harness.load()
+    sent = E.wire(C)
+    E.raise_draw_fault(C, 8.2, lo=15.0, hi=22.0)
+    with C._state_lock:
+        C.STATE["fault_unsaved"] = True
+    C._unsaved_edge()
+    subject, body = sent[-1]
+    assert subject.startswith(C.FC_FAULT_UNSAVED), subject
+    assert "Standing fault:" in body, body
+    assert C.FC_UNDER_POWER in body, body
+    return "FC-005 names the standing fault"
+
+
+def test_the_restart_notice_does_not_say_the_code_twice():
+    C = harness.load()
+    sent = E.wire(C)
+    f = E.raise_draw_fault(C, 27.6, lo=15.0, hi=22.0)
+    with C._state_lock:
+        C.STATE["fault"]["delivered_at"] = C.time.time() - 7200
+    C._notify_restart_fault()
+    _, body = sent[-1]
+    assert body.count(C.FC_OVER_POWER) == 1, \
+        "code appears %d times: %r" % (body.count(C.FC_OVER_POWER), body)
+    assert "Standing fault:" in body, body
+    return "code once, in its own field"
+
+
+def test_stripping_the_code_leaves_the_message_intact():
+    C = harness.load()
+    assert C._without_code("FC-003 Draw fault - 8.2 W") == \
+        "Draw fault - 8.2 W"
+    # A message without a code, from a fault.json written by an older
+    # version, passes through unchanged rather than losing its first word.
+    assert C._without_code("Draw fault - 8.2 W") == "Draw fault - 8.2 W"
+    assert C._without_code("") == "A fault is standing."
+    assert C._without_code(None) == "A fault is standing."
+    return "prefix stripped, older messages intact"
+
+
 if __name__ == "__main__":
     sys.exit(harness.run(dict(globals())))
