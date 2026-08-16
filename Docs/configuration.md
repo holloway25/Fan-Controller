@@ -161,13 +161,36 @@ about - something going wrong - and the key for how it is delivered.
 
 ### What sends
 
-Five things, each on the TRANSITION into the state and once only:
+Each on the TRANSITION into the state, and once only. Every alert
+carries a **fault code** in its subject, its body and the matching
+activity log line, so one search finds an episode across `events.json`
+and a mailbox.
 
-- a draw fault is raised, stopping the fan
-- a fault could not be written to disk (`fault_unsaved`)
-- readings stop for long enough to trigger the fail-safe
-- readings return and the fail-safe stands down
-- a fault is still standing after a restart
+| Code | Sends when |
+|---|---|
+| `FC-001` | Readings stop for long enough to trigger the fail-safe |
+| `FC-002` | A draw fault is raised and the plug is not answering |
+| `FC-003` | A draw fault is raised below the band, including nothing drawing at all |
+| `FC-004` | A draw fault is raised above the band |
+| `FC-005` | A fault could not be written to disk (`fault_unsaved`) |
+| `FC-006` | A fault is still standing after a restart |
+| `FC-100` | Readings return and the fail-safe stands down |
+| `FC-101` | A hard fault is acknowledged and the fan is available again |
+| `FC-102` | A fault that could not be written has now been saved by the retry |
+
+**`0xx` are alarms and `1xx` are all-clears**, so a mail rule can
+separate them without parsing subjects.
+
+**Codes are stable and are never reused.** Wording changes; `FC-003`
+does not. A retired code stays retired, because recycling a number
+silently merges two different faults in an archive that may go back
+years.
+
+`FC-002`, `FC-003` and `FC-004` are one fault in the code with three
+labels. The distinction is drawn from the reading at the moment the
+fault raises: no reading at all is a plug problem, anything else is
+judged against the live band. They close with a single `FC-101`,
+which names which one it was.
 
 The last one exists because **restarting does not clear a draw fault** -
 it is reloaded from `fault.json` on purpose. Someone restarting the
@@ -193,10 +216,17 @@ already reported.
 Mode changes, threshold edits and normal switching. They are in the
 activity log and nobody needs them at 2am.
 
-Acknowledging a fault sends nothing either. A fault is only ever
-cleared by a person pressing the button, so an all-clear would tell
-them what they just did. Worth revisiting only if several people are on
-the recipient list.
+Acknowledging a fault **does** now send, as `FC-101`. This reverses an
+earlier decision, and the reasoning that changed it is the one this
+paragraph used to end on: the person pressing the button learns
+nothing, but **everyone else on the recipient list still believes the
+fan is stopped**. The message is also what closes an episode in the
+archive, carrying the code it cleared, when it was raised and how long
+it stood.
+
+`FC-101` and `FC-102` are **gated on delivery of the original alert,
+not on the attempt**, the same rule `FC-100` follows. An all-clear for
+a warning nobody received implies a first message that went missing.
 
 ### Three deliberate silences
 

@@ -149,6 +149,25 @@ appending and the readings on screen are stale too.
 A hard refresh clears it either way: with nothing held, the UI asks for
 the whole trace rather than a delta.
 
+## Finding an episode later
+
+Every alert and every fault line in the activity log starts with a
+code, so one search finds the whole episode:
+
+    grep FC-003 events.json
+
+An episode opens with an alarm (`0xx`) and closes with an all-clear
+(`1xx`). A `FC-003` with no matching `FC-101` is a fault that was never
+acknowledged; an `FC-101` carries the duration, so how long the fan was
+unavailable does not have to be worked out from timestamps.
+
+The codes never change and are never reused, so a search that works
+today works on an archive from a year ago.
+
+An alarm with no all-clear can also mean the all-clear was suppressed
+on purpose: `FC-100`, `FC-101` and `FC-102` only send if the original
+warning was actually delivered.
+
 ## Nothing told me the fan had stopped
 
 Check the **Fault Handling** card first. Alerts are off until
@@ -161,6 +180,9 @@ A test message proves the transport - DNS, the firewall, authentication
 and delivery. It does NOT prove the alerts themselves: it sends
 directly, bypassing the transitions that decide when to send. A relay
 that works and an alert that never fires are different problems.
+
+A test message also carries no fault code, which is the quickest way to
+tell one apart from a real alert in a mailbox.
 
 If alerts ARE configured and nothing arrived, the likely causes in
 order: the fault was raised while a previous one still stood, so there

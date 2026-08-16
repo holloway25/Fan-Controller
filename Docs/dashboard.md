@@ -16,7 +16,9 @@ value in the left gutter.
 Below the charts are the settings cards, each collapsible and each
 remembering whether it was left open. The last of them is **Fault
 Handling**: who gets told when the fan stops, and the **Send test
-email** button. It is named for the situation rather than the
+email** button. Alerts from this card carry a fault code; the test
+message deliberately does not, which is the quickest way to tell the
+two apart in a mailbox. It is named for the situation rather than the
 transport, because what it configures is what happens when something
 goes wrong - email is only how it reaches you. Its settings live under
 the `email` key in `config.json`.

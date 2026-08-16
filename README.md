@@ -100,6 +100,12 @@ fault stops the fan and says so on the dashboard and in the activity
 log, and nowhere else. What sends, and what deliberately does not, is
 in `Docs/configuration.md`.
 
+Every alert carries a **fault code** - `FC-001` through `FC-006` for
+alarms, `FC-100` upwards for all-clears - in its subject, its body and
+the matching activity log line. The codes never change and are never
+reused, so `grep FC-003 events.json` finds an episode in an archive of
+any age.
+
 ## Documentation
 
 - [Docs/architecture.md](Docs/architecture.md) - design, and why the
@@ -305,6 +311,11 @@ against a live install.
 - `test_email.py` - the alert edges, the draw-fault cause text, and the
   authentication choice. `login()` is deliberately not used, because it
   falls back from CRAM-MD5 to PLAIN in the clear; a test asserts that
+- `test_fault_codes.py` - the codes themselves, and that each one
+  reaches the subject, the body and the activity log. Separate from
+  `test_email.py` because those tests pin WHEN a message sends and pass
+  regardless of what it says: every template was once rewritten with
+  the whole email suite green
 - `test_failures.py` - persistence errors and malformed request bodies
 - `test_history.py` - `/api/history` deltas, including the round trip
   that proves a client ends up holding exactly what the server holds
