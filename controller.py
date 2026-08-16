@@ -1724,11 +1724,11 @@ def _notify_stale(mins, already_on):
             _alert_body(
                 FC_SENSOR_COMMS, "Sensor Communications Fault",
                 time.time(),
-                "No valid reading for %d minutes, so automatic control "
+                "No valid reading for %s, so automatic control "
                 "is running blind.\n%s\nNormal control resumes on its "
                 "own once readings come back, and there will be an "
                 "all-clear when it does."
-                % (mins,
+                % (_plural(mins, "minute"),
                    "The fan was already running and will stay on."
                    if already_on else
                    "The fan has been switched on as a precaution and "
@@ -1791,7 +1791,16 @@ def _unsaved_edge():
                         [("Standing fault", standing.get("code")
                           or "unknown"),
                          ("Action taken", "Fault written to disk"),
-                         ("Manual action", "No"),
+                         # NOT "No". The persistence needs nothing from
+                         # anyone - that is what this message is about -
+                         # but the fault still stands and the fan is
+                         # still stopped, which the body says two lines
+                         # up. A reader skimming the fields would
+                         # otherwise conclude nothing was required of
+                         # them, and the How to clear line below
+                         # contradicts it outright.
+                         ("Manual action",
+                          "Yes - the fault still stands"),
                          ("How to clear", "Acknowledge in the dashboard"),
                          ("Controller mode", _mode_now())]))
         _unsaved_notified = False
@@ -2067,6 +2076,11 @@ def _alert_body(code, title, when, summary, fields, causes=None):
         for c in causes[1:]:
             out.append("%-19s%s" % ("", c))
     return "\n".join(out) + "\n"
+
+
+def _plural(n, word):
+    """"1 minute", not "1 minutes". Read by a person, not parsed."""
+    return "%d %s%s" % (n, word, "" if n == 1 else "s")
 
 
 def _without_code(msg):

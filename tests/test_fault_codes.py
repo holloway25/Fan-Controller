@@ -399,5 +399,48 @@ def test_stripping_the_code_leaves_the_message_intact():
     return "prefix stripped, older messages intact"
 
 
+def test_one_minute_is_not_one_minutes():
+    C = harness.load()
+    assert C._plural(1, "minute") == "1 minute"
+    assert C._plural(0, "minute") == "0 minutes"
+    assert C._plural(30, "minute") == "30 minutes"
+    return "singular and plural"
+
+
+def test_the_stale_alert_reads_as_english():
+    C = harness.load()
+    sent = E.wire(C)
+    C.CFG["control"].update(mode="auto", stale_minutes=1)
+    C._notify_stale(1, False)
+    _, body = sent[0]
+    assert "1 minute," in body, body
+    assert "1 minutes" not in body, body
+    return "no 1 minutes"
+
+
+def test_fc102_does_not_say_no_action_while_a_fault_stands():
+    """The persistence needs nothing. The standing fault does.
+
+    A field that is true about the event and misleading about the
+    situation is the same failure as FC-002 claiming a confirmed stop.
+    """
+    C = harness.load()
+    sent = E.wire(C)
+    E.raise_draw_fault(C, 8.2, lo=15.0, hi=22.0)
+    with C._state_lock:
+        C.STATE["fault_unsaved"] = True
+    C._unsaved_edge()
+    with C._state_lock:
+        C.STATE["fault_unsaved"] = False
+    C._unsaved_edge()
+    subject, body = sent[-1]
+    assert subject.startswith(C.FC_FAULT_PERSISTED), subject
+    line = [ln for ln in body.split("\n") if ln.startswith("Manual action")]
+    assert line, body
+    assert "Yes" in line[0], line[0]
+    assert "still stands" in line[0], line[0]
+    return "FC-102 agrees with its own body"
+
+
 if __name__ == "__main__":
     sys.exit(harness.run(dict(globals())))
