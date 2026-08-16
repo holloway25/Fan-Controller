@@ -1744,11 +1744,17 @@ def _notify_stale(mins, already_on):
 
 
 _unsaved_notified = False
-# Delivered, not merely attempted. The all-clear is gated on this for
-# the same reason FC-100 is: an all-clear for a warning nobody
-# received is worse than silence, because it implies a first
-# message that was never read.
-_unsaved_delivered = False
+# WHICH EPISODE was delivered, not merely that one was. None means no
+# FC-005 has been delivered for the fault currently standing.
+#
+# A bare boolean let a late callback from fault A authorise an FC-102
+# for fault B: A's send completes after A is acknowledged, the flag
+# stays true, B's send then FAILS, and B's falling edge reports "saved
+# after all" for a warning nobody received. Reported by review against
+# 3b30c6c, reproduced. The fault's "at" is the identity - it never
+# changes for the life of a fault, and _mark_fault_delivered already
+# uses it the same way.
+_unsaved_delivered = None
 
 
 def _unsaved_edge():
@@ -1778,7 +1784,8 @@ def _unsaved_edge():
         # acknowledged and the flag went with it. Only the first is an
         # all-clear for FC-005 - the second is FC-101's story, and
         # sending both would report one event twice.
-        if _unsaved_delivered and standing:
+        if (_unsaved_delivered is not None and standing
+                and standing.get("at") == _unsaved_delivered):
             _notify("%s Fan fault has been saved to disk"
                     % FC_FAULT_PERSISTED,
                     _alert_body(
@@ -1804,16 +1811,26 @@ def _unsaved_edge():
                          ("How to clear", "Acknowledge in the dashboard"),
                          ("Controller mode", _mode_now())]))
         _unsaved_notified = False
-        _unsaved_delivered = False
+        _unsaved_delivered = None
         return
     if _unsaved_notified:
         return
     _unsaved_notified = True
 
+    episode = standing.get("at")
+
     def _unsaved_sent(ok):
+        # Checked against the fault standing NOW, not the one captured
+        # when the send began. A callback that outlives its own episode
+        # must not vouch for the next one.
         global _unsaved_delivered
-        if ok:
-            _unsaved_delivered = True
+        if not ok:
+            return
+        with _state_lock:
+            cur = STATE["fault"]
+            live = bool(STATE["fault_unsaved"])
+        if live and cur and cur.get("at") == episode:
+            _unsaved_delivered = episode
     _notify("%s Fan fault could not be saved to disk" % FC_FAULT_UNSAVED,
             _alert_body(
                 FC_FAULT_UNSAVED, "Fault Not Persisted",
@@ -2300,22 +2317,28 @@ def _enforce_stop(plug, gen=None):
     the stale-reading failsafe or an external switch can turn the fan
     back on, and a stop command that failed must be retried rather than
     assumed. The fault records whether the plug actually confirmed it.
+
+    RETURNS TRUE ONLY IF THE FAN IS NOW OFF AND THE PLUG SAID SO. Every
+    other path returns False: no plug, a superseded generation, Force on
+    overriding, an acknowledgement landing first, or the command
+    failing. The alert wording depends on this, so "did not confirm" and
+    "did not try" both have to read as unconfirmed.
     """
     if plug is None:
-        return
+        return False
     with _act_lock:
         if _stale_client(gen):
             # Retried next cycle against the right plug. Stopping a
             # device that is not ours is worse than one more cycle of a
             # fan that is already faulted and already being watched.
-            return
+            return False
         if CFG["control"].get("mode") == "on":
             # Force on overrides a fault by design, and the mode can move
             # between _draw_check reading it and this point. Without the
             # re-check the stop could land just after _force_on switched
             # the fan on, flapping it off until the next draw cycle put
             # it back.
-            return
+            return False
         with _state_lock:
             if not STATE["fault"]:
                 # THE FAULT ITSELF is re-checked for the same reason as
@@ -2326,18 +2349,19 @@ def _enforce_stop(plug, gen=None):
                 # nothing left to explain why. _clear_fault takes
                 # _act_lock, so a clear cannot now complete between this
                 # check and the command below.
-                return
+                return False
         try:
             if plug.state() is not False:
                 plug.set(False)
         except PlugError:
-            return                  # unconfirmed: retried next cycle
+            return False            # unconfirmed: retried next cycle
         with _state_lock:
             STATE["fan"] = False
     # Outside _act_lock: the fault write takes its own lock, and a disk
     # write must not extend a hold a settings save may be waiting on.
     if _confirm_fault_stopped():
         _log("Draw fault - fan stop confirmed")
+    return True
 
 def _draw_check(plug, gen=None):
     """Fault the fan if it runs outside its expected draw for long enough.
@@ -2475,6 +2499,19 @@ def _draw_check(plug, gen=None):
             _mark_fault_delivered(raised_at)
 
     if prev is None:
+        # THE STOP RUNS FIRST so the message can say what actually
+        # happened. It used to be queued first and enforced after, so
+        # every alert asserted "Plug switched off" even when the relay
+        # then refused - reported by review against 3b30c6c, reproduced
+        # with the fan still on and stopped=false.
+        #
+        # WRAPPED, because the old order had one virtue worth keeping: a
+        # plug that explodes must not be able to suppress the alert. An
+        # unconfirmed stop is still a fault worth mailing about.
+        try:
+            confirmed = bool(_enforce_stop(plug, gen))
+        except Exception:           # pragma: no cover - belt and braces
+            confirmed = False
         code = f.get("code") or _draw_fault_code(w, lo, hi)
         titles = {FC_PLUG_COMMS: "Plug Communications Fault",
                   FC_UNDER_POWER: "Hard Fault - Under Power",
@@ -2503,8 +2540,14 @@ def _draw_check(plug, gen=None):
                             "Motor fault",
                             "Draw band still set for a previous fan"],
         }
-        _notify("%s Fan stopped - %s"
-                % (code, "plug not answering" if w is None
+        _notify("%s %s - %s"
+                % (code,
+                   # "Fan stopped" is a claim. Unconfirmed, the honest
+                   # subject is that the fault is latched: the fan is
+                   # blocked from automatic running either way, which is
+                   # the part that is certainly true.
+                   "Fan stopped" if confirmed else "Fan fault latched",
+                   "plug not answering" if w is None
                    else "under power %g W" % w if code == FC_UNDER_POWER
                    else "over power %g W" % w),
                 _alert_body(
@@ -2513,20 +2556,19 @@ def _draw_check(plug, gen=None):
                     [("Expected range", "%g - %g W" % (lo, hi)),
                      ("Actual reading",
                       "no reading" if w is None else "%g W" % w),
-                     # A stop cannot be reported as done when the plug
-                     # is not answering: the cause text says the fan may
-                     # well still be running, and the two must not
-                     # contradict each other in the same message.
+                     # From the RESULT, not from the code. A silent
+                     # plug usually means an unconfirmed stop, but not
+                     # always - it can answer a switch while its power
+                     # reading is stale - and a plug that reads fine can
+                     # still refuse the command.
                      ("Action taken",
-                      "Stop commanded, NOT confirmed - fault latched"
-                      if code == FC_PLUG_COMMS else
-                      "Plug switched off, fault latched"),
+                      "Plug switched off, fault latched" if confirmed else
+                      "Stop commanded, NOT confirmed - fault latched"),
                      ("Manual action", "Yes"),
                      ("How to clear", "Acknowledge in the dashboard"),
                      ("Controller mode", _mode_now())],
                     causes[code]),
                 on_complete=_fault_sent)
-    _enforce_stop(plug, gen)
 
 
 def _retry_fault_persist():

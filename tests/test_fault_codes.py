@@ -442,5 +442,148 @@ def test_fc102_does_not_say_no_action_while_a_fault_stands():
     return "FC-102 agrees with its own body"
 
 
+# --------------------------------------------- the message tells the truth
+# Both of these reproduce findings from an external review of 3b30c6c.
+
+class RefusingPlug(object):
+    """Reports the fan on, and will not switch it off."""
+
+    def state(self):
+        return True
+
+    def set(self, on):
+        raise Exception("plug refused")
+
+    def power_w(self):
+        return 8.2
+
+
+def _fault_with(C, plug, lo=15.0, hi=22.0, watts=8.2):
+    C.CFG["plug"].update(watts_enabled=True, watts_min=lo, watts_max=hi,
+                         watts_fault_seconds=0)
+    now = C.time.time()
+    with C._state_lock:
+        C.STATE.update(fan=True, watts=watts, watts_at=now,
+                       changed_at=now - 10000, fault=None)
+    C._draw_check(plug)
+    C._draw_check(plug)
+
+
+def test_an_unconfirmed_stop_is_not_reported_as_a_stop():
+    """The email used to be queued BEFORE the stop was attempted.
+
+    Every alert therefore claimed "Plug switched off" even when the
+    relay then refused, and the subject said the fan was stopped while
+    it was still running.
+    """
+    C = harness.load()
+    sent = E.wire(C)
+    C._enforce_stop = lambda plug, gen=None: False
+    _fault_with(C, RefusingPlug())
+    subject, body = sent[0]
+    assert "Fan stopped" not in subject, subject
+    assert "fault latched" in subject.lower(), subject
+    assert "NOT confirmed" in body, body
+    assert "Plug switched off" not in body, body
+    return "unconfirmed reads as unconfirmed"
+
+
+def test_a_confirmed_stop_still_says_so():
+    C = harness.load()
+    sent = E.wire(C)
+    class Obedient(object):
+        def state(self):
+            return True
+
+        def set(self, on):
+            return None
+
+        def power_w(self):
+            return 8.2
+
+    _fault_with(C, Obedient())
+    subject, body = sent[0]
+    assert "Fan stopped" in subject, subject
+    assert "Plug switched off, fault latched" in body, body
+    return "confirmed reads as confirmed"
+
+
+def test_a_plug_that_explodes_does_not_suppress_the_alert():
+    """The old order had one virtue: nothing between the fault and the
+    mail. Enforcing first must not let a broken plug buy silence."""
+    C = harness.load()
+    sent = E.wire(C)
+
+    def boom(plug, gen=None):
+        raise RuntimeError("plug layer exploded")
+
+    C._enforce_stop = boom
+    _fault_with(C, RefusingPlug())
+    assert len(sent) == 1, "the alert was suppressed: %r" % sent
+    assert "NOT confirmed" in sent[0][1], sent[0][1]
+    return "alert survives a broken plug"
+
+
+def test_a_late_callback_cannot_vouch_for_the_next_fault():
+    """One process-global flag let fault A authorise fault B's all-clear.
+
+    A's send completes after A is acknowledged; B's send then fails; B's
+    falling edge reported "saved after all" for a warning nobody had
+    received.
+    """
+    C = harness.load()
+    sent = E.wire(C)
+
+    # Episode A: raised, unsaved, and its FC-005 delivered.
+    E.raise_draw_fault(C, 8.2, lo=15.0, hi=22.0)
+    with C._state_lock:
+        C.STATE["fault_unsaved"] = True
+    C._unsaved_edge()
+    assert C._unsaved_delivered is not None, "A never recorded delivery"
+
+    # A is acknowledged and a NEW fault is raised.
+    with C.app.test_request_context():
+        C.api_fault_clear()
+    E.raise_draw_fault(C, 27.6, lo=15.0, hi=22.0)
+
+    # B goes unsaved, and its own send fails.
+    C._notify = lambda subject, body, on_complete=None: (
+        on_complete(False) if on_complete else None)
+    with C._state_lock:
+        C.STATE["fault_unsaved"] = True
+    C._unsaved_edge()
+
+    # B is written after all. Nobody was told about B.
+    sent[:] = []
+    C._notify = lambda subject, body, on_complete=None: (
+        sent.append((subject, body)),
+        on_complete(True) if on_complete else None)
+    with C._state_lock:
+        C.STATE["fault_unsaved"] = False
+    C._unsaved_edge()
+
+    subjects = [s for s, _ in sent]
+    assert not any(s.startswith(C.FC_FAULT_PERSISTED) for s in subjects), \
+        "A's delivery vouched for B: %r" % subjects
+    return "delivery is bound to the episode"
+
+
+def test_the_all_clear_still_sends_for_its_own_episode():
+    """The identity check must not silence the legitimate case."""
+    C = harness.load()
+    sent = E.wire(C)
+    E.raise_draw_fault(C, 8.2, lo=15.0, hi=22.0)
+    with C._state_lock:
+        C.STATE["fault_unsaved"] = True
+    C._unsaved_edge()
+    with C._state_lock:
+        C.STATE["fault_unsaved"] = False
+    C._unsaved_edge()
+    subjects = [s for s, _ in sent]
+    assert any(s.startswith(C.FC_FAULT_PERSISTED) for s in subjects), \
+        "the real all-clear went missing: %r" % subjects
+    return "same episode still stands down"
+
+
 if __name__ == "__main__":
     sys.exit(harness.run(dict(globals())))
