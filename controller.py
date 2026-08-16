@@ -1368,10 +1368,16 @@ def tick():
         _stale_delivered = False
         recovered = True
     if recovered:
-        _notify("Sensor readings have returned",
-                "Readings are arriving again and normal control has "
-                "resumed. No action needed - this is the all-clear for "
-                "the earlier alert.")
+        _notify("%s Sensor readings have returned" % FC_SENSOR_RETURNED,
+                _alert_body(
+                    FC_SENSOR_RETURNED, "Sensor Readings Restored",
+                    time.time(),
+                    "Readings are arriving again and normal control has "
+                    "resumed.\nThis is the all-clear for the earlier "
+                    "sensor alert.",
+                    [("Action taken", "Normal control resumed"),
+                     ("Manual action", "No"),
+                     ("Controller mode", _mode_now())]))
     maybe_save_hist(hsnap)
     if ext_msg:
         _log(ext_msg)
@@ -1713,16 +1719,27 @@ def _notify_stale(mins, already_on):
         if ok:
             _stale_delivered = True
         _stale_inflight = False
-    _notify("Sensor readings stopped - fan running as a precaution",
-            "No reading for %d minutes.\n\n%s\n\nThe air quality "
-            "sensor or the Protect console is the place to look. Normal "
-            "control resumes on its own once readings come back, and "
-            "there will be an all-clear when it does."
-            % (mins,
-               "The fan was already running and will stay on."
-               if already_on else
-               "The fan has been switched on as a precaution and will "
-               "stay on until readings return."),
+    _notify("%s Sensor readings stopped - fan on as a precaution"
+            % FC_SENSOR_COMMS,
+            _alert_body(
+                FC_SENSOR_COMMS, "Sensor Communications Fault",
+                time.time(),
+                "No valid reading for %d minutes, so automatic control "
+                "is running blind.\n%s\nNormal control resumes on its "
+                "own once readings come back, and there will be an "
+                "all-clear when it does."
+                % (mins,
+                   "The fan was already running and will stay on."
+                   if already_on else
+                   "The fan has been switched on as a precaution and "
+                   "will stay on until readings return."),
+                [("Action taken", "Fail-safe ventilation"),
+                 ("Manual action", "No"),
+                 ("Controller mode", _mode_now())],
+                ["Sensor offline or unpowered",
+                 "UniFi Protect unavailable",
+                 "Network connectivity",
+                 "API authentication failure or schema change"]),
             on_complete=completed)
 
 
@@ -1752,14 +1769,25 @@ def _unsaved_edge():
     if _unsaved_notified:
         return
     _unsaved_notified = True
-    _notify("Fan fault could not be saved to disk",
-            "A fault is active and the fan is stopped, but it could not "
-            "be written to fault.json.\n\nThe fan is protected NOW. The "
-            "risk is a restart: the fault would be forgotten and normal "
-            "control would resume as though nothing were wrong.\n\nThe "
-            "service retries the write on its own. If this does not "
-            "clear, the disk is the thing to look at - full, read-only, "
-            "or a permissions change on the install directory.")
+    _notify("%s Fan fault could not be saved to disk" % FC_FAULT_UNSAVED,
+            _alert_body(
+                FC_FAULT_UNSAVED, "Fault Not Persisted",
+                time.time(),
+                "A fault is active and the fan is stopped, but it could "
+                "not be written to fault.json.\nThe fan is protected "
+                "NOW. The risk is a restart: the fault would be "
+                "forgotten and normal control would resume as though "
+                "nothing were wrong.\nThe service retries the write on "
+                "its own.",
+                [("Action taken", "Fan stopped, fault held in memory "
+                                  "only"),
+                 ("Manual action", "Yes"),
+                 ("How to clear", "Fix the disk; the write retries "
+                                  "itself"),
+                 ("Controller mode", _mode_now())],
+                ["Disk full",
+                 "Filesystem mounted read-only",
+                 "Permissions changed on the install directory"]))
 
 
 def _mark_fault_attempted(expected_at):
@@ -1907,21 +1935,100 @@ def _notify_restart_fault():
         def completed(ok):
             if ok:
                 _mark_fault_delivered(expected_at)
-        _notify("Fan fault still standing after a restart",
-                "%s\n\nThe service has restarted and the fault is still "
-                "there.\n\nRESTARTING DOES NOT CLEAR A DRAW FAULT. It is "
-                "written to disk and reloaded on purpose, so the fan stays "
-                "stopped until the fault is acknowledged in the "
-                "dashboard.\n\nIf this arrives repeatedly the service is "
-                "restarting in a loop, which is a separate problem from "
-                "the fault itself."
-                % f.get("msg", "A fault is standing."),
+        _notify("%s Fan fault still standing after a restart"
+                % FC_RESTART_FAULT,
+                _alert_body(
+                    FC_RESTART_FAULT, "Fault Survived a Restart",
+                    time.time(),
+                    "%s\nThe service has restarted and the fault is "
+                    "still there.\nRESTARTING DOES NOT CLEAR A DRAW "
+                    "FAULT. It is written to disk and reloaded on "
+                    "purpose, so the fan stays stopped until the fault "
+                    "is acknowledged.\nIf this arrives repeatedly the "
+                    "service is restarting in a loop, which is a "
+                    "separate problem from the fault itself."
+                    % f.get("msg", "A fault is standing."),
+                    [("Standing fault", f.get("code") or "unknown"),
+                     ("Action taken", "Fan kept stopped"),
+                     ("Manual action", "Yes"),
+                     ("How to clear", "Acknowledge in the dashboard"),
+                     ("Controller mode", _mode_now())]),
                 on_complete=completed)
     except Exception as exc:        # pragma: no cover - must never escape
         try:
             _log("Restart fault notice failed: %s" % exc)
         except Exception:
             pass
+
+
+# Fault codes. STABLE IDENTIFIERS, and the point of them is that they
+# outlive wording: a subject line gets rewritten, FC-003 does not. They
+# appear in the subject, in the body, and in the activity log, so one
+# grep finds an episode across events.json and the mail archive.
+#
+# NEVER RENUMBER AND NEVER REUSE. A retired code stays retired; a
+# recycled number silently merges two different faults in anyone's
+# archive. 0xx are alarms, 1xx are all-clears, so a mail rule can split
+# them without parsing subjects.
+FC_SENSOR_COMMS = "FC-001"
+FC_PLUG_COMMS = "FC-002"
+FC_UNDER_POWER = "FC-003"
+FC_OVER_POWER = "FC-004"
+FC_FAULT_UNSAVED = "FC-005"
+FC_RESTART_FAULT = "FC-006"
+FC_SENSOR_RETURNED = "FC-100"
+
+
+def _mode_now():
+    """The mode as a person would say it. Never raises."""
+    try:
+        m = CFG["control"]["mode"]
+    except Exception:
+        return "unknown"
+    return {"auto": "Auto", "manual": "Manual", "on": "Force on"}.get(m, m)
+
+
+def _alert_body(code, title, when, summary, fields, causes=None):
+    """One plain-text shape for every alert.
+
+    Fields are a list of pairs rather than a dict so the order is the
+    author's, not the interpreter's. Plain text on purpose: greppable in
+    the archive and readable in any client, including the phone this
+    will actually be read on.
+
+    NO DASHBOARD URL. The site address is not repo content - the CI
+    privacy check exists for exactly this - so the body says where to go
+    without saying where that is.
+    """
+    out = ["%s  %s" % (code, title),
+           time.strftime("%Y-%m-%d %H:%M:%S %Z", time.localtime(when)),
+           "",
+           summary,
+           ""]
+    for k, v in fields:
+        out.append("%-19s%s" % (k + ":", v))
+    if causes:
+        out.append("")
+        out.append("%-19s%s" % ("Likely causes:", causes[0]))
+        for c in causes[1:]:
+            out.append("%-19s%s" % ("", c))
+    return "\n".join(out) + "\n"
+
+
+def _draw_fault_code(watts, lo, hi):
+    """Which code a draw fault carries.
+
+    Mirrors _draw_fault_cause and must keep mirroring it: no reading is
+    a plug problem, anything else is judged against the live band. Under
+    covers "nothing is drawing at all", because a fan that never started
+    and a fan running weakly are the same class of problem to whoever
+    has to go and look at it.
+    """
+    if watts is None:
+        return FC_PLUG_COMMS
+    if watts > hi:
+        return FC_OVER_POWER
+    return FC_UNDER_POWER
 
 
 def _draw_fault_cause(watts, lo, hi):
@@ -2241,9 +2348,14 @@ def _draw_check(plug, gen=None):
             if now - _oob_since < float(pg["watts_fault_seconds"]):
                 return
             reading = "no reading" if w is None else ("%g W" % w)
-            msg = ("Draw fault - %s outside %g-%g W for %ds"
-                   % (reading, lo, hi, int(now - _oob_since)))
-            f = {"at": now, "msg": msg, "stopped": False,
+            code = _draw_fault_code(w, lo, hi)
+            # The code leads the message, so the activity log, the
+            # dashboard and the email all carry the same token. It is
+            # stored on the fault too - a restart notice can then say
+            # WHICH fault survived, which it could not before.
+            msg = ("%s Draw fault - %s outside %g-%g W for %ds"
+                   % (code, reading, lo, hi, int(now - _oob_since)))
+            f = {"at": now, "msg": msg, "stopped": False, "code": code,
                  "attempted_at": now, "delivered_at": None}
             prev = _store_fault(f)
             _oob_since = None
@@ -2279,11 +2391,46 @@ def _draw_check(plug, gen=None):
             _mark_fault_delivered(raised_at)
 
     if prev is None:
-        _notify("Fan stopped - %s" % ("plug not answering" if w is None
-                                      else "not drawing correctly"),
-                "%s\n\n%s\n\nThe fan has been stopped and will stay "
-                "stopped until this is acknowledged in the dashboard."
-                % (msg, _draw_fault_cause(w, lo, hi)),
+        code = f.get("code") or _draw_fault_code(w, lo, hi)
+        titles = {FC_PLUG_COMMS: "Plug Communications Fault",
+                  FC_UNDER_POWER: "Hard Fault - Under Power",
+                  FC_OVER_POWER: "Hard Fault - Over Power"}
+        causes = {
+            FC_PLUG_COMMS: ["Plug offline or rebooting",
+                            "Wi-Fi or network connectivity",
+                            "Plug power lost"],
+            FC_UNDER_POWER: ["Fan failed to start",
+                             "Fan unplugged or disconnected",
+                             "Seized motor or obstruction",
+                             "Failed capacitor",
+                             "Wiring fault"],
+            FC_OVER_POWER: ["Mechanical obstruction",
+                            "Bearing failure or excessive load",
+                            "Motor fault",
+                            "Draw band still set for a previous fan"],
+        }
+        _notify("%s Fan stopped - %s"
+                % (code, "plug not answering" if w is None
+                   else "under power %g W" % w if code == FC_UNDER_POWER
+                   else "over power %g W" % w),
+                _alert_body(
+                    code, titles[code], raised_at,
+                    _draw_fault_cause(w, lo, hi),
+                    [("Expected range", "%g - %g W" % (lo, hi)),
+                     ("Actual reading",
+                      "no reading" if w is None else "%g W" % w),
+                     # A stop cannot be reported as done when the plug
+                     # is not answering: the cause text says the fan may
+                     # well still be running, and the two must not
+                     # contradict each other in the same message.
+                     ("Action taken",
+                      "Stop commanded, NOT confirmed - fault latched"
+                      if code == FC_PLUG_COMMS else
+                      "Plug switched off, fault latched"),
+                     ("Manual action", "Yes"),
+                     ("How to clear", "Acknowledge in the dashboard"),
+                     ("Controller mode", _mode_now())],
+                    causes[code]),
                 on_complete=_fault_sent)
     _enforce_stop(plug, gen)
 
