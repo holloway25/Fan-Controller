@@ -23,7 +23,11 @@ jobs:
         # back to 3.9, which is not the same thing - which is why this
         # matrix is built from the dependencies rather than the syntax.
         #
-        # 3.11 is Debian Bookworm, which is what a Raspberry Pi 3B+ runs.
+        # 3.11 covers Debian Bookworm, which an older Pi image ships.
+        # The MEASURED Pi runs Trixie with 3.13 - see Docs/arm.md - so
+        # this row is compatibility cover, not a description of the
+        # deployed board. Corrected 2026-08-16; it used to claim
+        # Bookworm was what the 3B+ runs.
         # 3.14 is what production runs today.
         python: ["3.10", "3.11", "3.14"]
     steps:

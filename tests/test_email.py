@@ -313,7 +313,8 @@ def test_ready_needs_every_essential_field():
 def test_password_is_redacted_and_cleared_with_the_host():
     """The SMTP password is the third secret and follows the same rules."""
     C = harness.load()
-    C.CFG["email"].update(host="relay.one", password="hunter2")
+    C.CFG["email"].update(host="relay.one",
+                         password="placeholder-not-a-real-password")
     app = C.app.test_client()
     body = app.get("/api/state").get_json()
     assert body["config"]["email"]["password"] == "SET", "password echoed"

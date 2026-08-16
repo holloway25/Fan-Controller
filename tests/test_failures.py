@@ -77,7 +77,7 @@ def test_failed_password_write_changes_nothing():
     C.CFG["ui"]["password_hash"] = ""
     C.save_cfg = boom
 
-    r = client.post("/api/ui/password", json={"password": "hunter2!x"})
+    r = client.post("/api/ui/password", json={"password": "placeholder-not-a-real-password"})
 
     assert r.status_code == 500, r.status_code
     assert C.CFG["ui"]["password_hash"] == "", \

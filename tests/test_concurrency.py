@@ -260,7 +260,7 @@ def test_password_change_survives_a_concurrent_save():
         result["status"] = r.status_code
 
     def set_password():
-        r = client.post("/api/ui/password", json={"password": "hunter2!x"})
+        r = client.post("/api/ui/password", json={"password": "placeholder-not-a-real-password"})
         result["pw_status"] = r.status_code
 
     saver = threading.Thread(target=save)

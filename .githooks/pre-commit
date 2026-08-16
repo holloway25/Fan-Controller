@@ -24,12 +24,18 @@ staged=$(git diff --cached --name-only --diff-filter=ACM)
 [ -z "$staged" ] && exit 0
 
 # 1. The secrets file itself, however it was added - git add -f included.
-for f in $staged; do
-  case "$f" in
+#
+#    MATCHED ON THE BASENAME. This tested the whole path, so config.json
+#    was caught at the root and backup/config.json sailed past - found
+#    by review 2026-08-16. NUL-delimited because a path may contain a
+#    space, which the old word-split loop would have torn in half.
+while IFS= read -r -d "" f; do
+  name=${f##*/}
+  case "$name" in
     config.example.json) : ;;
     config*.json*) say "$f is a config file and must never be committed" ;;
   esac
-done
+done < <(git diff --cached --name-only -z --diff-filter=ACM)
 
 # 2. Private addressing in staged CONTENT.
 #    RFC1918 in full: 10/8, 172.16-31/12, 192.168/16. No allowlist and no
@@ -48,11 +54,22 @@ fi
 #    value. Empty strings and obvious placeholders pass.
 cred='(password|passwd|api[_-]?key|token|secret)[[:space:]]*[:=][[:space:]]*["'"'"']?[^"'"'"'[:space:],}]{6,}'
 placeholder='(\{\{|<|\$\{|xxx|XXX|placeholder|PLACEHOLDER|example|EXAMPLE|changeme|CHANGEME|your[_-]|redacted|REDACTED|\.\.\.|SET)'
-if git diff --cached -U0 | grep -E '^\+' | grep -vE '^\+\+\+' \
-     | grep -EI "$cred" | grep -vE "$placeholder" | grep -q .; then
+#    THE PLACEHOLDER TEST APPLIES TO THE MATCHED VALUE, not to the
+#    whole line. Testing the whole line meant an excusing word ANYWHERE
+#    on it vouched for the credential - a real secret assignment
+#    followed by a comment mentioning "example" passed cleanly. Found by
+#    review 2026-08-16. grep -o cuts the match out first, and the value
+#    pattern stops at whitespace, so a trailing comment can no longer
+#    speak for what precedes it.
+#
+#    The offending line is described rather than quoted here on purpose:
+#    written out, this comment trips its own rule, and a hook that needs
+#    --no-verify to commit is a hook that teaches people to use it.
+credhits=$(git diff --cached -U0 | grep -E '^\+' | grep -vE '^\+\+\+' \
+             | grep -EIo "$cred" | grep -vE "$placeholder")
+if [ -n "$credhits" ]; then
   say "staged content looks like a credential with a real value"
-  git diff --cached -U0 | grep -E '^\+' | grep -vE '^\+\+\+' \
-    | grep -EI "$cred" | grep -vE "$placeholder" | head -5 >&2
+  printf '%s\n' "$credhits" | head -5 >&2
 fi
 
 # 4. Local patterns - site-specific strings, NOT version controlled.

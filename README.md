@@ -127,8 +127,8 @@ any age.
 
 Two targets, both first class:
 
-- **x86-64 Debian or Ubuntu.** What it is developed and run on. The
-  current host is an Ubuntu 26.04 VM with two cores and 1024MB.
+- **x86-64 Debian or Ubuntu.** What it is developed and run on. Two
+  cores and 1GB is comfortable; it has not been tried below that.
 - **A Raspberry Pi 3B+ on the 64-bit image.** 1.4GHz quad-core
   Cortex-A53, 1GB. This is the board the ARM measurements were taken on
   - see `Docs/arm.md`. A plain 3B is the same design a little slower and
@@ -141,9 +141,9 @@ Two targets, both first class:
   needs a compiler.
 
 Neither covers the other, and they are tight on different axes. Memory
-is close: a 1024MB VM against 905MB usable on a 3B+, so the Pi is the
-slightly smaller box. The Pi is slower at everything - one i5-12500T core
-against a 1.4GHz Cortex-A53 is not a close comparison, and the VM also
+is close: 1GB against 905MB usable on a 3B+, so the Pi is the slightly
+smaller box. The Pi is slower at everything - a modern x86-64 core
+against a 1.4GHz Cortex-A53 is not a close comparison, and a VM also
 has much faster memory and much faster storage than an SD card. The Pi's
 four cores do not close that gap, because this is one process whose
 threads are mostly idle or blocked on I/O, not parallel work.
