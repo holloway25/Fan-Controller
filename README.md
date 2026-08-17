@@ -15,14 +15,35 @@ confirms the fan is actually drawing current. Flask listens on
 
     git clone https://github.com/holloway25/Fan-Controller.git
     cd Fan-Controller
+    ./install.sh
+
+That creates the venv, installs the pinned dependencies, copies
+`config.example.json` to `config.json` at mode 0600, and generates a
+systemd unit naming **this** user and **this** directory. It prints the
+three privileged commands rather than running them; `./install.sh
+--unit` runs them for you.
+
+**Run it as the user the service will run as, not as root.** It refuses
+if you do, because everything it creates would be root-owned - the venv,
+the config, the state files - and the service runs as an ordinary user.
+That is the most likely way to produce an install that looks fine and
+cannot start.
+
+It is safe to re-run on an existing install: it never overwrites
+`config.json`, reuses a venv it finds, and re-applies 0600 to the config
+every time, since a file restored from a backup arrives with whatever
+mode it had.
+
+It does **not** restart a running controller. Choosing when the fan
+service restarts belongs to a person.
+
+Doing it by hand instead, if you prefer:
+
     python3 -m venv venv
     ./venv/bin/pip install -r requirements.txt
-    cp config.example.json config.json
-
-Run it under systemd. Copy the example unit and edit the user and paths
-in it, the same way you did with the config:
-
+    cp config.example.json config.json && chmod 600 config.json
     cp office-fan-controller.service.example office-fan-controller.service
+    # edit User, Group, WorkingDirectory and ExecStart in that copy
     sudo cp office-fan-controller.service /etc/systemd/system/
     sudo systemctl enable --now office-fan-controller
 
@@ -358,6 +379,9 @@ against a live install.
   that proves a client ends up holding exactly what the server holds
 - `test_restart.py` - the restart trigger, the handover, and the
   last-chance fault write on a signalled stop
+- `test_install_sh.py` - runs `install.sh` for real in a throwaway
+  tree, creating an actual venv: the mode on `config.json`, the unit
+  naming this user and directory, and that a second run changes nothing
 - `test_restart_sh.py` - the exit codes `restart.sh` reports, driven
   against a stub controller: a proved restart, a failed exec, a refusal,
   an ignored trigger and an unreachable service
