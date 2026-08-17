@@ -82,6 +82,14 @@ CAUGHT = [
     # JWT and anything with a bracket both went through.
     _f("{a}: eyJhbGci.eyJzdWI.signature123"),
     _f("{k}: CorrectHorse(Battery"),
+    # THE PLACEHOLDER LIST MUST STAY ANCHORED. Unanchored, a real value
+    # that merely CONTAINS an excusing word is waved through - which is
+    # the same defect the list had when it contained "password", in a
+    # different disguise. Found by tools/mutate.py: removing the "^"
+    # survived every test until these were added.
+    _f('{k} = "example9x7QzR"'),
+    _f('{k} = "s3cretexampleAB"'),
+    _f('{k} = "prefixCHANGEMEsuffix9"'),
 ]
 
 NOT_CAUGHT = [
@@ -255,6 +263,31 @@ def test_nothing_is_exempt_from_the_scan():
     assert C.SKIP_PATHS == (), "something is exempt again: %r" % (
         C.SKIP_PATHS,)
     return "no exemptions"
+
+
+def test_the_placeholder_list_is_anchored():
+    """A placeholder is a value that IS a marker, not one that contains
+    one.
+
+    Found by tools/mutate.py: removing the "^" from PLACEHOLDER
+    survived the whole suite. The mutation only looked caught before
+    because the copied tree had no git and the clean-tree test was
+    failing for an unrelated reason - which is why that harness now
+    does a control run first.
+    """
+    C = _scanner()
+    for real in ('{k} = "example9x7QzR"',
+                 '{k} = "s3cretexampleAB"',
+                 '{k} = "prefixCHANGEMEsuffix9"',
+                 '{k} = "notplaceholderatall7"'):
+        assert C.suspicious(_f(real)), "excused a real value: %s" % _f(real)
+    # And the genuine markers still pass.
+    for marker in ('{k} = "CHANGEME"',
+                   '{k} = "example-value-here"',
+                   '{k} = "placeholder-not-a-real-password"',
+                   '{k} = "your-password-here"'):
+        assert not C.suspicious(_f(marker)), "flagged a marker: %s" % _f(marker)
+    return "a marker, not a word that contains one"
 
 
 if __name__ == "__main__":

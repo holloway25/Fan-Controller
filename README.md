@@ -361,19 +361,60 @@ against a live install.
 - `test_restart_sh.py` - the exit codes `restart.sh` reports, driven
   against a stub controller: a proved restart, a failed exec, a refusal,
   an ignored trigger and an unreachable service
-- `test_dashboard.py` - source assertions on `templates/index.html`, for
-  the client-side wiring the server's behaviour depends on
+- `test_dashboard_source.py` - SOURCE assertions on
+  `templates/index.html`. Named for what it does, because
+  "test_dashboard passed" was read as "the dashboard works" and it does
+  not mean that
+- `test_log_classes.py` - what each activity line MEANS: alarm,
+  all-clear, mode change, observation. Decided in `event_class` rather
+  than in the page, so breaking a rule breaks a test
 - `test_durability.py` - the durable writes and the Manual stop promise:
   a failed directory sync reported rather than hidden, a stop that
   survives a crash, and the routes that must not claim nothing changed
   when the file on disk already did
 
-`test_dashboard.py` needs saying out loud: there is no JavaScript engine
-on the deployment host, so it reads the template rather than running it.
-It catches a line being **deleted**, not a line being **wrong**. It
-exists because the alternative for one defect was a test named after the
-dashboard that never opened the file, which is worse than no test at
-all.
+`test_dashboard_source.py` needs saying out loud: there is no
+JavaScript engine on the deployment host, so it reads the template
+rather than running it. It catches a line being **deleted**, not a line
+being **wrong**. The file is named for that limit - `test_dashboard`
+was being read as "the dashboard works", and it has never meant that.
+
+The right answer to the limit is to have less to test there. Decisions
+the page used to make - what an activity line means, which colour it
+takes - moved into `event_class`, where a mutation breaks a test. What
+is left in the page is assignment from fields, and the source
+assertions guard the contract rather than the logic.
+
+### Proving the tests can fail
+
+    ./venv/bin/python tools/mutate.py
+
+Fifteen deliberate breakages - stop stripping the fault-code prefix,
+serve the log without its class, make a snapshot shallow again, let the
+secret scanner print what it caught - each paired with the test module
+that must fail. Run in a copy of the tree; the real one is never
+touched.
+
+It exists because six external reviews found the same defect over and
+over: **tests that assert the shape of the source rather than the
+behaviour of the system**, all of them green. Two were written the same
+day they were caught - a deep-copy test that did its own deepcopy, and
+a test that searched `controller.py` for the word `try`. Neither could
+fail. The suite going green had stopped being evidence.
+
+Each entry is a claim: break this, and that test notices. A mutation
+that SURVIVES means the test beside it is decoration - fix the test,
+not the mutation. A mutation reported STALE means the code moved and
+nobody re-checked the claim.
+
+The harness runs each module unmutated FIRST. Without that a broken
+harness looks like fifteen catches: the first version excluded
+`*.json` from its copies, `config.example.json` went with it, and
+every mutation was "caught" by a `FileNotFoundError`.
+
+It runs in CI on one interpreter, not in `run_all.py`. The suite runs
+on the Pi; this does far more work than that board should do on every
+change.
 
 The concurrency tests gate the interleaving with events rather than
 sleeping. Timing alone does not reproduce these races, and a test that

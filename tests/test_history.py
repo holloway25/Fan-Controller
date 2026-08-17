@@ -271,7 +271,7 @@ def test_a_matching_revision_from_another_process_still_gets_a_full_copy():
     test_the_dashboard_asks_..., which was wrong twice over: it never
     opened index.html, and the thing it did check was the server
     refusing the request rather than the client making it. The client
-    half is in tests/test_dashboard.py.
+    half is in tests/test_dashboard_source.py.
     """
     C = harness.load()
     seed(C, 5)

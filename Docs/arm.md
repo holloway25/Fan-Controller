@@ -173,7 +173,7 @@ soft limit never engaged and nothing here is thermally capped.
 | module | tests | time |
 |---|---|---|
 | `test_data` | 14 | 2.0s |
-| `test_dashboard` | 6 | 0.2s |
+| `test_dashboard_source` | 6 | 0.2s |
 | `test_control` | 20 | 1.6s |
 | `test_structure` | 4 | 1.0s |
 | `test_plug_parse` | 22 | 1.7s |
