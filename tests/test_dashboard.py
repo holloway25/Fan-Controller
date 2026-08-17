@@ -186,7 +186,10 @@ def test_the_timestamp_is_short_but_the_full_one_is_reachable():
     """The column never wraps, so every character it spends is taken
     from the message. The precision lives in events.json."""
     html = squashed()
-    assert "getFullYear()%100" in html, "the year is not shortened"
+    # The year left the column entirely: today shows a time only, older
+    # entries a day and month. The full value is one tap away.
+    assert "sameDay=d.toDateString()" in html, (
+        "the column still spends width on today's date")
     # The VISIBLE assignment only. Seconds belong in the datetime
     # attribute - a blanket "no getSeconds anywhere" assertion failed
     # the moment the machine-readable value was added, which is the
@@ -373,6 +376,32 @@ def test_the_range_is_the_observed_values_not_the_padded_scale():
     assert html.count("constdlo=Math.min(...vs),dhi=Math.max(...vs)") == 2, (
         "the range is not derived separately from the padded scale")
     return "observed, not padded"
+
+
+def test_the_chart_labels_scale_up_on_a_narrow_screen():
+    """The SVG scales to its card, so 12-unit text landed near 5px on a
+    390px screen. Raising the font sizes would collide the labels at
+    desktop width; shrinking the coordinate space does not, because
+    every distance in the chart is derived from W and H."""
+    html = squashed()
+    assert "functionfitViewBox" in html, "no responsive viewBox"
+    assert 'matchMedia("(max-width:640px)")' in html, (
+        "the narrow box is not tied to the phone breakpoint")
+    assert "fitViewBox(svg,700,216,400,250)" in html, (
+        "the CO2 chart does not narrow")
+    assert "fitViewBox(svg,700,159,400,215)" in html, (
+        "the mini charts do not narrow")
+    return "narrower box, larger labels"
+
+
+def test_the_narrow_box_is_taller_not_just_thinner():
+    """Once the labels take a larger share of the width, the plot needs
+    vertical room - and a phone has height to spare where it has none
+    to spare sideways."""
+    html = squashed()
+    assert "400,250)" in html and "400,215)" in html, (
+        "the narrow viewBox is not taller than the wide one")
+    return "taller on a phone"
 
 
 if __name__ == "__main__":

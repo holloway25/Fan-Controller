@@ -406,6 +406,30 @@ function paintSub(){
 }
 setInterval(paintSub,1000);
 
+// A NARROWER COORDINATE SPACE, NOT A BIGGER FONT.
+//
+// The SVG scales to the width of its card, so every label scales with
+// it: on a 390px screen the 11 and 12 unit text landed around 5px and
+// could not be read. Raising the font sizes would have fixed the size
+// and broken the layout, because the labels would then collide with
+// each other and with the traces at desktop width.
+//
+// Shrinking the viewBox instead leaves the ratios alone. Text that is
+// 12 units tall in a 400-unit-wide box is three times the share of the
+// width it was in a 700-unit one, and everything - gutter, ticks,
+// threshold lines - keeps its proportions because all of it is derived
+// from W and H rather than hardcoded.
+//
+// The box also gets TALLER in units on a phone. Same reason: the plot
+// needs vertical room once the labels take a larger share, and a
+// narrow screen has height to spare where it has no width.
+function fitViewBox(svg,wideW,wideH,narrowW,narrowH){
+  const narrow=window.matchMedia("(max-width:640px)").matches;
+  const w=narrow?narrowW:wideW,h=narrow?narrowH:wideH;
+  const vb=svg.viewBox.baseVal;
+  if(vb.width!==w||vb.height!==h)svg.setAttribute("viewBox","0 0 "+w+" "+h);
+}
+
 function drawTrace(hist,c){
   const svg=$("trace");
   while(svg.firstChild)svg.removeChild(svg.firstChild);
@@ -419,6 +443,7 @@ function drawTrace(hist,c){
   const pts=all.filter(p=>Number.isFinite(p.v));
   if(pts.length<2||all.length<2)return;
   const NS="http://www.w3.org/2000/svg";
+  fitViewBox(svg,700,216,400,250);
   // Derive geometry from the viewBox so the card can be resized.
   const vb=svg.viewBox.baseVal,W=vb.width||700,H=vb.height||140;
   // Time axis lives under the mini charts now, so only a small bottom
@@ -490,6 +515,7 @@ function drawMini(hist,c){
   while(svg.firstChild)svg.removeChild(svg.firstChild);
   if(!hist||hist.length<2)return;
   const NS="http://www.w3.org/2000/svg";
+  fitViewBox(svg,700,159,400,215);
   const vb=svg.viewBox.baseVal,W=vb.width||700,H=vb.height||140;
   const L=46;
   const mk=(n,a)=>{const e=document.createElementNS(NS,n);
@@ -742,8 +768,14 @@ function render(s){
       // spends is taken from the message beside it. events.json keeps
       // the full epoch, so nothing is actually lost - the precision is
       // in the file for anyone who needs it.
-      when.textContent=p(d.getDate())+"/"+p(d.getMonth()+1)+"/"+
-        p(d.getFullYear()%100)+" "+p(d.getHours())+":"+p(d.getMinutes());
+      // TODAY NEEDS NO DATE. The column is fixed width and never wraps,
+      // so on a phone the date took roughly 40% of the row and pushed
+      // every message onto two or three lines - for entries that are
+      // almost always from the last few hours. Anything older keeps a
+      // day and month; the year is in the expansion, a tap away.
+      const sameDay=d.toDateString()===new Date().toDateString();
+      when.textContent=(sameDay?"":p(d.getDate())+"/"+p(d.getMonth()+1)+" ")+
+        p(d.getHours())+":"+p(d.getMinutes());
       // Local time with the offset, not toISOString: the log is read in
       // the room the fan is in, and UTC would need translating by the
       // person least able to do it - someone reading a screen reader.
