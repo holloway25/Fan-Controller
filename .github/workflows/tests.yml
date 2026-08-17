@@ -81,6 +81,20 @@ jobs:
       - name: shellcheck
         run: sudo apt-get install -y --no-install-recommends shellcheck
 
+      # NODE IS A TEST DEPENDENCY, NEVER A RUNTIME ONE. The
+      # controller needs Python and nothing else, and the Pi has
+      # no Node at all - tests/test_js.py skips there. Installed
+      # on every row here because each job fails on a SKIP, so
+      # the skip cannot quietly become the normal case.
+      #
+      # jsdom runs the dashboard's own JavaScript against a
+      # stubbed server. Everything else about the page is
+      # asserted from its source, which catches a deletion and
+      # not a mistake - and three regressions got past exactly
+      # that.
+      - name: node and jsdom
+        run: npm ci
+
       # The reason to run this on Linux at all: every test in
       # test_durability.py needs O_DIRECTORY and every test in
       # test_restart_sh.py needs bash, so both skip wholesale on a
@@ -181,6 +195,11 @@ jobs:
       # test_shellcheck.py skips when the binary is absent.
       - name: shellcheck
         run: sudo apt-get install -y --no-install-recommends shellcheck
+
+      # Same reason. The runners ship Node, so this only fetches
+      # the pinned jsdom.
+      - name: jsdom
+        run: npm ci
 
       - name: run the suite
         run: |
