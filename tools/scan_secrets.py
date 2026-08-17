@@ -1,0 +1,197 @@
+#!/usr/bin/env python3
+"""Find credential assignments with real-looking values.
+
+ONE IMPLEMENTATION, TWO CALLERS. The pre-commit hook and the privacy
+workflow both run this. Before it existed the hook was the only
+credential check anywhere, so `git commit --no-verify` walked a secret
+straight past a green CI - reported by review against 40f2d3f.
+
+WHY NOT A SHELL REGEX. The hook's grep treated a value as everything up
+to the first space, so a password assigned a QUOTED VALUE CONTAINING
+SPACES passed cleanly - the check saw the first word and stopped.
+
+Quoting is the whole problem, and matching balanced quotes with spaces
+inside them is where shell one-liners stop being readable. This reads
+the quote properly.
+
+The offending line is described rather than written out. Spelled out,
+this docstring trips the very rule it explains and the file cannot be
+committed without --no-verify - which is how a check teaches people to
+skip it. tests/test_secret_scanner.py has the real strings, assembled
+at runtime for the same reason.
+
+NOTHING SITE-SPECIFIC LIVES HERE. This file is public. It knows what a
+credential ASSIGNMENT looks like, never what any actual secret is. For
+site strings see the local-patterns file described in the hook.
+
+Usage:
+    scan_secrets.py --staged           added lines in the index
+    scan_secrets.py --tree             every tracked file at HEAD
+    scan_secrets.py --commit SHA       every file as of one commit
+
+Exit 0 clean, 1 on a finding, 2 on a usage error.
+"""
+import argparse
+import re
+import subprocess
+import sys
+
+# "auth" and "credential" were in here and produced nothing but noise -
+# auth="CRAM-MD5 PLAIN LOGIN" is a capability list, not a secret. A
+# scanner people learn to ignore protects nothing.
+KEY = r"(?:password|passwd|pwd|api[_-]?key|apikey|token|secret)"
+
+# The operator must be a real assignment. Without the lookarounds, ===
+# in JavaScript matched and every comparison against "SET" in the
+# dashboard was reported.
+ASSIGN = re.compile(
+    r"%s\s*(?<![=!<>])[:=](?![=])\s*"
+    r"(?:\"([^\"]*)\"|'([^']*)'|([^\s,;}\)]+))" % KEY,
+    re.IGNORECASE)
+
+# Interpolation or templating INSIDE a quoted value: "${VAULT_PW}" is a
+# reference, not a secret. Applied to quoted and unquoted alike.
+INTERP = re.compile(r"\$\{|\$\(|%\(|%[sd]|\{\{|\{\}|<[A-Za-z_]")
+
+# An UNQUOTED value that is code rather than a literal: a call, an
+# attribute, a subscript. These are references TO a secret, which is
+# what correct code looks like.
+#
+# NOT APPLIED TO QUOTED VALUES. It used to be, and the bare-identifier
+# arm then dismissed every quoted literal that happened to look like a
+# word - "s3cr3tvalue" was read as a variable name and waved through.
+# Anything inside quotes is a literal by definition.
+CODE = re.compile(r"[(\)\[\]$]|\.\w|^\$")
+
+# A bare identifier with no digits, unquoted: password = stored_secret.
+# Real unquoted secrets - the YAML case, a key followed by a colon and a
+# long alphanumeric run - almost always carry digits, so that is the
+# line drawn. A heuristic, and the quoted path above is the one that
+# matters. Written out rather than exemplified, for the reason in the
+# docstring.
+IDENT = re.compile(r"^[A-Za-z_]\w*$")
+
+# Checked against the VALUE ONLY, never the surrounding line: a comment
+# saying "example" must not vouch for the secret in front of it.
+PLACEHOLDER = re.compile(
+    r"(\{\{|\}\}|\$\{|xxx+|placeholder|example|changeme|change[_-]me|"
+    r"your[_-]|redacted|\.\.\.|dummy|sample|not[_-]a[_-]real|fake|"
+    r"todo|tbd|password|secret)",
+    re.IGNORECASE)
+
+# Below this, a value is too short to be a credential worth protecting.
+MIN_LEN = 6
+
+SKIP_PATHS = (
+    "tools/scan_secrets.py",
+    ".githooks/pre-commit",
+    ".github/workflows/privacy.yml",
+    "tests/test_secret_scanner.py",
+)
+
+
+def _value(m):
+    for g in m.groups():
+        if g is not None:
+            return g
+    return ""
+
+
+def suspicious(line):
+    """The offending value, or None. Public so the tests can call it."""
+    for m in ASSIGN.finditer(line):
+        quoted = m.group(1) is not None or m.group(2) is not None
+        v = _value(m).strip()
+        if len(v) < MIN_LEN:
+            continue
+        if v in ("SET", "set"):
+            continue
+        if INTERP.search(v):
+            continue
+        if not quoted:
+            if CODE.search(v):
+                continue
+            if IDENT.match(v) and not any(c.isdigit() for c in v):
+                continue
+        if PLACEHOLDER.search(v):
+            continue
+        return v
+    return None
+
+
+def _report(where, lineno, line):
+    print("%s:%s: credential-looking assignment: %s"
+          % (where, lineno, line.strip()[:120]))
+
+
+def _git(*args):
+    return subprocess.run(["git"] + list(args), capture_output=True,
+                          text=True, errors="replace").stdout
+
+
+def scan_staged():
+    hits = 0
+    path = "(staged)"
+    for line in _git("diff", "--cached", "-U0").splitlines():
+        if line.startswith("+++"):
+            path = line[6:] or path
+            continue
+        if not line.startswith("+"):
+            continue
+        if suspicious(line[1:]):
+            _report(path, "+", line[1:])
+            hits += 1
+    return hits
+
+
+def _paths(listing):
+    for path in listing.splitlines():
+        if path and path not in SKIP_PATHS:
+            yield path
+
+
+def scan_tree(commit=None):
+    hits = 0
+    ref = commit or "HEAD"
+    if commit:
+        listing = _git("ls-tree", "-r", "--name-only", commit)
+    else:
+        listing = _git("ls-files")
+    for path in _paths(listing):
+        blob = _git("show", "%s:%s" % (ref, path))
+        if "\0" in blob[:4096]:
+            continue                    # binary
+        for i, line in enumerate(blob.splitlines(), 1):
+            if suspicious(line):
+                _report("%s %s" % (ref, path), i, line)
+                hits += 1
+    return hits
+
+
+def main():
+    p = argparse.ArgumentParser()
+    g = p.add_mutually_exclusive_group(required=True)
+    g.add_argument("--staged", action="store_true")
+    g.add_argument("--tree", action="store_true")
+    g.add_argument("--commit")
+    a = p.parse_args()
+
+    if a.staged:
+        hits = scan_staged()
+    elif a.tree:
+        hits = scan_tree()
+    else:
+        hits = scan_tree(a.commit)
+
+    if hits:
+        print("")
+        print("%d credential-looking assignment(s) found." % hits)
+        print("If it is genuinely not a secret, make that obvious in the")
+        print("VALUE itself - CHANGEME, placeholder, example - rather than")
+        print("in a comment beside it.")
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

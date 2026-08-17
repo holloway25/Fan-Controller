@@ -51,8 +51,12 @@ jobs:
             *) git cat-file -e "$base^{commit}" 2>/dev/null \
                  && range="$base..$GITHUB_SHA" || range="$GITHUB_SHA" ;;
           esac
+          # NOT --no-merges. A merge commit can introduce content of
+          # its own through conflict resolution, and a review
+          # reproduced exactly that: an address present only in a
+          # merge, cleaned up afterwards, passed. Found 2026-08-16.
           bad=0
-          for c in $(git rev-list --no-merges "$range"); do
+          for c in $(git rev-list "$range"); do
             if git grep -nE "$pat" "$c" -- . ':!.github/workflows/privacy.yml' ':!.githooks/pre-commit'; then
               echo "::error::Private address introduced in $c - it stays in history even if a later commit removes it."
               bad=1
@@ -81,8 +85,39 @@ jobs:
           fi
           echo "no config file tracked"
 
+      - name: No credential-looking values in the tree
+        run: |
+          # THE HOOK IS NOT A BACKSTOP. It is per-clone, absent in a
+          # fresh clone until install.sh is run, and skippable with
+          # --no-verify - so before this step a secret could be pushed
+          # past a green CI. Found by review 2026-08-16.
+          python3 tools/scan_secrets.py --tree
+
+      - name: No credential-looking values in ANY pushed commit
+        env:
+          BEFORE: ${{ github.event.before }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          base="$BASE"
+          if [ -z "$base" ]; then base="$BEFORE"; fi
+          case "$base" in
+            ""|0000000000000000000000000000000000000000) range="$GITHUB_SHA" ;;
+            *) git cat-file -e "$base^{commit}" 2>/dev/null \
+                 && range="$base..$GITHUB_SHA" || range="$GITHUB_SHA" ;;
+          esac
+          bad=0
+          for c in $(git rev-list "$range"); do
+            python3 tools/scan_secrets.py --commit "$c" || bad=1
+          done
+          [ "$bad" -eq 0 ] || {
+            echo "::error::A credential-looking value is in a pushed commit. It stays in history even if a later commit removes it."
+            exit 1
+          }
+          echo "no credential-looking values in any pushed commit"
+
       - name: Hook is present and executable
         run: |
           test -x .githooks/pre-commit || { echo "::error::.githooks/pre-commit missing or not executable"; exit 1; }
           test -x .githooks/install.sh || { echo "::error::.githooks/install.sh missing or not executable"; exit 1; }
+          test -f tools/scan_secrets.py || { echo "::error::tools/scan_secrets.py missing - the hook and this workflow both call it"; exit 1; }
           echo "hook present"

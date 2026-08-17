@@ -65,11 +65,18 @@ placeholder='(\{\{|<|\$\{|xxx|XXX|placeholder|PLACEHOLDER|example|EXAMPLE|change
 #    The offending line is described rather than quoted here on purpose:
 #    written out, this comment trips its own rule, and a hook that needs
 #    --no-verify to commit is a hook that teaches people to use it.
-credhits=$(git diff --cached -U0 | grep -E '^\+' | grep -vE '^\+\+\+' \
-             | grep -EIo "$cred" | grep -vE "$placeholder")
-if [ -n "$credhits" ]; then
-  say "staged content looks like a credential with a real value"
-  printf '%s\n' "$credhits" | head -5 >&2
+#    THE SHELL VERSION IS GONE. It read a value as everything up to
+#    the first space, so a quoted value containing spaces was only ever
+#    half seen. tools/scan_secrets.py reads the quote properly and is
+#    called by the privacy workflow too, so --no-verify no longer walks
+#    a secret past a green CI. Found by review 2026-08-16.
+if command -v python3 >/dev/null 2>&1 && [ -f tools/scan_secrets.py ]; then
+  if ! out=$(python3 tools/scan_secrets.py --staged); then
+    say "staged content looks like a credential with a real value"
+    printf '%s\n' "$out" | head -8 >&2
+  fi
+else
+  say "tools/scan_secrets.py or python3 is missing - cannot check for credentials"
 fi
 
 # 4. Local patterns - site-specific strings, NOT version controlled.

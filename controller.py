@@ -1778,14 +1778,20 @@ def _unsaved_edge():
         # here and the send would otherwise leave the message naming a
         # fault that no longer exists.
         standing = dict(STATE["fault"]) if STATE["fault"] else {}
+        # READ UNDER THE LOCK THAT WRITES IT, so the flag has exactly
+        # one owner. The callback's assignment was moved inside this
+        # lock; leaving the read outside it kept a narrower version of
+        # the same race, where a delivery landing mid-decision changes
+        # whether an all-clear goes out.
+        delivered = _unsaved_delivered
     if not now:
         # FALLING EDGE. Two ways to get here and they are not the same
         # news: the retry finally wrote the file, or the whole fault was
         # acknowledged and the flag went with it. Only the first is an
         # all-clear for FC-005 - the second is FC-101's story, and
         # sending both would report one event twice.
-        if (_unsaved_delivered is not None and standing
-                and standing.get("at") == _unsaved_delivered):
+        if (delivered is not None and standing
+                and standing.get("at") == delivered):
             _notify("%s Fan fault has been saved to disk"
                     % FC_FAULT_PERSISTED,
                     _alert_body(
@@ -1811,7 +1817,8 @@ def _unsaved_edge():
                          ("How to clear", "Acknowledge in the dashboard"),
                          ("Controller mode", _mode_now())]))
         _unsaved_notified = False
-        _unsaved_delivered = None
+        with _state_lock:
+            _unsaved_delivered = None
         return
     if _unsaved_notified:
         return
@@ -1823,14 +1830,19 @@ def _unsaved_edge():
         # Checked against the fault standing NOW, not the one captured
         # when the send began. A callback that outlives its own episode
         # must not vouch for the next one.
+        # THE ASSIGNMENT IS INSIDE THE LOCK, not merely the check.
+        # Validating under the lock and then writing outside it left a
+        # window where two callbacks could interleave and an older one
+        # overwrite the current episode - suppressing a legitimate
+        # FC-102. Found by review 2026-08-16.
         global _unsaved_delivered
         if not ok:
             return
         with _state_lock:
             cur = STATE["fault"]
-            live = bool(STATE["fault_unsaved"])
-        if live and cur and cur.get("at") == episode:
-            _unsaved_delivered = episode
+            if (STATE["fault_unsaved"] and cur
+                    and cur.get("at") == episode):
+                _unsaved_delivered = episode
     _notify("%s Fan fault could not be saved to disk" % FC_FAULT_UNSAVED,
             _alert_body(
                 FC_FAULT_UNSAVED, "Fault Not Persisted",
