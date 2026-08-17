@@ -535,10 +535,8 @@ function drawMini(hist,c){
   // /api/state - it is only absent from the UI. Add ["pm","#4a9eff",
   // "PM2.5 \u00b5g/m\u00b3"] here and raise the trace2 viewBox height
   // to 231 to bring it back.
-  // Uppercase to match the CO2 header above them: three charts in one
-  // column reading three different ways was the whole complaint.
-  const defs=[["tc","#f5a623","TEMPERATURE \u00b0C"],
-              ["rh","#34d399","HUMIDITY %"]];
+  const defs=[["tc","#f5a623","Temperature \u00b0C"],
+              ["rh","#34d399","Humidity %"]];
   // AXIS reserves the strip the shared time labels sit in, so row heights
   // stay what they were when the axis lived under the CO2 chart.
   const AXIS=26,GAP=10;

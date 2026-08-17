@@ -348,12 +348,15 @@ def test_every_chart_names_itself_in_its_own_colour():
     return "labels match their traces"
 
 
-def test_the_chart_names_are_consistently_cased():
-    """Three charts in one column reading three different ways."""
+def test_every_chart_is_named():
+    """Casing is a matter of taste and was changed back on 2026-08-17 -
+    the mini rows read as sentences again. What is worth pinning is
+    that each chart still says what it is, and that the CO2 header did
+    not quietly lose its name when the other two were reverted."""
     html = squashed()
-    for name in ('"CO2PPM"', 'TEMPERATURE', 'HUMIDITY'):
-        assert name in html, "%s is not uppercase" % name
-    return "one casing"
+    for name in ('"CO2PPM"', 'Temperature', 'Humidity'):
+        assert name in html, "%s is missing from the charts" % name
+    return "all three named"
 
 
 def test_every_chart_shows_a_labelled_range():
