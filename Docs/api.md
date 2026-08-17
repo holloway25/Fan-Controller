@@ -28,7 +28,7 @@ Every request body is capped at 8KB and a larger one is rejected with
 LAN device could push arbitrary volume into the journal and
 `events.json`. Repeated identical client errors are also written to the
 activity log at most once a minute, so a script failing in a render loop
-cannot evict the 300 entries of real fan history behind it. The journal
+cannot evict the 1000 entries of real fan history behind it. The journal
 still gets every report.
 
 "Auth" applies only once a UI password is set; until then every endpoint

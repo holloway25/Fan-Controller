@@ -156,6 +156,12 @@ code, so one search finds the whole episode:
 
     grep FC-003 events.json
 
+Every alert-worthy transition is logged, so an episode is several lines
+under one code - a draw fault comes back as the raise, the stop
+confirmation and the clear. The log holds 1000 entries for this reason:
+one line per episode would have fitted in far less, and a search that
+finds half an episode is worse than one that finds none.
+
 An episode opens with an alarm (`0xx`) and closes with an all-clear
 (`1xx`). A `FC-003` with no matching `FC-101` is a fault that was never
 acknowledged; an `FC-101` carries the duration, so how long the fan was

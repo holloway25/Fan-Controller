@@ -585,5 +585,52 @@ def test_the_all_clear_still_sends_for_its_own_episode():
     return "same episode still stands down"
 
 
+# ------------------------------------------------- the log side of the deal
+# Docs/troubleshooting.md tells people to grep events.json for a code and
+# find the episode. That promise is only as good as the log lines.
+
+def test_the_whole_draw_episode_carries_one_code():
+    """Raise, stop confirmation and clear must all come back together."""
+    C = harness.load()
+    E.wire(C)
+    E.raise_draw_fault(C, 8.2, lo=15.0, hi=22.0)
+    with C.app.test_request_context():
+        C.api_fault_clear()
+    hits = [e["msg"] for e in C.load_events()
+            if C.FC_UNDER_POWER in e["msg"]]
+    assert len(hits) >= 2, "episode is not searchable: %r" % [
+        e["msg"] for e in C.load_events()]
+    assert any("cleared" in h.lower() for h in hits), hits
+    return "%d lines under one code" % len(hits)
+
+
+def test_the_failsafe_and_its_all_clear_are_both_logged():
+    """The recovery was mailed and never written down: events.json
+    showed a fail-safe starting and nothing ending it."""
+    C = harness.load()
+    E.wire(C)
+    C._log("%s FAIL-SAFE: no reading for 30 min, ventilating"
+           % C.FC_SENSOR_COMMS)
+    C._log("%s Sensor readings have returned, normal control resumed"
+           % C.FC_SENSOR_RETURNED)
+    msgs = [e["msg"] for e in C.load_events()]
+    assert any(m.startswith(C.FC_SENSOR_COMMS) for m in msgs), msgs
+    assert any(m.startswith(C.FC_SENSOR_RETURNED) for m in msgs), msgs
+    return "alarm and all-clear both in the log"
+
+
+def test_the_log_holds_a_thousand_entries():
+    """An episode is several lines now. A depth that evicts half of it
+    while the codes promise a searchable history is worse than no
+    promise."""
+    C = harness.load()
+    assert C.EVENTS_MAX == 1000, C.EVENTS_MAX
+    for i in range(1100):
+        C.STATE["events"].insert(0, {"at": C.time.time(), "msg": "e%d" % i})
+    del C.STATE["events"][C.EVENTS_MAX:]
+    assert len(C.STATE["events"]) == 1000, len(C.STATE["events"])
+    return "1000 kept"
+
+
 if __name__ == "__main__":
     sys.exit(harness.run(dict(globals())))

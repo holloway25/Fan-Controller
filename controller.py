@@ -423,7 +423,14 @@ _oob_generation = None
 
 
 EVENTS_PATH = os.path.join(DIR, "events.json")
-EVENTS_MAX = 300      # kept on disk
+# 1000 rather than 300 since 2026-08-16, when the alert transitions
+# started logging with their codes. An episode now costs several lines
+# instead of one, and the point of the codes is that a search finds a
+# whole episode months later - which it cannot if the depth has already
+# evicted half of it. About 21KB on disk at this size; the file is
+# rewritten whole on every append, and events are rare enough that this
+# is not a concern on an SD card.
+EVENTS_MAX = 1000     # kept on disk
 EVENTS_SHOWN = 30     # returned to the UI each poll
 
 
@@ -1368,6 +1375,12 @@ def tick():
         _stale_delivered = False
         recovered = True
     if recovered:
+        # LOGGED AS WELL AS MAILED. The recovery was mailed and never
+        # written down, so events.json showed a fail-safe starting and
+        # nothing ending it - and a search for the all-clear found
+        # nothing at all.
+        _log("%s Sensor readings have returned, normal control resumed"
+             % FC_SENSOR_RETURNED)
         _notify("%s Sensor readings have returned" % FC_SENSOR_RETURNED,
                 _alert_body(
                     FC_SENSOR_RETURNED, "Sensor Readings Restored",
@@ -1479,7 +1492,8 @@ def _failsafe():
                 STATE["fan"] = True
                 STATE["changed_at"] = time.time()
     if not already_on:
-        _log("FAIL-SAFE: no reading for %d min, ventilating" % mins)
+        _log("%s FAIL-SAFE: no reading for %s, ventilating"
+             % (FC_SENSOR_COMMS, _plural(mins, "min")))
     # OUTSIDE the already_on check, deliberately. This alert is about the
     # SENSOR having died, not about the plug being switched. Sitting it
     # under the switch meant readings stopping while the fan happened to
@@ -2011,6 +2025,8 @@ def _notify_restart_fault():
         def completed(ok):
             if ok:
                 _mark_fault_delivered(expected_at)
+        _log("%s Fan fault still standing after a restart - %s"
+             % (FC_RESTART_FAULT, f.get("code") or "unknown"))
         _notify("%s Fan fault still standing after a restart"
                 % FC_RESTART_FAULT,
                 _alert_body(
@@ -2205,8 +2221,9 @@ def _store_fault(value):
             with _state_lock:
                 STATE["fault_unsaved"] = value is not None
             if value is not None:
-                warn = ("WARNING: fault could not be saved (%s). Active "
-                        "now but would be lost on restart." % e)
+                warn = ("%s WARNING: fault could not be saved (%s). "
+                        "Active now but would be lost on restart."
+                        % (FC_FAULT_UNSAVED, e))
     # Outside _fault_lock, like the stop-confirmed log: an event append
     # must not extend a hold another writer may be waiting on. The edge
     # check goes here too, and covers CLEARING as well as raising.
@@ -2372,7 +2389,14 @@ def _enforce_stop(plug, gen=None):
     # Outside _act_lock: the fault write takes its own lock, and a disk
     # write must not extend a hold a settings save may be waiting on.
     if _confirm_fault_stopped():
-        _log("Draw fault - fan stop confirmed")
+        # Carries the code of the fault it belongs to, so the raise and
+        # the confirmation come back from the same search. Falls back to
+        # the bare line for a fault written by an older version.
+        with _state_lock:
+            f = STATE["fault"] or {}
+        code = f.get("code")
+        _log("%sDraw fault - fan stop confirmed"
+             % ("%s " % code if code else ""))
     return True
 
 def _draw_check(plug, gen=None):
@@ -2603,7 +2627,8 @@ def _retry_fault_persist():
             return False
         with _state_lock:
             STATE["fault_unsaved"] = False
-    _log("Fault saved on retry; it will survive a restart.")
+    _log("%s Fault saved on retry; it will survive a restart."
+         % FC_FAULT_PERSISTED)
     # Resets the alert edge. Without this the flag stayed raised after a
     # successful retry, and a LATER write failure sent nothing - the one
     # thing this alert exists to catch. Found by test_email.py rather
