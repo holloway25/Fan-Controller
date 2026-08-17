@@ -124,3 +124,67 @@ jobs:
             exit 1
           fi
           echo "nothing skipped"
+
+  # ------------------------------------------------------------------
+  # ARM64. The controller runs on a Raspberry Pi 3B+, and until now the
+  # only thing that ever exercised that architecture was running the
+  # suite on the board by hand.
+  #
+  # GitHub's arm64 standard runners were public-repository-only when
+  # this was first raised, which is why it stayed open; they have been
+  # supported in private repositories since January 2026 and are
+  # free-tier eligible. Two vCPUs in a private repository, four in a
+  # public one.
+  #
+  # WHAT THIS CATCHES: anything architecture-dependent. Struct sizes,
+  # alignment, float formatting, wheel availability for arm64, a
+  # dependency that only ships x86 binaries.
+  #
+  # WHAT IT DOES NOT CATCH, and the distinction matters because a green
+  # tick here is easy to over-read: this is a Neoverse server with
+  # several gigabytes of memory, not a 1.4GHz Cortex-A53 with 905MB.
+  # Nothing about memory pressure, thermal limits or SD-card I/O is
+  # tested here. THE SUITE STILL HAS TO BE RUN ON THE BOARD before a
+  # deploy - see Docs/arm.md, which carries the figures measured there.
+  #
+  # ONE PYTHON, matching what the Pi actually runs. The x86 matrix
+  # above covers the version range; repeating it here would spend
+  # minutes re-proving that Python is Python.
+  arm64:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          # Trixie on the deployed board ships 3.13. Docs/arm.md
+          # records the exact version measured there.
+          python-version: "3.13"
+
+      - run: pip install -r requirements.txt
+
+      - name: run the suite
+        run: |
+          set +e
+          python tests/run_all.py > out.txt 2>&1
+          status=$?
+          set -e
+          cat out.txt
+          exit $status
+
+      # Same rule as the x86 job: a skip here would mean something
+      # silently did not run on the architecture this exists to cover,
+      # which is worse than a failure because it looks green.
+      - name: nothing should have skipped here
+        if: always()
+        run: |
+          if [ ! -f out.txt ]; then
+            echo "no output captured - the suite step did not get that far"
+            exit 1
+          fi
+          if grep -q '^SKIP' out.txt; then
+            echo "skipped on arm64, where everything should run:"
+            grep '^SKIP' out.txt
+            exit 1
+          fi
+          echo "nothing skipped"

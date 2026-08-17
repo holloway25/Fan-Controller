@@ -25,6 +25,19 @@ and should not be quoted as if they were refreshed.
 Nothing in the code is architecture specific. No source change has ever
 been needed to run on ARM.
 
+**CI runs the suite on arm64 as of 2026-08-17**, on a
+`ubuntu-24.04-arm` hosted runner with the Python the board runs. That
+closes the gap where the only ARM coverage was somebody running the
+suite on the Pi by hand.
+
+It does NOT replace doing that, and the difference is worth being
+explicit about: the runner is a Neoverse server with several gigabytes
+of memory and four vCPUs. Every figure in this document - 89 seconds
+end to end, 227MB at peak against 905MB, the thermal headroom - is a
+property of a 1.4GHz Cortex-A53 with 1GB, and none of it is tested by
+CI. The runner catches architecture bugs. The board catches everything
+else.
+
 ## Use the 64-bit image
 
 Both the 3B and 3B+ are ARMv8, so a 32-bit image boots — but do not use
