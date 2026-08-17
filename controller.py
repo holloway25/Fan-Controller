@@ -8,7 +8,7 @@ Protect 7.1's documented API omits air-quality metrics, so this reads the
 private /proxy/protect/api/bootstrap endpoint. That is undocumented and may
 break on firmware updates; use the Debug view to inspect the live payload.
 """
-import atexit, copy, hashlib, hmac, json, math, os, signal, smtplib
+import atexit, copy, hashlib, hmac, json, math, os, re, signal, smtplib
 import socket, ssl, sys
 import threading, time
 from datetime import date
@@ -421,6 +421,68 @@ _oob_since = None
 # elapsed seconds would be counted against limits they were never
 # measured under.
 _oob_generation = None
+
+
+_CODE_SERIES = re.compile(r"^FC-(\d)\d\d\b")
+_CODE_PREFIX = re.compile(r"^FC-\d+\s+")
+
+
+def event_class(msg):
+    """Which colour an activity line takes, decided HERE not in the page.
+
+    This lived in the dashboard's JavaScript, where it could only be
+    asserted by searching the page source for regexes - and on
+    2026-08-16 it broke silently: the rules matched "^Draw fault" and
+    "^Fan ", both of which stopped working the moment log lines gained
+    an FC- prefix. Faults rendered as ordinary text, every test stayed
+    green, and it surfaced only because someone looked at a screen.
+
+    Moved because THIS IS A DECISION, and decisions belong where they
+    can be tested. What is left in the page is one assignment from a
+    field, which cannot silently mean something else. The classes are
+    still CSS names - the page owns what a colour looks like, this owns
+    what a line means.
+
+    Returns "" for lines that take the default colour.
+    """
+    raw = msg if isinstance(msg, str) else ""
+    series = _CODE_SERIES.match(raw)
+    # The prefix comes off before the text rules run, so a coded line
+    # and an uncoded one take the same branch.
+    m = _CODE_PREFIX.sub("", raw)
+    if series:
+        ser = series.group(1)
+        # 0xx alarm and 2xx failure are both things going wrong.
+        if ser in ("0", "2"):
+            return "fault"
+        # 1xx is an all-clear: a return to normal.
+        if ser == "1":
+            return "ok"
+        # 3xx is an observation. In Manual, something else moving the
+        # plug is the mode doing its job; in any other mode the
+        # controller has been contradicted and it should stand out.
+        if ser == "3":
+            return "ok" if m.endswith("(Manual)") else "m-manual"
+    # Anchored, not a bare substring: "Changed: watts_fault_seconds"
+    # contains the word but is a settings edit, not a fault.
+    if re.match(r"Draw fault", m, re.I) or re.search(r"draw fault$", m, re.I):
+        return "fault"
+    # A forced switch-on is Force on demanding the fan rather than the
+    # rules acting, so it takes the mode colour.
+    if re.search(r"forced on$", m) or m.startswith("Mode: Force on"):
+        return "m-on"
+    if m.startswith("Fan "):
+        return "ok"
+    # Mode entries take the same colour as the mode button, so the log
+    # and the selector agree. startsWith, not equality: a folded line
+    # reads "Mode: Manual - fan off".
+    if m.startswith("Mode: "):
+        if m.startswith("Mode: Manual"):
+            return "m-manual"
+        if m.startswith("Mode: Auto"):
+            return "m-auto"
+        return "m-on"
+    return ""
 
 
 EVENTS_PATH = os.path.join(DIR, "events.json")
@@ -3411,7 +3473,11 @@ def api_state():
     # stale reading is reported as unknown, not as current.
     if not s["watts_at"] or time.time() - s["watts_at"] > WATTS_STALE:
         s["watts"] = None
-    s["events"] = s["events"][:EVENTS_SHOWN]
+    # Served with the class, not stored with it: the colour is a
+    # presentation decision that can change, and rewriting events.json
+    # to recolour a log would be absurd.
+    s["events"] = [dict(e, cls=event_class(e.get("msg")))
+                   for e in s["events"][:EVENTS_SHOWN]]
     s["config"] = _safe_cfg()
     # Changes on every start, including an execv. It is the only thing a
     # caller can use to prove a restart actually happened: the port

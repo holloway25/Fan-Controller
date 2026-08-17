@@ -143,43 +143,6 @@ def test_the_history_fetch_stores_what_the_response_carried():
 
 # ------------------------------------------------- the activity log column
 
-def test_the_log_colours_on_the_code_series_not_the_wording():
-    """The rules matched "^Draw fault" and "^Fan " until 2026-08-16.
-
-    Both stopped working the moment log lines gained an FC- prefix, and
-    nothing caught it: no test reads these strings, and the only place
-    the breakage shows is a screen. Matching the SERIES means a new code
-    inherits the right colour without this list being edited.
-    """
-    html = squashed()
-    assert "FC-(" in html or "FC-\\d" in html, (
-        "the log no longer looks at the fault code at all")
-    for series in ('code==="0"', 'code==="1"', 'code==="2"', 'code==="3"'):
-        assert series in html, "no colour rule for series %s" % series
-    return "all four series coloured"
-
-
-def test_the_code_prefix_is_stripped_before_the_text_rules():
-    """An uncoded line and a coded one must take the same branch."""
-    html = squashed()
-    assert 'replace(/^FC-\\d+\\s+/,"")' in html, (
-        "the code prefix is not stripped before the text rules run")
-    return "prefix stripped"
-
-
-def test_a_folded_mode_line_is_still_coloured():
-    """Folding produces "Mode: Manual - fan off". The rule used to
-    compare the whole string, so folded lines lost their colour."""
-    # squashed() removes ALL whitespace, so the needles must too - the
-    # spaced version of the negative assertion below passed vacuously
-    # when first written, which is the failure mode of any "not in".
-    html = squashed()
-    assert 'm==="Mode:Manual"' not in html, (
-        "still comparing the whole string; a folded mode line will not "
-        "match")
-    assert '/^Mode:Manual/.test(m)' in html, "no prefix match for Manual"
-    assert '/^Mode:Auto/.test(m)' in html, "no prefix match for Auto"
-    return "folded mode lines match"
 
 
 def test_the_timestamp_is_short_but_the_full_one_is_reachable():
@@ -431,14 +394,26 @@ def test_the_narrow_box_is_taller_and_keeps_its_shape():
     return "taller than desktop, not square"
 
 
-def test_a_manual_external_change_reads_as_ordinary():
-    """In Manual, a hand switch is the mode doing its job - it should
-    not be coloured as something to look at. In any other mode the same
-    line means the controller was contradicted."""
+
+def test_the_page_takes_the_log_colour_from_the_server():
+    """The four tests that used to live here read regexes out of this
+    file. The rules moved to controller.event_class on 2026-08-17,
+    where breaking one breaks a test - see test_log_classes.py.
+
+    What is left to assert here is the contract: the page uses the
+    field and decides nothing itself. A regex reappearing in this file
+    would mean the decision had crept back to where it cannot be
+    tested.
+    """
     html = squashed()
-    assert '/\\(Manual\\)$/.test(m)?"ok":"m-manual"' in html, (
-        "FC-300 does not distinguish Manual from the other modes")
-    return "green in Manual, flagged otherwise"
+    assert 'row.className=typeofe.cls==="string"?e.cls:""' in html, (
+        "the row class is not taken straight from the served field")
+    assert "FC-(" not in html, (
+        "the page is parsing fault codes again - that decision belongs "
+        "in controller.event_class")
+    assert '"m-manual"' not in html.split(".log")[0], (
+        "the page is choosing mode colours again")
+    return "the page renders, the server decides"
 
 
 if __name__ == "__main__":

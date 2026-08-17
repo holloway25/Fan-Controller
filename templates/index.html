@@ -804,48 +804,17 @@ function render(s){
       when.addEventListener("click",toggle);
       when.addEventListener("keydown",ev=>{
         if(ev.key==="Enter"||ev.key===" "){ev.preventDefault();toggle();}});
-      // Every fault-related entry is red, including "Fan off - draw
-      // fault", which a prefix match on the raised message missed. Fan
-      // state changes are green once they are not a fault.
-      const raw=typeof e.msg==="string"?e.msg:"";
-      // THE CODE DECIDES FIRST, and the text is only consulted for
-      // lines that have none. The old rules matched "^Draw fault" and
-      // "^Fan ", which both stopped working the moment lines gained an
-      // FC- prefix - a regression that showed nowhere except here,
-      // because nothing else reads these strings.
+      // THE CLASS COMES FROM THE SERVER. This was thirty lines of
+      // regexes deciding what each entry meant, and on 2026-08-16 they
+      // broke silently when log lines gained an FC- prefix: faults
+      // rendered as ordinary text, every test stayed green, and it was
+      // found by looking at a screen. The rules live in
+      // controller.event_class now, where a test can break them on
+      // purpose and see something fail.
       //
-      // Matching the SERIES rather than each code means a new code
-      // inherits the right colour without this list being touched.
-      const code=(raw.match(/^FC-(\d)\d\d\b/)||[])[1];
-      // The prefix is stripped before the text rules run, so an
-      // uncoded line and a coded one take the same branch.
-      const m=raw.replace(/^FC-\d+\s+/,"");
-      // 0xx alarm, 2xx failure: both are things going wrong.
-      if(code==="0"||code==="2")row.className="fault";
-      // 1xx all-clear reads as a return to normal.
-      else if(code==="1")row.className="ok";
-      // 3xx is an observation - something else moved the plug. In
-      // MANUAL that is the mode doing its job, so it reads as an
-      // ordinary switch; in any other mode the controller has been
-      // contradicted and it keeps the manual colour to stand out.
-      else if(code==="3")row.className=/\(Manual\)$/.test(m)?"ok":"m-manual";
-      // Anchored, not a bare substring: "Changed: watts_fault_seconds"
-      // contains the word but is a settings edit, not a fault.
-      else if(/^Draw fault/i.test(m)||/draw fault$/i.test(m))
-        row.className="fault";
-      // A forced switch-on is Force on demanding the fan, not the rules
-      // acting, so it takes the mode colour rather than reading as an
-      // ordinary automatic switch.
-      else if(/forced on$/.test(m)||/^Mode: Force on/.test(m))
-        row.className="m-on";
-      else if(/^Fan /.test(m))row.className="ok";
-      // Mode entries take the same colour as the mode button, so the
-      // log and the selector agree on what each mode looks like.
-      // startsWith, not equality: a folded line reads "Mode: Manual -
-      // fan off", and matching the whole string left those uncoloured.
-      else if(/^Mode: /.test(m))row.className=
-        /^Mode: Manual/.test(m)?"m-manual":
-        (/^Mode: Auto/.test(m)?"m-auto":"m-on");
+      // What is left cannot silently mean the wrong thing: it is a
+      // field, or it is empty.
+      row.className=typeof e.cls==="string"?e.cls:"";
       row.appendChild(when);
       // An element rather than a bare text node, so the CSS above has
       // something to give min-width:0 to. textContent still, because
