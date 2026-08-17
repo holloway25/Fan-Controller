@@ -333,15 +333,28 @@ def test_every_chart_shows_a_labelled_range():
     return "low and high, worded"
 
 
-def test_the_range_is_the_observed_values_not_the_padded_scale():
-    """lo and hi are stretched to keep the threshold lines on screen.
-    Reporting those as the range would claim readings that never
-    happened - a fan-on line at 70% would have the humidity row
-    claiming a 70% high on a day it never passed 55."""
+def test_the_page_takes_the_chart_ranges_from_the_server():
+    """This used to assert that the page derived the range separately
+    from the drawn scale - by checking a variable name appeared twice.
+
+    The computation moved into controller.history_ranges on 2026-08-17,
+    where the property that matters (a fan guide must not widen the
+    reported range) is a test that a mutation can break. See
+    test_chart_ranges.py.
+
+    What is left to assert here is the contract, and one thing worth
+    keeping: an ABSENT range must draw nothing. Falling back to a
+    locally computed one would hide a server that stopped sending them,
+    which is the failure this move exists to prevent.
+    """
     html = squashed()
-    assert html.count("constdlo=Math.min(...vs),dhi=Math.max(...vs)") == 2, (
-        "the range is not derived separately from the padded scale")
-    return "observed, not padded"
+    assert "HIST_RANGES=h.ranges||{}" in html, (
+        "the page does not take ranges from the history response")
+    assert "constr=HIST_RANGES.v" in html, "the CO2 label ignores them"
+    assert "constr=HIST_RANGES[key]" in html, "the mini labels ignore them"
+    assert "Math.min(...vs),dhi=Math.max" not in html, (
+        "the page is computing its own range again")
+    return "server decides, page draws"
 
 
 def test_the_chart_labels_scale_up_on_a_narrow_screen():

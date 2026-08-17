@@ -65,6 +65,22 @@ MUTATIONS = [
      "test_log_classes.py",
      "test_the_endpoint_serves_the_class_with_each_event"),
 
+    # ---------------------------------------------------- chart ranges
+    # The bug that was on screen: a fan guide widening the reported
+    # range, so the humidity row claimed a 70% high on a day the room
+    # never passed 55.
+    ("range-follows-the-scale", "controller.py",
+     '        vals = [p[key] for p in (hist or [])\n                if isinstance(p, dict) and _finite(p.get(key))]',
+     '        vals = [p[key] for p in (hist or [])\n                if isinstance(p, dict) and _finite(p.get(key))]\n        if key == "rh" and CFG["control"].get("humidity_enabled"):\n            vals = vals + [CFG["control"]["humidity_on"]]',
+     "test_chart_ranges.py",
+     "test_a_threshold_cannot_widen_the_range"),
+    # A delta is what the page holds for most of its life.
+    ("ranges-missing-from-deltas", "controller.py",
+     '                        "ranges": history_ranges(hist),\n                        "first_t": first_t})',
+     '                        "first_t": first_t})',
+     "test_chart_ranges.py",
+     "test_the_endpoint_sends_ranges_with_a_delta"),
+
     # ------------------------------------------------------ the fault
     ("stop-not-confirmed-claimed", "controller.py",
      '''                     ("Action taken",

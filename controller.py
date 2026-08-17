@@ -427,6 +427,40 @@ _CODE_SERIES = re.compile(r"^FC-(\d)\d\d\b")
 _CODE_PREFIX = re.compile(r"^FC-\d+\s+")
 
 
+# The keys a history point can carry, and what the charts call them.
+HIST_METRICS = ("v", "tc", "rh")
+
+
+def history_ranges(hist):
+    """Observed low and high per metric, over the trace as retained.
+
+    THE OBSERVED VALUES, NOT THE DRAWN SCALE, and that is the whole
+    reason this is worth computing rather than reading off the chart.
+    The plot stretches its scale to keep the fan-on and fan-off guides
+    on screen, so a humidity row whose guide sits at 70 would report a
+    70% high on a day the room never passed 55 - which is what the page
+    did before the two were separated.
+
+    Moved out of the browser on 2026-08-17. The distinction above was
+    guarded by a comment and by a test that read the page source for a
+    variable name; here it is a function that a mutation can break.
+
+    Missing and non-finite values are skipped rather than defaulting to
+    zero: a sensor that reports no humidity has no humidity range, and
+    a NaN low would be both unserialisable and permanently unbeatable
+    by any later comparison. A metric with no readings is ABSENT from
+    the result, so the page has nothing to draw rather than a zero to
+    draw wrongly.
+    """
+    out = {}
+    for key in HIST_METRICS:
+        vals = [p[key] for p in (hist or [])
+                if isinstance(p, dict) and _finite(p.get(key))]
+        if vals:
+            out[key] = {"lo": min(vals), "hi": max(vals)}
+    return out
+
+
 def event_class(msg):
     """Which colour an activity line takes, decided HERE not in the page.
 
@@ -3619,12 +3653,19 @@ def api_history():
     same_process = request.args.get("gen") == PROC_GENERATION
     behind = rev - since if (known and same_process) else None
     if behind is not None and 0 <= behind <= len(hist):
+        # RANGES GO ON BOTH ARMS. A delta carries only the new points,
+        # and the page holds a delta response for most of its life - so
+        # ranges sent only with a full copy would freeze at whatever
+        # they were when the page loaded, which is the sort of wrong
+        # that looks right for hours.
         return jsonify({"history_rev": rev, "full": False,
                         "history_generation": PROC_GENERATION,
                         "add": hist[len(hist) - behind:],
+                        "ranges": history_ranges(hist),
                         "first_t": first_t})
     return jsonify({"history": hist, "history_rev": rev, "full": True,
                     "history_generation": PROC_GENERATION,
+                    "ranges": history_ranges(hist),
                     "first_t": first_t})
 
 

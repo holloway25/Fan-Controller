@@ -499,15 +499,20 @@ function drawTrace(hist,c){
     "font-size":12,opacity:.85,
     "font-family":"ui-monospace,monospace"});
   svg.appendChild(nameEl);
-  // The observed range, which this chart never showed at all. Labelled
-  // rather than written as a dash range: "705-1013" needs decoding,
-  // "Low 705  High 1013" does not.
-  const dlo=Math.min(...vs),dhi=Math.max(...vs);
-  let nw=64;
-  try{nw=nameEl.getComputedTextLength()}catch(e){}
-  svg.appendChild(txt("Low "+Math.round(dlo)+"   High "+Math.round(dhi),
-    {x:L+4+nw+12,y:TOP+11,fill:"#e8edf3",opacity:.7,"font-size":11,
-     "font-family":"ui-monospace,monospace"}));
+  // Labelled rather than written as a dash range: "705-1013" needs
+  // decoding, "Low 705  High 1013" does not.
+  //
+  // FROM THE SERVER. Absent means the server sent no range for this
+  // metric - no readings - and then nothing is drawn, rather than a
+  // zero or a range computed from whatever this page happens to hold.
+  const r=HIST_RANGES.v;
+  if(r){
+    let nw=64;
+    try{nw=nameEl.getComputedTextLength()}catch(e){}
+    svg.appendChild(txt("Low "+Math.round(r.lo)+"   High "+Math.round(r.hi),
+      {x:L+4+nw+12,y:TOP+11,fill:"#e8edf3",opacity:.7,"font-size":11,
+       "font-family":"ui-monospace,monospace"}));
+  }
 }
 
 function drawMini(hist,c){
@@ -593,14 +598,17 @@ function drawMini(hist,c){
       rx=L+4+nw+12;anc="start"}
     // IN THE TRACE COLOUR, not grey, so the range belongs visibly to the
     // row it describes - and worded, because a bare dash range reads as
-    // one number until you look twice. The observed values, NOT the
-    // padded scale: lo and hi are stretched to keep the threshold lines
-    // on screen, and reporting those as the range would claim readings
-    // that never happened.
-    const dlo=Math.min(...vs),dhi=Math.max(...vs);
-    svg.appendChild(txt("Low "+dlo.toFixed(1)+"   High "+dhi.toFixed(1),
-      {x:rx,y:top+11,fill:col,opacity:.7,"font-size":11,"text-anchor":anc,
-       "font-family":MONO}))});
+    // one number until you look twice.
+    //
+    // The values come from the server for the reason above the CO2
+    // label: lo and hi here are the DRAWN scale, stretched to keep the
+    // threshold lines on screen, and reporting those would claim
+    // readings that never happened.
+    const r=HIST_RANGES[key];
+    if(r){
+      svg.appendChild(txt("Low "+r.lo.toFixed(1)+"   High "+r.hi.toFixed(1),
+        {x:rx,y:top+11,fill:col,opacity:.7,"font-size":11,"text-anchor":anc,
+         "font-family":MONO}))}});
   // Shared time axis for both charts: they plot the same window, so one
   // set of labels at the very bottom serves the CO2 trace above too.
   const hm=t=>{const d=new Date(t*1000),z=n=>String(n).padStart(2,"0");
@@ -705,6 +713,8 @@ function render(s){
       // Store the revision the response carried, not the one we saw, or a
       // change landing mid-flight would be missed until the next one.
       HIST_REV=h.history_rev; HIST_GEN=h.history_generation||null;
+      // Sent on both arms, so a delta refreshes them too.
+      HIST_RANGES=h.ranges||{};
       HIST_BUSY=false;
       drawTrace(HIST,c); drawMini(HIST,c);
     }).catch(()=>{HIST_BUSY=false});
@@ -984,6 +994,11 @@ $("emailtest").addEventListener("click",async()=>{
 });
 
 let HIST=[], HIST_REV=null, HIST_BUSY=false, HIST_GEN=null;
+// Observed low and high per metric, from the server. Not derived
+// here: the plot stretches its scale to keep the fan guides on
+// screen, and a range read off that scale claims readings that
+// never happened. See controller.history_ranges.
+let HIST_RANGES={};
 let hydrated=false;
 async function hydrate(){
   if(CFG&&CFG.protect.username){
