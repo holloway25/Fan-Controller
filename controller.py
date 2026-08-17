@@ -11,6 +11,7 @@ break on firmware updates; use the Debug view to inspect the live payload.
 import atexit, copy, hashlib, hmac, json, math, os, signal, smtplib
 import socket, ssl, sys
 import threading, time
+from datetime import date
 import requests, urllib3
 from flask import Flask, Response, jsonify, request, render_template
 from werkzeug.exceptions import RequestEntityTooLarge
@@ -528,6 +529,20 @@ _daily_lock = threading.Lock()
 _daily_dirty = False
 
 
+def _finite(v):
+    """A number that can be compared and can be serialised.
+
+    NaN IS A FLOAT AND IT POISONS BOTH. json.dumps writes a bare NaN,
+    which is not JSON and which browser JSON.parse rejects outright - so
+    one bad reading takes the whole dashboard down, not just its own
+    row. And every comparison against NaN is false, so once stored as an
+    extreme the range stops updating forever. Reported by review of
+    099b249.
+    """
+    return (isinstance(v, (int, float)) and not isinstance(v, bool)
+            and math.isfinite(v))
+
+
 def _clean_row(x):
     """A row from disk, normalised, or None if it cannot be trusted.
 
@@ -540,21 +555,24 @@ def _clean_row(x):
     if not isinstance(x, dict):
         return None
     day = x.get("d")
-    if not isinstance(day, str) or len(day) != 10:
+    # A REAL DATE, not ten characters. "not-a-date" is ten characters,
+    # and a row keyed on it breaks the oldest-first ordering the
+    # endpoint promises and makes ?days=N return the wrong logical
+    # days. Reported by review of 099b249.
+    try:
+        day = date.fromisoformat(day).isoformat()
+    except (TypeError, ValueError):
         return None
     out = {"d": day}
     n = x.get("n")
     out["n"] = n if (isinstance(n, int) and not isinstance(n, bool)
                      and n >= 0) else 0
-    num = (int, float)
     for key in ("v", "tc", "rh"):
         r = x.get(key)
         if not isinstance(r, dict):
             continue
         lo, hi = r.get("lo"), r.get("hi")
-        if not isinstance(lo, num) or not isinstance(hi, num):
-            continue
-        if isinstance(lo, bool) or isinstance(hi, bool):
+        if not _finite(lo) or not _finite(hi):
             continue
         out[key] = {"lo": min(lo, hi), "hi": max(lo, hi)}
     return out
@@ -568,6 +586,14 @@ def load_daily():
     if not isinstance(d, list):
         return []
     rows = [r for r in (_clean_row(x) for x in d) if r]
+    # SORTED AND DEDUPLICATED. The endpoint promises oldest-first, and
+    # the fold assumes the last row is today - both of which a
+    # hand-edited file can break without being malformed. Later
+    # duplicates win, being the ones written most recently.
+    byday = {}
+    for r in rows:
+        byday[r["d"]] = r
+    rows = [byday[k] for k in sorted(byday)]
     return rows[-DAILY_KEEP_DAYS:]
 
 
@@ -593,7 +619,7 @@ def _daily_note(now, co2, tc, rh):
         row = rows[-1]
         row["n"] = row.get("n", 0) + 1
         for key, val in (("v", co2), ("tc", tc), ("rh", rh)):
-            if not isinstance(val, (int, float)):
+            if not _finite(val):
                 continue
             cur = row.get(key)
             if not isinstance(cur, dict):
@@ -603,6 +629,22 @@ def _daily_note(now, co2, tc, rh):
                     cur["lo"] = val
                 if val > cur["hi"]:
                     cur["hi"] = val
+        _daily_dirty = True
+
+
+def reset_daily():
+    """Throw the summary away and remember that the file needs writing.
+
+    A HELPER BECAUSE THE FLAG IS A MODULE GLOBAL. The recovery branch
+    in tick() assigned _daily_dirty without declaring it global, so
+    Python made a local and the reset was never marked for writing -
+    the isolation worked, the persistence did not. Owning both changes
+    in one place under one lock means the next caller cannot repeat it.
+    Reported by review of 099b249.
+    """
+    global _daily_dirty
+    with _daily_lock:
+        STATE["daily"] = []
         _daily_dirty = True
 
 
@@ -1590,9 +1632,7 @@ def tick():
         try:
             _daily_note(now, *_daily_pending)
         except Exception as e:      # pragma: no cover - must never escape
-            with _daily_lock:
-                STATE["daily"] = []
-                _daily_dirty = True
+            reset_daily()
             _log("%s Daily summary reset after an error: %s: %s"
                  % (FC_DISK_FAILED, type(e).__name__, e))
     # Persisted on the SAME cadence as history, not every poll: the

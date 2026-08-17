@@ -206,14 +206,18 @@ What those targets mean for changes:
   from power loss mid-write. `config.json`, `fault.json` and
   `manual-off.pending` are written to a temporary, fsynced, renamed, and
   the directory fsynced after - so a cut leaves the old file or the new
-  one, and the rename itself survives. `history.json`, `daily.json` and
-  `events.json` are renamed atomically but not synced: losing their most
-  recent update is accepted, because none of them controls the fan.
+  one, and the rename itself survives, and `daily.json` is written the
+  same way. `history.json` and `events.json` are renamed atomically but
+  not synced: losing their most recent update is accepted, because
+  neither controls the fan and both regenerate.
 - **`daily.json` keeps what the trace cannot.** One row per day with the
-  low and high for each metric, two years of them, a few hundred bytes a
-  year. `history.json` holds 24 hours, so "was it this humid last week"
-  had no answer on disk at all; extending the trace would have bought
-  the same answer at a hundred times the size. Served at `/api/daily`.
+  low and high for each metric, two years of them - about 40KB a year at
+  80-110 bytes a row, so 80KB for the whole window. `history.json` holds
+  24 hours, so "was it this humid last week" had no answer on disk at
+  all; extending the trace to a year would have cost roughly 70MB for
+  the same answer. Written durably, unlike history: a lost day of
+  extremes cannot be reconstructed from anything. Served at
+  `/api/daily`.
 
 One coupling to remember: `history.json` is parsed at startup, so the
 retention window sets how long starting takes. At the default 24 hours

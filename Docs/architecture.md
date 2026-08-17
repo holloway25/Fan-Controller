@@ -275,7 +275,8 @@ nothing because the process image goes and the lock with it.
 - `daily.json` - one row per day holding the low and high for CO2,
   temperature and humidity. Exists because `history.json` is pruned to
   24 hours, so nothing derived from it can answer a question about last
-  week. Two years kept, a few hundred bytes a year. Written on the same
+  week. Two years kept: a row is 80-110 bytes, so roughly 40KB a year
+  and 80KB for the full window. Written on the same
   cadence as history rather than per reading. Rows are validated on
   load: anything on disk is input, and a malformed row must not be able
   to raise on the polling path. Not in git.
@@ -294,14 +295,21 @@ nothing because the process image goes and the lock with it.
 
 `config.json` and `fault.json` are written durably: the file is fsynced
 and then its directory, so the rename survives a power cut rather than
-merely a crash. `history.json`, `daily.json` and `events.json` are not
+merely a crash. `daily.json` is written durably too, which the earlier
+wording denied: it is the one file here where a lost write is not
+recoverable from anything else. `history.json` holds 24 hours and
+regenerates; `events.json` loses a line; a lost day of extremes is
+gone permanently, because nothing on disk can reconstruct it. It is
+written every five minutes at most, so the fsync costs nothing worth
+counting.
+
+`history.json` and `events.json` are renamed atomically but not synced
 - they are written far more often, and what is lost is a few minutes of
-the graph, a day's low and high, or a few lines of the activity log.
-None of them controls the fan, and none of them may stop it: the daily
-fold is wrapped at its call site precisely because it runs after the
-reading is timestamped, where an exception would skip the control
-decision AND leave the stale-reading fail-safe looking at a fresh
-clock.
+the graph or a few lines of the activity log. None of these files
+controls the fan, and none of them may stop it: the daily fold is
+wrapped at its call site precisely because it runs after the reading is
+timestamped, where an exception would skip the control decision AND
+leave the stale-reading fail-safe looking at a fresh clock.
 - In-memory only - latch state, the minimum-run lease, the draw-fault
   timer and the stale-reading clock. Deliberately not persisted: after a
   crash or a power cut there is no reason to believe a lease from before

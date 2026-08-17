@@ -147,24 +147,79 @@ def test_a_reversed_range_is_normalised():
 
 
 def test_a_broken_summary_cannot_abort_a_poll():
-    """The fold runs AFTER reading_at is refreshed. An exception there
-    marks the poll failed, skips the control decision, and leaves the
-    stale-reading fail-safe looking at a fresh timestamp - the fan would
-    sit off with nothing left to notice."""
+    """DRIVEN THROUGH tick(), not by reading the source.
+
+    The first version searched controller.py for a "try:" near the call
+    - which passes on a file that happens to contain the right
+    characters and says nothing about behaviour. It now makes the fold
+    raise and asserts the control decision still ran. Reported by
+    review of 099b249.
+
+    The position is what makes this matter: the fold runs after
+    reading_at is refreshed, so an escape marks the poll failed, skips
+    the decision, and leaves the stale-reading fail-safe looking at a
+    fresh clock. The fan would sit off with nothing left to notice.
+    """
     C = harness.load()
     import time as _t
-    C.STATE["daily"] = [{"d": _t.strftime("%Y-%m-%d"), "n": "not a number"}]
-    try:
-        C._daily_note(_t.time(), 900.0, 22.0, 51.0)
-    except Exception as e:
-        # The fold itself may raise; the CALL SITE is what must not.
-        assert isinstance(e, TypeError), e
-    src = open(C.__file__ if hasattr(C, "__file__") else
-               "/home/fan-admin/office-fan-controller/controller.py").read()
-    i = src.index("_daily_note(now, *_daily_pending)")
-    guard = src[max(0, i - 400):i]
-    assert "try:" in guard, "the fold is not wrapped at the call site"
-    return "wrapped where it matters"
+
+    decided = []
+    real_decide = C.decide
+
+    def watched(*a, **k):
+        decided.append(True)
+        return real_decide(*a, **k)
+
+    C.decide = watched
+
+    def explode(*a, **k):
+        raise RuntimeError("summary is broken")
+
+    C._daily_note = explode
+    C.CFG["control"].update(mode="auto", stale_minutes=0)
+
+    class Plug(object):
+        def state(self):
+            return False
+
+        def set(self, on):
+            return None
+
+        def power_w(self):
+            return None
+
+    class Protect(object):
+        def readings(self, sid):
+            return {"co2": 700.0, "temp": 21.0, "humidity": 50.0}, "fake"
+
+    C.CFG["protect"]["sensor_id"] = "fake-sensor-id"
+    C._client_snapshot = lambda: (Protect(), Plug(), C._cfg_generation)
+
+    before = _t.time()
+    C.tick()          # must not raise
+
+    assert decided, "the control decision was skipped"
+    with C._state_lock:
+        assert C.STATE["reading_at"] >= before, "the reading was discarded"
+        assert C.STATE["error"] is None, (
+            "the poll was marked failed: %r" % C.STATE["error"])
+    assert C.STATE["daily"] == [], "the broken summary was not discarded"
+    return "the poll survives a broken summary"
+
+
+def test_the_reset_marks_the_file_for_writing():
+    """The recovery branch assigned _daily_dirty without declaring it
+    global, so Python made a local and the reset was never persisted."""
+    C = harness.load()
+    import time as _t
+    C._daily_note(_t.time(), 900.0, 22.0, 51.0)
+    C.save_daily(force=True)
+    with C._daily_lock:
+        C._daily_dirty = False
+    C.reset_daily()
+    assert C._daily_dirty is True, "the reset was not marked for writing"
+    assert C.STATE["daily"] == []
+    return "reset is remembered"
 
 
 def test_the_shutdown_path_does_not_log():
@@ -185,18 +240,112 @@ def test_the_shutdown_path_does_not_log():
     return "silent under a signal, loud otherwise"
 
 
-def test_the_snapshot_is_deep():
-    """A shallow copy shares the ranges with the polling thread, so the
-    writer could serialise a row mid-update."""
+def test_the_writer_snapshot_is_deep():
+    """THROUGH save_daily, not through a deepcopy of my own.
+
+    The first version of this test called copy.deepcopy itself and
+    asserted the copy held still - which it always would. It would have
+    passed with the production code reverted to a shallow copy, which
+    is the entire bug it was written for. Reported by review of
+    099b249.
+    """
     C = harness.load()
     import time as _t
     C._daily_note(_t.time(), 900.0, 22.0, 51.0)
-    with C._daily_lock:
-        rows = __import__("copy").deepcopy(C.STATE["daily"])
+
+    # Mutate the live rows DURING the write, as a poll would.
+    real = C.write_json_durable
+    seen = {}
+
+    def slow_write(path, data, **kw):
+        C._daily_note(_t.time(), 1500.0, 22.0, 51.0)   # a poll lands
+        seen["hi"] = data[-1]["v"]["hi"]
+        return real(path, data, **kw)
+
+    C.write_json_durable = slow_write
+    try:
+        assert C.save_daily(force=True)
+    finally:
+        C.write_json_durable = real
+
+    assert seen["hi"] == 900.0, (
+        "the writer saw the live rows change under it: %r" % seen)
+    return "the writer holds a still snapshot"
+
+
+def test_the_api_snapshot_is_deep():
+    """Same property, through the endpoint."""
+    C = harness.load()
+    import time as _t
+    C._daily_note(_t.time(), 900.0, 22.0, 51.0)
+    with C.app.test_client() as cl:
+        body = cl.get("/api/daily").get_json()
     C._daily_note(_t.time(), 1500.0, 22.0, 51.0)
-    assert rows[-1]["v"]["hi"] == 900.0, (
-        "the snapshot moved with the live data: %r" % rows[-1])
-    return "snapshot holds still"
+    assert body["days"][-1]["v"]["hi"] == 900.0, (
+        "the served rows moved with the live data: %r" % body)
+    return "the response holds still"
+
+
+def test_a_non_finite_reading_never_reaches_the_file():
+    """NaN IS A FLOAT AND IT POISONS BOTH ENDS.
+
+    json.dumps writes a bare NaN, which is not JSON and which browser
+    JSON.parse rejects - so one bad reading takes the whole dashboard
+    down rather than one row. And every comparison against NaN is
+    false, so once stored as an extreme the range never updates again.
+    Reported by review of 099b249.
+    """
+    import json as _json
+    import math as _m
+    import time as _t
+    C = harness.load()
+    C._daily_note(_t.time(), float("nan"), float("inf"), 51.0)
+    row = C.STATE["daily"][-1]
+    assert "v" not in row and "tc" not in row, row
+    assert row["rh"] == {"lo": 51.0, "hi": 51.0}, row
+    # And the file it writes is parseable JSON.
+    C.save_daily(force=True)
+    text = open(C.DAILY_PATH).read()
+    assert "NaN" not in text and "Infinity" not in text, text
+    _json.loads(text)
+    return "non-finite values are dropped"
+
+
+def test_a_non_finite_value_on_disk_is_dropped_on_load():
+    C = harness.load()
+    open(C.DAILY_PATH, "w").write(
+        '[{"d": "2026-08-16", "v": {"lo": NaN, "hi": NaN}, '
+        '"rh": {"lo": 40, "hi": 60}}]')
+    rows = C.load_daily()
+    assert rows and "v" not in rows[0], rows
+    assert rows[0]["rh"] == {"lo": 40, "hi": 60}, rows
+    return "poisoned ranges do not survive a reload"
+
+
+def test_a_day_that_is_not_a_date_is_rejected():
+    """"not-a-date" is ten characters, which was the entire check."""
+    C = harness.load()
+    open(C.DAILY_PATH, "w").write(
+        '[{"d": "not-a-date"}, {"d": "2026-13-45"}, {"d": "2026-08-16"}]')
+    rows = C.load_daily()
+    assert [r["d"] for r in rows] == ["2026-08-16"], rows
+    return "only real dates survive"
+
+
+def test_rows_come_back_oldest_first_and_once_each():
+    """The endpoint promises oldest-first and the fold assumes the last
+    row is today. A hand-edited file can break both without being
+    malformed."""
+    C = harness.load()
+    open(C.DAILY_PATH, "w").write(
+        '[{"d": "2026-08-16", "n": 1}, {"d": "2026-08-14", "n": 2},'
+        ' {"d": "2026-08-16", "n": 3}, {"d": "2026-08-15", "n": 4}]')
+    rows = C.load_daily()
+    days = [r["d"] for r in rows]
+    assert days == sorted(days), days
+    assert len(days) == len(set(days)), days
+    assert rows[-1]["n"] == 3, "the later duplicate did not win: %r" % rows
+    return "sorted, deduplicated, latest wins"
 
 
 if __name__ == "__main__":
