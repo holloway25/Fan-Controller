@@ -333,10 +333,11 @@ font-size:16px}
 <script>
 // Report script failures to the server; a load-time error is otherwise
 // invisible because the page simply stops updating.
-function _report(msg,src,line){
+function _report(msg,src,line,kind){
   try{fetch("/api/clienterror",{method:"POST",
     headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({msg:String(msg),src:String(src||""),line:line||0})})}
+    body:JSON.stringify({msg:String(msg),src:String(src||""),line:line||0,
+      kind:kind||"error"})})}
   catch(e){}
 }
 window.addEventListener("error",e=>_report(
@@ -1013,9 +1014,56 @@ document.querySelectorAll("details.card").forEach(d=>{
     try{localStorage.setItem(k,d.open?"1":"0")}catch(e){}});
 });
 
+// A BROKEN PAGE LOOKS LIKE A WORKING PAGE. That is the whole problem
+// this addresses: on 2026-08-16 the activity log lost its colours and
+// nobody noticed for a day, because a page that draws the wrong thing
+// and a page that draws the right thing are equally quiet.
+//
+// It cannot check that the drawing is CORRECT - that needs eyes, or a
+// browser in CI, which this repository has decided against. It checks
+// the one thing a machine can: THE SERVER HAD DATA AND THE SCREEN
+// SHOWS NOTHING. That covers the failures that actually happen here -
+// an exception midway through a render, a selector that stopped
+// matching, a chart helper returning early forever.
+//
+// Reported at most once per condition per page load. A dashboard left
+// open on a wall must not turn a broken render into a request every
+// five seconds, and the server deduplicates its own log besides.
+const CANARY={log:false,trace:false};
+
+function canary(s){
+  try{
+    // The log: the server sent events and the list is empty. The empty
+    // state writes text rather than rows, so an intact "Nothing yet."
+    // is not a failure - a list with neither is.
+    if(s&&s.events&&s.events.length&&!CANARY.log){
+      const el=$("log");
+      if(el&&!el.children.length&&!el.textContent){
+        CANARY.log=true;
+        _report("the activity log rendered no rows for "+s.events.length+
+          " events","render",0,"render");
+      }
+    }
+    // The trace: enough points to draw and an empty SVG. drawTrace
+    // returns early below two usable points, which is why the same
+    // threshold is used here rather than HIST.length.
+    if(!CANARY.trace){
+      const usable=(HIST||[]).filter(p=>p&&Number.isFinite(p.v)).length;
+      const el=$("trace");
+      if(usable>=2&&el&&!el.childNodes.length){
+        CANARY.trace=true;
+        _report("the CO2 trace rendered nothing for "+usable+" points",
+          "render",0,"render");
+      }
+    }
+  }catch(e){/* a canary that throws must not break the page */}
+}
+
 async function tickUI(){
-  try{const r=await fetch("/api/state"); render(await r.json());
-      if(!hydrated&&CFG){hydrated=true; hydrate()}}
+  try{const r=await fetch("/api/state"); const s=await r.json();
+      render(s);
+      if(!hydrated&&CFG){hydrated=true; hydrate()}
+      canary(s);}
   catch(e){$("dot").className="dot bad"}
 }
 tickUI();

@@ -2467,6 +2467,16 @@ FC_STARTUP = "FC-206"           # startup conditions, DNS
 # rest because the others describe something not working; this one
 # describes the fan not being ventilated when it should have been.
 FC_FAILSAFE_FAILED = "FC-207"
+# THE PAGE DREW NOTHING. Not a script error - the script ran and
+# produced an empty chart or an empty log while the server had data to
+# show. It exists because a broken page LOOKS LIKE A WORKING PAGE: the
+# log-colouring regression on 2026-08-16 survived a full day, every
+# test green, and was found only because somebody looked at a screen.
+#
+# 2xx, because nothing is emailed and the log is the only record. It
+# says the DISPLAY failed, never the controller: the fan is unaffected
+# and the reader should not go looking for a fault that is not there.
+FC_RENDER_EMPTY = "FC-208"
 
 
 def _duration(seconds):
@@ -3373,13 +3383,19 @@ def api_clienterror():
         return jsonify(error="JSON body must be an object."), 400
     msg = str(b.get("msg", ""))[:300]
     where = "%s:%s" % (str(b.get("src", ""))[:120], b.get("line", "?"))
+    # A render report is a different animal from a script error: the
+    # script did not fail, it produced nothing. Coded so one search
+    # finds every occurrence, and so a reader knows immediately that
+    # the fan is fine and the SCREEN is not.
+    kind = b.get("kind")
+    prefix = "%s " % FC_RENDER_EMPTY if kind == "render" else ""
     # The journal gets every report: it rotates, and the repeat count is
     # diagnostic. The activity log does not, because it is 300 entries
     # deep and shared with the fan events that matter. Rate limiting the
     # journal is nginx's job, not this endpoint's.
     app.logger.error("UI error: %s @ %s", msg, where)
     if _ui_error_is_new(msg):
-        _log("UI error: %s" % msg[:120])
+        _log("%sUI error: %s" % (prefix, msg[:120]))
     return jsonify(ok=True)
 
 

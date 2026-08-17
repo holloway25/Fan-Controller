@@ -198,6 +198,7 @@ the log is the only place it exists.
 | `FC-205` | A restart was refused, or came back degraded |
 | `FC-206` | Startup conditions, DNS |
 | `FC-207` | **The fail-safe itself failed** - the fan was not ventilated when it should have been |
+| `FC-208` | The dashboard drew nothing while the server had data - **the display, never the controller** |
 
 Grouped by subsystem rather than one code per message: fifteen log
 lines share these, because "which subsystem is unhappy" is the question

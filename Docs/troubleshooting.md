@@ -188,6 +188,27 @@ An alarm with no all-clear can also mean the all-clear was suppressed
 on purpose: `FC-100`, `FC-101` and `FC-102` only send if the original
 warning was actually delivered.
 
+## FC-208: the page drew nothing
+
+The dashboard reports itself when it renders an empty log or an empty
+chart while `/api/state` was carrying data. THE FAN IS UNAFFECTED - this
+is a display failure and the controller does not read the screen.
+
+It exists because a broken page looks like a working page. The activity
+log lost its colours for a full day in August 2026 with every test
+green, and it surfaced only because somebody looked at a screen.
+
+What it can and cannot see: it notices NOTHING being drawn. It cannot
+notice the wrong thing being drawn - wrong colours, a mislabelled axis,
+a chart with the right shape and the wrong numbers. Those need eyes.
+
+Reported at most once per condition per page load, so a wall display
+does not turn a broken render into a request every five seconds.
+
+A hard refresh is the first thing to try. If it recurs immediately, the
+page is genuinely broken for that browser, and the journal has the
+matching entry with more detail than the activity log keeps.
+
 ## Nothing told me the fan had stopped
 
 Check the **Fault Handling** card first. Alerts are off until
