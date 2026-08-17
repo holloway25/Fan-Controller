@@ -177,9 +177,20 @@ and a mailbox.
 | `FC-100` | Readings return and the fail-safe stands down |
 | `FC-101` | A hard fault is acknowledged and the fan is available again |
 | `FC-102` | A fault that could not be written has now been saved by the retry |
+| `FC-300` | The plug changed state without this service commanding it - **logged only, never emailed** |
 
 **`0xx` are alarms and `1xx` are all-clears**, so a mail rule can
 separate them without parsing subjects.
+
+**`3xx` is worth knowing, nothing failed.** It sends no mail and appears
+only in the activity log. `FC-300` is there because "how often did
+something else switch the plug" is a question worth being able to ask
+months later - usually it is a person at the switch, but it is also what
+a second controller running against the same plug looks like.
+
+Normal operation stays uncoded. A manual stop and the owed stop after a
+restart are the system doing what it was told, and coding those would
+make a code stop meaning that something happened.
 
 **Codes are stable and are never reused.** Wording changes; `FC-003`
 does not. A retired code stays retired, because recycling a number

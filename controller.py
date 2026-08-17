@@ -1314,7 +1314,8 @@ def _force_on(plug, gen=None):
             # path does - forcing it back must not swallow the evidence.
             # Only on a confirmed False: an unreadable plug is unknown,
             # not off, and reporting it as a switch invents an event.
-            _log("Fan off \u2014 changed outside")
+            _log("%s Fan off \u2014 changed outside"
+                 % FC_EXTERNAL_CHANGE)
         plug.set(True)               # raises: retried on the next cycle
         now = time.time()
         with _state_lock:
@@ -1421,8 +1422,9 @@ def tick():
                     # must not grant a fresh lease to a fan that was
                     # already running.
                     STATE["changed_at"] = now
-                    ext_msg = ("Fan %s \u2014 changed outside"
-                               % ("on" if actual else "off"))
+                    ext_msg = ("%s Fan %s \u2014 changed outside"
+                               % (FC_EXTERNAL_CHANGE,
+                                  "on" if actual else "off"))
             fan_on = STATE["fan"]
             changed = STATE["changed_at"]
     # Recovery is an edge too, and only announced if the stale alert
@@ -2131,6 +2133,21 @@ FC_RESTART_FAULT = "FC-006"
 FC_SENSOR_RETURNED = "FC-100"
 FC_HARD_CLEARED = "FC-101"
 FC_FAULT_PERSISTED = "FC-102"
+
+# 3xx: WORTH KNOWING, NOTHING FAILED. Not an alarm and not an
+# all-clear, so it sends no mail and belongs to neither series - the
+# code exists because the question "how often did this happen" is worth
+# being able to ask months later.
+#
+# FC-300 is the plug changing state without this service commanding it.
+# Usually that is a person at the switch. It is also exactly what a
+# SECOND CONTROLLER looks like, and this project has run two at once
+# for a week at a time - so the occurrences are worth being able to
+# count. The other fan-state lines stay uncoded on purpose: manual off
+# and the owed stop are the system doing what it was told, and coding
+# normal operation would make a code stop meaning "something
+# happened".
+FC_EXTERNAL_CHANGE = "FC-300"
 
 
 def _duration(seconds):

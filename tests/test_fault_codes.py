@@ -695,5 +695,32 @@ def test_the_action_still_logs_when_there_was_no_mode_change():
     return "standalone text when it stands alone"
 
 
+def test_an_external_change_carries_fc300():
+    """The one line where "how often did this happen" is a real
+    question - it is also what a second controller looks like."""
+    C = harness.load()
+    assert C.FC_EXTERNAL_CHANGE == "FC-300", C.FC_EXTERNAL_CHANGE
+    C._log("%s Fan off \u2014 changed outside" % C.FC_EXTERNAL_CHANGE)
+    msgs = [e["msg"] for e in C.load_events()]
+    assert msgs[0].startswith("FC-300"), msgs
+    return "external changes are countable"
+
+
+def test_normal_operation_stays_uncoded():
+    """A code has to mean something happened. Manual off and the owed
+    stop are the system doing what it was told."""
+    C = harness.load()
+    src = open(os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "controller.py")).read()
+    for line in ('_log("Fan off \\u2014 manual"',
+                 '"Fan off \\u2014 manual stop owed from before restart"'):
+        assert line in src, "log line moved: %s" % line
+        i = src.index(line)
+        window = src[max(0, i - 200):i]
+        assert "FC_" not in window.split("_log(")[-1], \
+            "normal operation gained a code: %s" % line
+    return "manual paths carry no code"
+
+
 if __name__ == "__main__":
     sys.exit(harness.run(dict(globals())))
