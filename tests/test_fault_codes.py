@@ -663,7 +663,7 @@ def test_anything_in_between_stops_the_fold():
     and collapsing would hide the thing in the middle."""
     C = harness.load()
     C._log("Mode: Force on")
-    C._log("Fan switched to off outside this service")
+    C._log("Fan off \u2014 changed outside")
     C._log("Fan on", absorb="Mode: Force on", merged="folded")
     msgs = [e["msg"] for e in C.load_events()]
     assert len(msgs) == 3, msgs
@@ -685,7 +685,7 @@ def test_the_action_still_logs_when_there_was_no_mode_change():
     """Force on re-asserted after an external switch has no mode line
     above it, and must still record that it acted."""
     C = harness.load()
-    C._log("Fan switched to off outside this service")
+    C._log("Fan off \u2014 changed outside")
     C._log("Fan on \u2014 forced on",
            absorb="Mode: Force on",
            merged="Mode: Force on \u2014 fan on")

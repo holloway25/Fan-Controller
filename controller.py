@@ -1015,6 +1015,22 @@ def _redact(text):
 
 
 
+# THE SHAPE OF A LINE: state first, then why, separated by an em dash.
+#
+#     Fan on - 1000 ppm
+#     Fan off - manual
+#     FC-001 Fan on - no reading for 30 min
+#
+# The left of the dash is what changed and is the same handful of
+# strings every time, so the log scans as a column on a narrow screen
+# instead of a wall of sentences. The right is the reason and varies.
+# Anything that is not a fan-state change says what it is first for the
+# same reason: "Restart refused - ...", "Fault cleared - ...".
+#
+# Rewritten 2026-08-16: the same event class had three different verbs
+# - "Fan on", "Fan switched to off", "Manual mode - switched off" - and
+# the long ones wrapped on a phone.
+
 # How long a line stays open to being folded into. Generous on
 # purpose: a mode change is followed by its actuation on the NEXT poll,
 # which is poll_seconds away and configurable, and a plug that needed a
@@ -1252,9 +1268,9 @@ def _manual_off_locked(plug):
     # Only now: the plug has confirmed, so the promise is discharged.
     clear_manual_off_promise()
     if not already_off:
-        _log("Manual mode - switched off, now hands off",
+        _log("Fan off \u2014 manual",
              absorb="Mode: %s" % MODE_LABELS.get("manual", "manual"),
-             merged="Mode: Manual \u2014 switched off, now hands off")
+             merged="Mode: Manual \u2014 fan off")
 
 def _force_on(plug, gen=None):
     """Hold the fan on without consulting Protect.
@@ -1298,7 +1314,7 @@ def _force_on(plug, gen=None):
             # path does - forcing it back must not swallow the evidence.
             # Only on a confirmed False: an unreadable plug is unknown,
             # not off, and reporting it as a switch invents an event.
-            _log("Fan switched to off outside this service")
+            _log("Fan off \u2014 changed outside")
         plug.set(True)               # raises: retried on the next cycle
         now = time.time()
         with _state_lock:
@@ -1405,7 +1421,7 @@ def tick():
                     # must not grant a fresh lease to a fan that was
                     # already running.
                     STATE["changed_at"] = now
-                    ext_msg = ("Fan switched to %s outside this service"
+                    ext_msg = ("Fan %s \u2014 changed outside"
                                % ("on" if actual else "off"))
             fan_on = STATE["fan"]
             changed = STATE["changed_at"]
@@ -1423,7 +1439,7 @@ def tick():
         # written down, so events.json showed a fail-safe starting and
         # nothing ending it - and a search for the all-clear found
         # nothing at all.
-        _log("%s Sensor readings have returned, normal control resumed"
+        _log("%s Readings returned \u2014 normal control resumed"
              % FC_SENSOR_RETURNED)
         _notify("%s Sensor readings have returned" % FC_SENSOR_RETURNED,
                 _alert_body(
@@ -1536,7 +1552,7 @@ def _failsafe():
                 STATE["fan"] = True
                 STATE["changed_at"] = time.time()
     if not already_on:
-        _log("%s FAIL-SAFE: no reading for %s, ventilating"
+        _log("%s Fan on \u2014 no reading for %s"
              % (FC_SENSOR_COMMS, _plural(mins, "min")))
     # OUTSIDE the already_on check, deliberately. This alert is about the
     # SENSOR having died, not about the plug being switched. Sitting it
@@ -2069,7 +2085,7 @@ def _notify_restart_fault():
         def completed(ok):
             if ok:
                 _mark_fault_delivered(expected_at)
-        _log("%s Fan fault still standing after a restart - %s"
+        _log("%s Fault still standing after restart \u2014 %s"
              % (FC_RESTART_FAULT, f.get("code") or "unknown"))
         _notify("%s Fan fault still standing after a restart"
                 % FC_RESTART_FAULT,
@@ -2439,7 +2455,7 @@ def _enforce_stop(plug, gen=None):
         with _state_lock:
             f = STATE["fault"] or {}
         code = f.get("code")
-        _log("%sDraw fault - fan stop confirmed"
+        _log("%sFan off \u2014 stop confirmed"
              % ("%s " % code if code else ""))
     return True
 
@@ -2671,7 +2687,7 @@ def _retry_fault_persist():
             return False
         with _state_lock:
             STATE["fault_unsaved"] = False
-    _log("%s Fault saved on retry; it will survive a restart."
+    _log("%s Fault saved \u2014 will survive a restart"
          % FC_FAULT_PERSISTED)
     # Resets the alert edge. Without this the flag stayed raised after a
     # successful retry, and a LATER write failure sent nothing - the one
@@ -3178,7 +3194,7 @@ def api_fault_clear():
     _oob_since = None
     if had:
         code = had.get("code") or "a draw fault"
-        _log("%s Draw fault cleared - %s" % (FC_HARD_CLEARED, code))
+        _log("%s Fault cleared \u2014 %s" % (FC_HARD_CLEARED, code))
         # GATED ON DELIVERY, exactly as FC-100 is. If the original alert
         # never reached anyone there is nothing to stand down from, and
         # a closure notice for an episode nobody was told about reads as
@@ -3843,7 +3859,7 @@ if __name__ == "__main__":
             and manual_off_promised():
         with _state_lock:
             STATE["manual_off_pending"] = True
-        _log("Manual stop was still owed from before the restart")
+        _log("Fan off \u2014 manual stop owed from before restart")
     # A fault that outlived the restart. Said out loud because
     # restarting is not how one gets cleared, and whoever just restarted
     # may well have been trying exactly that. Before the threads, so it

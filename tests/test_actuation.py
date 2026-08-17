@@ -155,7 +155,7 @@ def test_an_external_switch_off_is_recorded_before_it_is_undone():
     C._force_on(plug)
 
     log = events(C)
-    assert "switched to off outside this service" in log, (
+    assert "Fan off" in log and "changed outside" in log, (
         "an external switch-off left no trace: %s" % log)
     assert seen.get("before_switch", 0) >= 1, (
         "the evidence was logged after the switch that undid it")
