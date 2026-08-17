@@ -23,6 +23,26 @@ Werkzeug's own 413 page.
 | POST | `/api/ui/password` | required | Set or clear the UI password |
 | GET | `/api/debug/sensor` | required | Raw Protect payload for the selected sensor |
 
+Each entry in `events` carries `cls`: what the line MEANS, decided by
+`event_class` rather than by the page.
+
+| `cls` | Meaning |
+|---|---|
+| `fault` | An alarm (`FC-0xx`) or an operational failure (`FC-2xx`) |
+| `ok` | An all-clear (`FC-1xx`), an ordinary fan switch, or an external change while in Manual |
+| `m-manual` | Manual mode, or an external change in any mode but Manual |
+| `m-auto` | Auto mode |
+| `m-on` | Force on, including a switch caused by it |
+| `""` | Everything else - settings edits, restarts, anything unrecognised |
+
+They are CSS class names: the page owns what a colour looks like, the
+server owns what a line means. Served with each event and never stored,
+because recolouring a log should not mean rewriting `events.json`.
+
+This moved out of the dashboard on 2026-08-17 after the rules there
+broke silently - they were anchored on wording that changed when log
+lines gained a fault-code prefix, and no test could see it.
+
 Every request body is capped at 8KB and a larger one is rejected with
 413. Nothing here legitimately posts more than a few hundred bytes, and
 `/api/clienterror` stays open even once auth is on, so without a cap one
