@@ -170,6 +170,13 @@ unavailable does not have to be worked out from timestamps.
 The codes never change and are never reused, so a search that works
 today works on an archive from a year ago.
 
+The series tells you where to look before you read the line:
+
+    FC-0xx   an alert was emailed - check the mailbox too
+    FC-1xx   an all-clear was emailed
+    FC-2xx   something failed and NO email was sent
+    FC-3xx   worth knowing, nothing failed
+
 An alarm with no all-clear can also mean the all-clear was suppressed
 on purpose: `FC-100`, `FC-101` and `FC-102` only send if the original
 warning was actually delivered.

@@ -182,6 +182,33 @@ and a mailbox.
 **`0xx` are alarms and `1xx` are all-clears**, so a mail rule can
 separate them without parsing subjects.
 
+**`2xx` is something failed and nobody was emailed.** Operational
+errors that reach the activity log and stop there. The distinction from
+`0xx` is the point of the separate series: an `FC-0xx` means a message
+was sent and someone may already be reading it, while an `FC-2xx` means
+the log is the only place it exists.
+
+| Code | Subsystem |
+|---|---|
+| `FC-200` | Unclassified - the poll loop caught something unexpected |
+| `FC-201` | Protect unreachable, and its recovery |
+| `FC-202` | The plug will not read or will not obey |
+| `FC-203` | An alert could not be sent |
+| `FC-204` | A write did not land |
+| `FC-205` | A restart was refused, or came back degraded |
+| `FC-206` | Startup conditions, DNS |
+| `FC-207` | **The fail-safe itself failed** - the fan was not ventilated when it should have been |
+
+Grouped by subsystem rather than one code per message: fifteen log
+lines share these, because "which subsystem is unhappy" is the question
+people actually ask. `FC-207` is separate from the rest because the
+others describe something not working, while that one describes
+protection not happening.
+
+There is no `2xx` all-clear series. Recovery carries the code of the
+failure it ends - `FC-201 Poll recovered` - because `1xx` exists so a
+mail rule can split alarms from clears, and nothing in `2xx` is mailed.
+
 **`3xx` is worth knowing, nothing failed.** It sends no mail and appears
 only in the activity log. `FC-300` is there because "how often did
 something else switch the plug" is a question worth being able to ask

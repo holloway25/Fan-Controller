@@ -1726,7 +1726,8 @@ def _notify(subject, body, on_complete=None):
             on_complete(ok)
         except Exception as exc:
             try:
-                _log("Alert bookkeeping failed: %s" % exc)
+                _log("%s Alert bookkeeping failed: %s"
+                     % (FC_ALERT_FAILED, exc))
             except Exception:
                 pass
 
@@ -1749,8 +1750,8 @@ def _notify(subject, body, on_complete=None):
                 # Redacted: a relay's rejection can quote what it was
                 # given, and the activity log is served without a
                 # password.
-                _log(_redact("Alert email failed (%s): %s"
-                             % (subject, why)))
+                _log(_redact("%s Alert email failed (%s): %s"
+                             % (FC_ALERT_FAILED, subject, why)))
             complete(why is None)
         threading.Thread(target=run, daemon=True,
                          name="notify").start()
@@ -1761,7 +1762,8 @@ def _notify(subject, body, on_complete=None):
         # that already raised above.
         complete(False)
         try:
-            _log("Alert email could not be queued: %s" % exc)
+            _log("%s Alert email could not be queued: %s"
+                 % (FC_ALERT_FAILED, exc))
         except Exception:
             pass
 
@@ -2110,7 +2112,8 @@ def _notify_restart_fault():
                 on_complete=completed)
     except Exception as exc:        # pragma: no cover - must never escape
         try:
-            _log("Restart fault notice failed: %s" % exc)
+            _log("%s Restart fault notice failed: %s"
+                 % (FC_ALERT_FAILED, exc))
         except Exception:
             pass
 
@@ -2148,6 +2151,30 @@ FC_FAULT_PERSISTED = "FC-102"
 # normal operation would make a code stop meaning "something
 # happened".
 FC_EXTERNAL_CHANGE = "FC-300"
+
+# 2xx: SOMETHING FAILED, NOBODY WAS EMAILED. Operational errors that
+# reach the activity log and stop there.
+#
+# The distinction from 0xx is the whole point of a separate series: an
+# FC-0xx means a message was sent and someone may already be reading
+# it, while an FC-2xx means the log is the only place this exists. That
+# is the thing worth knowing immediately at 2am.
+#
+# Grouped by SUBSYSTEM rather than one code per message. Fifteen log
+# lines share these seven codes, because "which subsystem is unhappy"
+# is the question people actually ask, and a code per message would be
+# a lookup table nobody remembers.
+FC_POLL_ERROR = "FC-200"        # unclassified: the loop caught something
+FC_SENSOR_DOWN = "FC-201"       # Protect unreachable, and its recovery
+FC_PLUG_DOWN = "FC-202"         # the plug will not read or will not obey
+FC_ALERT_FAILED = "FC-203"      # an alert could not be sent
+FC_DISK_FAILED = "FC-204"       # a write did not land
+FC_RESTART_PROBLEM = "FC-205"   # a restart was refused or came back degraded
+FC_STARTUP = "FC-206"           # startup conditions, DNS
+# The one 2xx that means PROTECTION DID NOT HAPPEN. Separate from the
+# rest because the others describe something not working; this one
+# describes the fan not being ventilated when it should have been.
+FC_FAILSAFE_FAILED = "FC-207"
 
 
 def _duration(seconds):
@@ -2812,16 +2839,16 @@ def _wait_for_dns(timeout=30, interval=3):
         try:
             socket.getaddrinfo(host, None)
             if waited:
-                _log("Resolved %s, starting normally" % host)
+                _log("%s Resolved %s, starting normally" % (FC_STARTUP, host))
             return True
         except socket.gaierror:
             pass
         if time.time() >= deadline:
-            _log("Could not resolve %s after %ds, starting anyway"
-                 % (host, timeout))
+            _log("%s Could not resolve %s after %ds, starting anyway"
+                 % (FC_STARTUP, host, timeout))
             return False
         if not waited:
-            _log("Waiting for DNS to resolve %s" % host)
+            _log("%s Waiting for DNS to resolve %s" % (FC_STARTUP, host))
             waited = True
         if _wake.wait(interval):
             # Settings changed. Cleared here rather than left for loop(),
@@ -2831,8 +2858,13 @@ def _wait_for_dns(timeout=30, interval=3):
             return False
 
 
-def _fail(msg, last):
+def _fail(msg, last, code=None):
     """Record a poll failure in STATE and, once, in the activity log.
+
+    The CODE comes from the caller because only the caller knows which
+    subsystem raised: a ProtectError and a PlugError arrive here as
+    plain text otherwise. STATE["error"] stays uncoded - the dashboard
+    shows it as a sentence, and a code in a status line is noise.
 
     STATE["error"] is the live value the dashboard shows. The log entry is
     what survives the tab being closed: this branch previously wrote only
@@ -2847,7 +2879,7 @@ def _fail(msg, last):
     with _state_lock:
         STATE["error"] = msg
     if msg != last:            # outside the lock: _log takes it itself
-        _log(msg)
+        _log("%s %s" % (code, msg) if code else msg)
     return msg
 
 
@@ -2890,6 +2922,7 @@ def loop():
     _wait_for_dns()
     fails = 0
     last_logged = None
+    last_code = None
     while True:
         try:
             # Inside the try: a bad value here used to kill the thread.
@@ -2899,19 +2932,29 @@ def loop():
         try:
             tick()
             if last_logged is not None:
-                _log("Sensor poll recovered")
+                # Recovery carries the code of the failure it ends, so
+                # both halves come back from one search. 2xx has no
+                # separate all-clear series: 1xx exists so a MAIL RULE
+                # can split alarms from clears, and nothing here is
+                # mailed.
+                _log("%s Poll recovered" % (last_code or FC_POLL_ERROR))
             fails = 0
             last_logged = None
+            last_code = None
         except (ProtectError, PlugError) as e:
             # Logged as well as shown: making login() raise ProtectError
             # moved the restart-time DNS failure into this branch, so
             # logging only the generic one below would hide it again.
             fails += 1
-            last_logged = _fail(_redact(e), last_logged)
+            last_code = (FC_PLUG_DOWN if isinstance(e, PlugError)
+                         else FC_SENSOR_DOWN)
+            last_logged = _fail(_redact(e), last_logged, last_code)
         except Exception as e:  # keep the loop alive on anything unexpected
             fails += 1
+            last_code = FC_POLL_ERROR
             last_logged = _fail(
-                _redact("%s: %s" % (type(e).__name__, e)), last_logged)
+                _redact("%s: %s" % (type(e).__name__, e)), last_logged,
+                last_code)
         if fails:
             # After both branches: a login timeout or malformed payload is
             # exactly when ventilation matters, and neither raises
@@ -2919,8 +2962,8 @@ def loop():
             try:
                 _failsafe()
             except Exception as e:
-                _log(_redact("Fail-safe failed: %s: %s"
-                 % (type(e).__name__, e)))
+                _log(_redact("%s Fail-safe failed: %s: %s"
+                 % (FC_FAILSAFE_FAILED, type(e).__name__, e)))
         # Back off on repeated failures so a rate limit is not made worse.
         delay = base if not fails else min(300, base * 2 ** min(fails, 5))
         if fails:
@@ -3643,11 +3686,12 @@ def _apply_resume():
     try:
         d = json.loads(raw)
     except (ValueError, TypeError):
-        _log("Restart - handover data unreadable, starting clean")
+        _log("%s Restart - handover data unreadable, starting clean"
+             % FC_RESTART_PROBLEM)
         return False
     if not isinstance(d, dict) or d.get("v") != 1:
-        _log("Restart - handover data not a version this build reads, "
-             "starting clean")
+        _log("%s Restart - handover data not a version this build "
+             "reads, starting clean" % FC_RESTART_PROBLEM)
         return False
     latch = d.get("latch")
     with _state_lock:
@@ -3710,8 +3754,8 @@ def _consume_restart_request():
     try:
         os.unlink(RESTART_PATH)
     except OSError as e:
-        _log("Restart request ignored - could not remove restart.request "
-             "(%s)" % e)
+        _log("%s Restart request ignored - could not remove "
+             "restart.request (%s)" % (FC_RESTART_PROBLEM, e))
         return False
     return fresh
 
@@ -3739,7 +3783,8 @@ def _mark_fds_close_on_exec():
     try:
         fds = sorted(int(n) for n in os.listdir("/proc/self/fd"))
     except (OSError, ValueError) as e:
-        _log("Restart - could not enumerate descriptors (%s)" % e)
+        _log("%s Restart - could not enumerate descriptors (%s)"
+             % (FC_RESTART_PROBLEM, e))
         return
     for fd in fds:
         if fd <= 2:
@@ -3798,8 +3843,8 @@ def _restart_now():
     # already in flight, refusing and being asked again is better than
     # queueing behind a disk that may be failing.
     if not _fault_lock.acquire(timeout=2):
-        _log("Restart refused - a fault is being written right now; "
-             "try again in a moment")
+        _log("%s Restart refused - a fault is being written right "
+             "now; try again in a moment" % FC_RESTART_PROBLEM)
         return False
 
     unsaved = True
@@ -3813,8 +3858,8 @@ def _restart_now():
 
     # Only reachable when the restart was refused. A failed exec raises
     # instead, and restart_loop logs it.
-    _log("Restart refused - the active fault is not saved to disk "
-         "and would be lost")
+    _log("%s Restart refused - the active fault is not saved to disk "
+         "and would be lost" % FC_RESTART_PROBLEM)
     return False
 
 
@@ -3825,8 +3870,8 @@ def _restart_from_here():
         # Worth saying, not worth refusing over: the graph loses at
         # most HIST_FLUSH_SECONDS of points and nothing about the
         # fan's safety rests on them.
-        _log("Restart - history could not be written, up to %ds of "
-             "readings will be lost" % HIST_FLUSH_SECONDS)
+        _log("%s Restart - history could not be written, up to %ds of "
+             "readings will be lost" % (FC_DISK_FAILED, HIST_FLUSH_SECONDS))
     try:
         sys.stdout.flush()
         sys.stderr.flush()
@@ -3859,7 +3904,7 @@ def restart_loop():
             if _consume_restart_request():
                 _restart_now()
         except Exception as e:
-            _log("Restart watch error - %s" % e)
+            _log("%s Restart watch error - %s" % (FC_RESTART_PROBLEM, e))
         time.sleep(RESTART_POLL_SECONDS)
 
 
