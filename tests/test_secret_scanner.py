@@ -77,6 +77,11 @@ CAUGHT = [
     # was being applied to YAML, where there is nothing to refer to.
     _f("{k}: CorrectHorseBatteryStaple"),
     _f("{a}: SomeLongAlphabeticKey"),
+    # Review of d9ad884: the code-shape exemption ran before the YAML
+    # check, so a value only had to LOOK like code to escape. A dotted
+    # JWT and anything with a bracket both went through.
+    _f("{a}: eyJhbGci.eyJzdWI.signature123"),
+    _f("{k}: CorrectHorse(Battery"),
 ]
 
 NOT_CAUGHT = [
@@ -132,7 +137,7 @@ def test_a_comment_cannot_vouch_for_the_value():
 def test_the_tool_runs_and_reports_cleanly_on_this_tree():
     """The scanner is only useful if it passes on a clean repo."""
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    r = subprocess.run([sys.executable, TOOL, "--tree"], cwd=root,
+    r = subprocess.run([sys.executable, TOOL, "--worktree"], cwd=root,
                        capture_output=True, text=True)
     assert r.returncode == 0, "scanner flags this tree:\\n%s" % r.stdout
     return "clean on HEAD"
@@ -207,6 +212,49 @@ def test_prose_describing_an_assignment_is_not_a_secret():
     assert C.suspicious(_f('{k} = "Password123!"'))
     assert C.suspicious(_f('{k}="abcdef123456"'))
     return "prose passes, values do not"
+
+
+def test_a_yaml_value_that_merely_looks_like_code_is_caught():
+    """There are no expressions in a YAML scalar. A dot is part of the
+    value, not an attribute access."""
+    C = _scanner()
+    assert C.suspicious(_f("{a}: eyJhbGci.eyJzdWI.signature123")), \
+        "a dotted JWT-shaped token passed"
+    assert C.suspicious(_f("{k}: CorrectHorse(Battery")), \
+        "a bracket was enough to excuse a YAML secret"
+    # Python references must still pass, or the scanner becomes noise.
+    assert not C.suspicious(_f("{k} = cfg.get('{k}')"))
+    assert not C.suspicious(_f("{k} = self.{k}"))
+    # And a short YAML enum is not a passphrase.
+    assert not C.suspicious(_f("{k}: manual"))
+    return "YAML values are data, not expressions"
+
+
+def test_a_finding_never_prints_the_value():
+    """A credential caught in CI would otherwise be copied into the
+    Actions log - public, and with no history rewrite available."""
+    C = _scanner()
+    import io as _io
+    import contextlib
+    buf = _io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        C._report("some/file.py", 12, _f('{k} = "Password123!"'))
+    out = buf.getvalue()
+    assert "some/file.py" in out and "12" in out, out
+    assert "Password123!" not in out, "the value was printed: %r" % out
+    assert "redacted" in out.lower(), out
+    return "location only"
+
+
+def test_nothing_is_exempt_from_the_scan():
+    """The three enforcement files were skipped, which made them the
+    one place a pasted credential would survive both scans - and they
+    are exactly the files someone edits while thinking about
+    credentials."""
+    C = _scanner()
+    assert C.SKIP_PATHS == (), "something is exempt again: %r" % (
+        C.SKIP_PATHS,)
+    return "no exemptions"
 
 
 if __name__ == "__main__":

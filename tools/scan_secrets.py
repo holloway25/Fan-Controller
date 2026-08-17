@@ -32,6 +32,7 @@ Usage:
 Exit 0 clean, 1 on a finding, 2 on a usage error.
 """
 import argparse
+import io
 import re
 import subprocess
 import sys
@@ -63,7 +64,8 @@ INTERP = re.compile(r"\$\{|\$\(|%\(|%[sd]|\{\{|\{\}|<[A-Za-z_]")
 # Anything inside quotes is a literal by definition.
 CODE = re.compile(r"[(\)\[\]$]|\.\w|^\$")
 
-# A bare identifier with no digits, unquoted: password = stored_secret.
+# A bare identifier with no digits, unquoted - a key assigned the name
+# of a variable holding it.
 # Real unquoted secrets - the YAML case, a key followed by a colon and a
 # long alphanumeric run - almost always carry digits, so that is the
 # line drawn. A heuristic, and the quoted path above is the one that
@@ -94,15 +96,19 @@ PLACEHOLDER = re.compile(
 # Below this, a value is too short to be a credential worth protecting.
 MIN_LEN = 6
 
-# These three carry the patterns themselves and would match on their
-# own definitions. tests/test_secret_scanner.py USED to be here and no
-# longer is: its fixtures assemble their keys at runtime, so it is
-# scanned like anything else. One exemption fewer.
-SKIP_PATHS = (
-    "tools/scan_secrets.py",
-    ".githooks/pre-commit",
-    ".github/workflows/privacy.yml",
-)
+# EMPTY, AND MEANT TO STAY EMPTY. This held the three files that
+# enforce the rules - this scanner, the hook and the privacy workflow -
+# on the grounds that they match on their own pattern definitions. They
+# do not, as it turns out; only one explanatory comment ever did, and
+# rewording it cost nothing.
+#
+# The exemption was worse than the problem it solved: a credential
+# pasted into any of the three would have passed both the tree scan and
+# the per-commit scan, and those are exactly the files someone edits
+# while thinking about credentials. Reported by review of d9ad884.
+#
+# If something here ever needs exempting again, reword it instead.
+SKIP_PATHS = ()
 
 
 def _value(m):
@@ -137,7 +143,13 @@ def suspicious(line):
             v = v.strip("\"'`")
             if len(v) < MIN_LEN:
                 continue
-            if CODE.search(v):
+            # BOTH CODE EXEMPTIONS ARE CODE-ONLY. CODE ran before the
+            # yaml_style check, so a YAML value merely had to LOOK like
+            # code to escape: a dotted JWT-shaped token, or anything
+            # containing a bracket, went straight through. There are no
+            # expressions in a YAML scalar - a dot is part of the value.
+            # Reported by review of d9ad884.
+            if not yaml_style and CODE.search(v):
                 continue
             # THE IDENTIFIER EXEMPTION IS FOR CODE, NOT FOR YAML. It
             # exists because "password = stored_secret" is a reference,
@@ -148,6 +160,12 @@ def suspicious(line):
             if (not yaml_style and IDENT.match(v)
                     and not any(c.isdigit() for c in v)):
                 continue
+            if yaml_style and IDENT.match(v) and len(v) < 12:
+                # A short bare word after a YAML key is usually an enum
+                # - "mode: manual", "level: debug". A passphrase is
+                # longer than this, and anything with digits or
+                # punctuation is judged on its own merits above.
+                continue
         if PLACEHOLDER.search(v):
             continue
         return v
@@ -155,8 +173,19 @@ def suspicious(line):
 
 
 def _report(where, lineno, line):
-    print("%s:%s: credential-looking assignment: %s"
-          % (where, lineno, line.strip()[:120]))
+    """Say WHERE, never WHAT.
+
+    This printed the offending line. In CI that copies the credential
+    into the Actions log - which for this repository is public - so a
+    check meant to stop a secret reaching the internet published it
+    itself, and to a place with no history rewrite available. Reported
+    by review of d9ad884.
+
+    The location is enough: whoever ran it has the file open, and
+    whoever reads it in CI should not be told the value.
+    """
+    print("%s:%s: credential-looking assignment (value redacted)"
+          % (where, lineno))
 
 
 def _git(*args):
@@ -174,6 +203,29 @@ def _git(*args):
             "git %s failed (%d): %s"
             % (" ".join(args), r.returncode, (r.stderr or "").strip()[:200]))
     return r.stdout
+
+
+def scan_worktree():
+    """Tracked files AS THEY ARE ON DISK.
+
+    --tree reads blobs out of HEAD, so it can never see the change in
+    front of you: a fix is only visible to it after being committed,
+    and a secret added to the working copy is invisible until then too.
+    This is the mode a person or a test should use while working;
+    --tree and --commit are for history.
+    """
+    hits = 0
+    for path in _paths(_git("ls-files")):
+        try:
+            with io.open(path, encoding="utf-8", errors="replace") as fh:
+                lines = fh.read().splitlines()
+        except (OSError, ValueError):
+            continue                    # deleted, or not readable as text
+        for i, line in enumerate(lines, 1):
+            if suspicious(line):
+                _report(path, i, line)
+                hits += 1
+    return hits
 
 
 def scan_staged():
@@ -220,6 +272,7 @@ def main():
     g = p.add_mutually_exclusive_group(required=True)
     g.add_argument("--staged", action="store_true")
     g.add_argument("--tree", action="store_true")
+    g.add_argument("--worktree", action="store_true")
     g.add_argument("--commit")
     a = p.parse_args()
 
@@ -227,6 +280,8 @@ def main():
         hits = scan_staged()
     elif a.tree:
         hits = scan_tree()
+    elif a.worktree:
+        hits = scan_worktree()
     else:
         hits = scan_tree(a.commit)
 

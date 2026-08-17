@@ -113,7 +113,12 @@ background:#0f1520;border:1px solid var(--line);border-radius:8px;
 padding:8px 11px;cursor:pointer}
 .log{font-family:var(--mono);font-size:13px;color:var(--dim);line-height:1.9}
 .log div{display:flex;gap:10px;align-items:baseline}
-.log time.when{flex:0 0 auto;white-space:nowrap;color:var(--faint)}
+.log time.when{flex:0 0 auto;white-space:nowrap;color:var(--faint);
+cursor:pointer}
+/* The expanded form is longer than the column, so it has to be allowed
+   to take the room. */
+.log time.when[aria-expanded=true]{white-space:normal}
+.log time.when:focus-visible{outline:2px solid var(--air);outline-offset:2px}
 /* min-width:0 is what lets a long line wrap instead of pushing the row
    wider than the screen: a flex item will not shrink below its content
    without it, and "FC-203 Alert email failed (...)" is longer than a
@@ -727,6 +732,21 @@ function render(s){
         sg+oh+":"+om;
       when.title=d.toString();
       when.setAttribute("aria-label",d.toString());
+      // TAP TO EXPAND. title needs a mouse and datetime is for
+      // machines, so on a phone the full moment was unreachable by an
+      // ordinary sighted user - reported by review of d9ad884. The
+      // short form and the long one swap on activation.
+      const shortTxt=when.textContent, longTxt=d.toString();
+      when.tabIndex=0;
+      when.setAttribute("role","button");
+      when.setAttribute("aria-expanded","false");
+      const toggle=()=>{
+        const open=when.getAttribute("aria-expanded")==="true";
+        when.textContent=open?shortTxt:longTxt;
+        when.setAttribute("aria-expanded",String(!open));};
+      when.addEventListener("click",toggle);
+      when.addEventListener("keydown",ev=>{
+        if(ev.key==="Enter"||ev.key===" "){ev.preventDefault();toggle();}});
       // Every fault-related entry is red, including "Fan off - draw
       // fault", which a prefix match on the raised message missed. Fan
       // state changes are green once they are not a fault.

@@ -1,7 +1,12 @@
 # Dashboard
 
-What the screen shows and why it is coloured the way it is. Nothing here
-changes behaviour; it is all read from `/api/state`.
+What the screen shows and why it is coloured the way it is.
+
+The live display is populated from `/api/state`. THE CONTROLS ARE NOT
+READ-ONLY: mode, settings, fault acknowledgement and the test send are
+POST requests that change what the controller does. This page used to
+say that nothing here changed behaviour, which described the display
+and misdescribed the page.
 
 ## Layout
 

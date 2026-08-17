@@ -303,5 +303,35 @@ def test_the_manifest_is_linked():
     return "installs standalone"
 
 
+def test_the_timestamp_expands_on_tap():
+    """title needs a mouse and datetime is for machines, so the full
+    moment was unreachable to an ordinary sighted phone user."""
+    html = squashed()
+    assert 'when.tabIndex=0' in html, "the timestamp cannot be focused"
+    assert 'setAttribute("role","button")' in html, "no button semantics"
+    assert 'addEventListener("click",toggle)' in html, "no tap handler"
+    assert 'ev.key==="Enter"' in html, "not reachable from a keyboard"
+    assert 'aria-expanded' in html, "state is not announced"
+    return "tap or Enter expands it"
+
+
+def test_the_expanded_timestamp_is_allowed_to_wrap():
+    """The long form is wider than the column it sits in."""
+    html = squashed()
+    assert 'aria-expanded=true]{white-space:normal}' in html, (
+        "expanded timestamps will be clipped to one line")
+    return "expanded form can wrap"
+
+
+def test_the_tap_handler_is_bound_once():
+    """A patch applied twice bound the listener twice - the same tap
+    would have toggled it back and forth in one gesture."""
+    html = squashed()
+    assert html.count("constshortTxt=when.textContent") == 1, (
+        "the tap handler is bound %d times"
+        % html.count("constshortTxt=when.textContent"))
+    return "bound once"
+
+
 if __name__ == "__main__":
     sys.exit(harness.run(dict(globals())))

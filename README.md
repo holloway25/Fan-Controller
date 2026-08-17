@@ -330,6 +330,11 @@ against a live install.
   regardless of what it says: every template was once rewritten with
   the whole email suite green
 - `test_failures.py` - persistence errors and malformed request bodies
+- `test_plug_parse.py` - the shapes a Tasmota status payload arrives in,
+  including the ones that are valid JSON and still carry no wattage
+- `test_structure.py` - invariants the other tests cannot see: every
+  plug-touching function carries a generation, the direct actuators
+  check under the lock and first, and the exemption list is real
 - `test_log_formats.py` - walks the SOURCE, because a log line on the
   restart path cannot be reached without breaking the process. No `_log`
   call may concatenate a formatted fragment (`%` binds tighter than `+`,
