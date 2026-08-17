@@ -199,6 +199,43 @@ def _copy(dest):
     return dest
 
 
+def classify(returncode, out, expect):
+    """The verdict, as a pure function of what the run produced.
+
+    SEPARATED SO IT CAN BE TESTED. Everything else here copies trees
+    and spawns processes; this is the part that decides, and it has
+    been wrong twice - once accepting any non-zero exit, once accepting
+    printed text without an exit code to match. Both were found by
+    review rather than by this tool, which is the joke it deserves.
+
+    BOTH SIGNALS ARE REQUIRED. A test module that prints a FAIL line
+    and exits zero has not failed - its runner has swallowed the
+    result, which is a broken harness rather than a caught mutation,
+    and reporting CAUGHT there would hide exactly the defect this tool
+    exists to find. Reported by review of 04ad1d7.
+    """
+    named = any(mark in out for mark in
+                ("FAIL  %s:" % expect, "ERROR %s:" % expect,
+                 "FAIL  %s " % expect, "ERROR %s " % expect))
+    if named and returncode == 0:
+        return "BROKEN-RUNNER", (
+            "%s printed a failure but %s exited 0" % (expect, "the module"))
+    if named:
+        line = [ln.strip() for ln in out.splitlines()
+                if (ln.startswith("FAIL") or ln.startswith("ERROR"))
+                and expect in ln]
+        return "CAUGHT", (line[0][:100] if line else expect)
+
+    others = [ln.strip() for ln in out.splitlines()
+              if ln.startswith("FAIL") or ln.startswith("ERROR")]
+    if others:
+        return "WRONG-TEST", "%s passed; %s" % (expect, others[0][:70])
+    if returncode != 0:
+        return "WRONG-TEST", ("%s passed; module exited %d with no named "
+                              "failure" % (expect, returncode))
+    return "SURVIVED", "%s still passes" % expect
+
+
 def _apply(tree, old, new, path):
     p = os.path.join(tree, path)
     with io.open(p, encoding="utf-8") as f:
@@ -236,24 +273,7 @@ def run_one(name, path, old, new, module, expect, verbose=False):
 
         r = subprocess.run([PY, os.path.join(tree, "tests", module)],
                            capture_output=True, text=True, cwd=tree)
-        out = r.stdout + r.stderr
-
-        # THE NAMED TEST, not any failure in the module. An unrelated
-        # test breaking in the same file is not evidence that this
-        # behaviour is guarded.
-        for marker in ("FAIL  %s:" % expect, "ERROR %s:" % expect,
-                       "FAIL  %s " % expect, "ERROR %s " % expect):
-            if marker in out:
-                line = [ln.strip() for ln in out.splitlines()
-                        if ln.strip().startswith(marker.strip()[:5])
-                        and expect in ln]
-                return "CAUGHT", (line[0][:100] if line else expect)
-
-        others = [ln.strip() for ln in out.splitlines()
-                  if ln.startswith("FAIL") or ln.startswith("ERROR")]
-        if others:
-            return "WRONG-TEST", "%s passed; %s" % (expect, others[0][:70])
-        return "SURVIVED", "%s still passes" % expect
+        return classify(r.returncode, r.stdout + r.stderr, expect)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -284,6 +304,15 @@ def main():
     a = ap.parse_args()
 
     picked = [m for m in MUTATIONS if not a.k or a.k in m[0]]
+    if not picked:
+        # A MISTYPED FILTER MUST NOT LOOK LIKE SUCCESS. "all 0 mutations
+        # caught" and an exit of zero is a CI step that does no work and
+        # goes green - the same failure mode as a test that cannot fail.
+        # Reported by review of 04ad1d7.
+        print("No mutation matches %r." % a.k)
+        print("Nothing was run. %d mutations exist; --list shows them."
+              % len(MUTATIONS))
+        return 2
     if a.list:
         for name, path, _, _, module, expect in picked:
             print("%-34s %-22s %s" % (name, module, expect))
@@ -323,6 +352,10 @@ def main():
         print("INVALID    - the mutation does not compile, so it proves "
               "nothing.")
         print("             Fix the mutation.")
+        print("BROKEN-RUNNER - a failure was printed and the module still "
+              "exited 0.")
+        print("             The harness is not propagating failure. Fix "
+              "that first.")
         print("STALE      - the code moved and nobody re-checked the "
               "claim.")
         return 1
