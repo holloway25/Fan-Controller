@@ -35,14 +35,21 @@ nameserver, not the console.
 ## An error appeared and then cleared
 
 Poll failures are written to the activity log as well as the banner, so a
-fault that has since resolved can still be found after the fact. Look for
-the message in the log with its timestamp, and for "Sensor poll recovered"
-marking when it cleared.
+fault that has since resolved can still be found after the fact. The
+banner shows only what is wrong now; the log is what remains afterwards.
+
+Search by code. `FC-201` is Protect unreachable, `FC-202` is the plug,
+`FC-200` is something the loop did not recognise. The recovery carries
+the same code - `FC-201 Poll recovered` - so one search returns both
+ends and the gap between them is the outage.
+
+None of these send mail. That is what the `2xx` series means, and it is
+worth knowing before you go looking for an email that was never sent.
 
 Repeats are deduplicated: an outage lasting hours logs once, not once per
 retry, so the entry you see is when it started rather than when it last
 tried. This keeps a long outage from evicting real switching history from
-the 300-entry log.
+the log.
 
 ## HTTP 429 from UniFi
 

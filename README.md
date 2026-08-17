@@ -100,11 +100,24 @@ fault stops the fan and says so on the dashboard and in the activity
 log, and nowhere else. What sends, and what deliberately does not, is
 in `Docs/configuration.md`.
 
-Every alert carries a **fault code** - `FC-001` through `FC-006` for
-alarms, `FC-100` upwards for all-clears - in its subject, its body and
-the matching activity log line. The codes never change and are never
-reused, so `grep FC-003 events.json` finds an episode in an archive of
-any age.
+Every alert carries a **fault code**, in its subject, its body and the
+matching activity log line. The series says where to look before you
+read the line:
+
+    FC-0xx   an alert was emailed - check the mailbox too
+    FC-1xx   an all-clear was emailed
+    FC-2xx   something failed and NO email was sent
+    FC-3xx   worth knowing, nothing failed
+
+The codes never change and are never reused, so `grep FC-003
+events.json` finds an episode in an archive of any age - and because
+every alert-worthy transition is logged, an episode comes back as
+several lines under one code rather than a single entry. The full table
+is in `Docs/configuration.md`.
+
+Normal operation stays uncoded. A manual stop is the system doing what
+it was told, and coding that would make a code stop meaning something
+happened.
 
 ## Documentation
 
@@ -317,6 +330,15 @@ against a live install.
   regardless of what it says: every template was once rewritten with
   the whole email suite green
 - `test_failures.py` - persistence errors and malformed request bodies
+- `test_log_formats.py` - walks the SOURCE, because a log line on the
+  restart path cannot be reached without breaking the process. No `_log`
+  call may concatenate a formatted fragment (`%` binds tighter than `+`,
+  and one such line compiled, passed everything, and would have raised
+  the first time it ran), and every literal format string must have as
+  many placeholders as values
+- `test_secret_scanner.py` - what `tools/scan_secrets.py` must catch and
+  what it must not. Its fixtures assemble their keys at runtime, because
+  the scanner correctly flags its own test data otherwise
 - `test_history.py` - `/api/history` deltas, including the round trip
   that proves a client ends up holding exactly what the server holds
 - `test_restart.py` - the restart trigger, the handover, and the

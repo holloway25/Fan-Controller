@@ -64,9 +64,44 @@ colour, settings edits neutral. A switch-on caused by Force on takes the
 mode colour rather than the green of an automatic one: the same event
 should not read two ways on adjacent lines.
 
-The fault match is anchored to the start or end of the message rather
+**Colour follows the fault code series, not the wording.** `0xx` and
+`2xx` are red, `1xx` green, `3xx` takes the manual colour because
+something other than this service acted. A new code therefore inherits
+the right colour without the page being edited.
+
+This matters because the rules used to match the words. They were
+anchored to `Draw fault` and `Fan `, and both stopped working the moment
+log lines gained an `FC-` prefix - faults quietly rendered as ordinary
+text. Nothing caught it: no test reads those strings and the only place
+it shows is a screen.
+
+For lines with no code the text rules still apply, and the code prefix
+is stripped first so a coded and an uncoded line take the same branch.
+The fault match stays anchored to the start or end of the message rather
 than searching for the word. `Changed: watts_fault_seconds` names a
 setting, not a fault, and a substring match turned it red.
+
+### On a phone
+
+The timestamp column shows `17/08/26 11:27` - two-digit year, no
+seconds. The column is fixed width and never wraps, so every character
+it spends is taken from the message beside it. `events.json` keeps the
+full epoch and the complete timestamp is on the row as a tooltip.
+
+Log lines read state first, then reason: `Fan off - manual`,
+`FC-001 Fan on - no reading for 30 min`. The left of the dash is drawn
+from a handful of strings, so the eye finds state changes without
+reading the sentence.
+
+Inputs are 16px on narrow screens. Below that, mobile Safari zooms the
+whole page when a field takes focus.
+
+The webfont is fetched without blocking render. This is a LAN device: if
+the internet is down the dashboard must still appear, in system fonts
+rather than not at all.
+
+There is a manifest, so adding the page to a home screen opens it
+standalone rather than in a tab.
 Poll failures appear in the log as well as the banner, coloured as faults.
 The banner shows only the current error, so it disappears the moment the
 problem clears; the log is what remains afterwards. A "Sensor poll
