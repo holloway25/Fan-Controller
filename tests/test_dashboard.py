@@ -390,21 +390,41 @@ def test_the_chart_labels_scale_up_on_a_narrow_screen():
     assert "functionfitViewBox" in html, "no responsive viewBox"
     assert 'matchMedia("(max-width:640px)")' in html, (
         "the narrow box is not tied to the phone breakpoint")
-    assert "fitViewBox(svg,700,216,400,250)" in html, (
+    assert "fitViewBox(svg,700,216,345,216)" in html, (
         "the CO2 chart does not narrow")
-    assert "fitViewBox(svg,700,159,400,215)" in html, (
+    assert "fitViewBox(svg,700,159,345,185)" in html, (
         "the mini charts do not narrow")
     return "narrower box, larger labels"
 
 
-def test_the_narrow_box_is_taller_not_just_thinner():
-    """Once the labels take a larger share of the width, the plot needs
-    vertical room - and a phone has height to spare where it has none
-    to spare sideways."""
+def test_the_narrow_box_is_taller_and_keeps_its_shape():
+    """Two properties, and the first is easy to break while fixing the
+    second.
+
+    TALLER THAN THE DESKTOP BOX: a phone has vertical room where it has
+    none sideways, and the plot would otherwise be a band once the
+    labels take a larger share of the width.
+
+    AND THE SAME SHAPE AS THE LAST NARROW BOX: rendered height is
+    cssWidth * H/W, so shrinking the width to enlarge the labels makes
+    the chart taller on screen unless the height comes down with it.
+    The labels grow; the chart stays the size it was.
+    """
+    import re as _re
     html = squashed()
-    assert "400,250)" in html and "400,215)" in html, (
-        "the narrow viewBox is not taller than the wide one")
-    return "taller on a phone"
+    calls = _re.findall(r"fitViewBox\(svg,(\d+),(\d+),(\d+),(\d+)\)", html)
+    assert calls, "no fitViewBox calls found"
+    for ww, wh, nw, nh in calls:
+        wide = int(wh) / int(ww)
+        narrow = int(nh) / int(nw)
+        assert narrow > wide, (
+            "%s x %s is not taller than %s x %s" % (nw, nh, ww, wh))
+        # 0.625 is where the phone charts landed and where they were
+        # left. A change here means the chart resized, not the text.
+        assert abs(narrow - 0.625) < 0.12, (
+            "narrow aspect %.3f moved: the chart changed height, not "
+            "just its labels" % narrow)
+    return "taller than desktop, same as before"
 
 
 if __name__ == "__main__":
