@@ -5,8 +5,21 @@
 <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
 <meta name="apple-mobile-web-app-title" content="Office Fan">
 <meta name="theme-color" content="#0e1218">
+<link rel="manifest" href="/static/manifest.webmanifest">
+<meta name="mobile-web-app-capable" content="yes">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<!-- LOADED WITHOUT BLOCKING RENDER. As a plain stylesheet this held the
+     whole page until Google answered - so on a phone with a weak signal,
+     or with the office internet down, the dashboard sat blank rather
+     than showing whether the fan was on. This is a LAN device and it
+     must render on a LAN alone.
+
+     media="print" makes the browser fetch it at low priority without
+     applying it; the onload promotes it once it arrives. If it never
+     arrives, the fallbacks in --sans and --mono are already system
+     fonts and the page simply looks slightly different. -->
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap"
+      rel="stylesheet" media="print" onload="this.media='all'">
 <style>
 :root{--bg:#0e1218;--panel:#161c26;--panel2:#1c2530;--line:#27313f;
 --txt:#e8edf3;--dim:#aab6c6;--faint:#97a3b4;--ok:#34d399;--warn:#f87171;
@@ -16,6 +29,10 @@
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--txt);font-family:var(--sans);
 -webkit-font-smoothing:antialiased;padding:16px;min-height:100vh;
+/* dvh after vh, so a browser that does not know it keeps the fallback.
+   100vh on mobile Safari measures the viewport BEHIND the toolbar, so
+   the page was always taller than the screen and rubber-banded. */
+min-height:100dvh;
 background-image:radial-gradient(circle at 15% 0%,#16202c 0%,transparent 45%)}
 .wrap{max-width:1020px;margin:0 auto;display:flex;flex-direction:column;gap:14px}
 .grid{display:flex;flex-direction:column;gap:14px}
@@ -96,7 +113,12 @@ background:#0f1520;border:1px solid var(--line);border-radius:8px;
 padding:8px 11px;cursor:pointer}
 .log{font-family:var(--mono);font-size:13px;color:var(--dim);line-height:1.9}
 .log div{display:flex;gap:10px;align-items:baseline}
-.log span{flex:0 0 auto;white-space:nowrap;color:var(--faint)}
+.log span.when{flex:0 0 auto;white-space:nowrap;color:var(--faint)}
+/* min-width:0 is what lets a long line wrap instead of pushing the row
+   wider than the screen: a flex item will not shrink below its content
+   without it, and "FC-203 Alert email failed (...)" is longer than a
+   phone is wide. */
+.log span.txt{flex:1 1 auto;min-width:0;overflow-wrap:anywhere}
 .log div.fault,.log div.fault span{color:var(--warn)}
 .log div.ok,.log div.ok span{color:var(--ok)}
 .log div.m-auto,.log div.m-auto span{color:var(--air)}
@@ -109,6 +131,13 @@ header{flex-direction:column;align-items:stretch;gap:10px}
 .row{grid-template-columns:1fr;gap:6px}
 .row input,.row select{width:100%}
 .row input[type=checkbox]{width:auto}
+}
+@media(max-width:640px){
+/* 16px EXACTLY. Mobile Safari zooms the whole page in when a focused
+   field is under 16px, so tapping a threshold jumped the layout and
+   left you pinching back out. Nothing else here depends on the 14px. */
+input[type=number],input[type=text],input[type=password],select{
+font-size:16px}
 }
 @media(max-width:520px){input,select{width:130px}}
 </style></head><body><div class="wrap">
@@ -660,6 +689,7 @@ function render(s){
     s.events.forEach(e=>{
       const row=document.createElement("div");
       const when=document.createElement("span");
+      when.className="when";
       const d=new Date(e.at*1000), p=n=>String(n).padStart(2,"0");
       // Explicit 24-hour formatting; toLocaleTimeString adds am/pm here.
       // SHORT ON PURPOSE: two-digit year, no seconds. This column is
@@ -711,7 +741,13 @@ function render(s){
         /^Mode: Manual/.test(m)?"m-manual":
         (/^Mode: Auto/.test(m)?"m-auto":"m-on");
       row.appendChild(when);
-      row.appendChild(document.createTextNode(e.msg==null?"":String(e.msg)));
+      // An element rather than a bare text node, so the CSS above has
+      // something to give min-width:0 to. textContent still, because
+      // event text can come from /api/clienterror.
+      const txtEl=document.createElement("span");
+      txtEl.className="txt";
+      txtEl.textContent=e.msg==null?"":String(e.msg);
+      row.appendChild(txtEl);
       logEl.appendChild(row)});
   }else{logEl.textContent="Nothing yet."}
   if(touched)return;

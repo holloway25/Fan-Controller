@@ -194,5 +194,68 @@ def test_the_timestamp_is_short_but_the_full_one_is_reachable():
     return "short column, full value on hover"
 
 
+# ------------------------------------------------------ phone compatibility
+
+def test_inputs_are_16px_on_a_narrow_screen():
+    """Mobile Safari zooms the page in when a focused field is under
+    16px. Tapping a threshold jumped the layout and left you pinching
+    back out."""
+    html = squashed()
+    assert "font-size:16px" in html, (
+        "no 16px rule; focusing an input will zoom the page on iOS")
+    return "no zoom on focus"
+
+
+def test_the_page_does_not_wait_on_google_to_render():
+    """This is a LAN device. It must render on a LAN alone.
+
+    As a plain stylesheet the font link held the whole page until Google
+    answered, so a weak signal or an internet outage meant a blank
+    dashboard rather than a plain-looking one.
+    """
+    html = squashed()
+    assert 'fonts.googleapis.com' not in html or 'media="print"' in html, (
+        "the font stylesheet is render-blocking again")
+    return "fonts never block the fan state"
+
+
+def test_the_font_stack_falls_back_to_system_fonts():
+    """If the webfont never arrives the page must still be readable."""
+    html = squashed()
+    assert "system-ui" in html, "no system fallback for the sans stack"
+    assert "ui-monospace" in html or "Menlo" in html, (
+        "no system fallback for the mono stack")
+    return "readable without the webfont"
+
+
+def test_the_viewport_height_uses_dvh():
+    """100vh measures the area behind mobile Safari's toolbar, so the
+    page was always taller than the screen and rubber-banded."""
+    html = squashed()
+    assert "100dvh" in html, "no dvh rule"
+    assert "100vh" in html, "the vh fallback was removed"
+    return "dvh with a vh fallback"
+
+
+def test_a_long_log_line_can_wrap():
+    """A flex item will not shrink below its content without
+    min-width:0, and a redacted exception is longer than a phone is
+    wide."""
+    html = squashed()
+    assert "min-width:0" in html, (
+        "log text has no min-width:0; long lines will widen the row")
+    assert 'txtEl.className="txt"' in html, (
+        "the message is not in an element the CSS can target")
+    return "long lines wrap"
+
+
+def test_the_manifest_is_linked():
+    """Without it the dashboard opens in a tab with a URL bar rather
+    than standalone when added to a home screen."""
+    html = squashed()
+    assert "manifest.webmanifest" in html, "no manifest link"
+    return "installs standalone"
+
+
 if __name__ == "__main__":
     sys.exit(harness.run(dict(globals())))

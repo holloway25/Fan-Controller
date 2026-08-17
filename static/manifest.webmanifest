@@ -1,0 +1,24 @@
+{
+  "name": "Office Fan Controller",
+  "short_name": "Office Fan",
+  "description": "Fan control and air quality readings",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0e1218",
+  "theme_color": "#0e1218",
+  "icons": [
+    {
+      "src": "/static/favicon-32.png",
+      "sizes": "32x32",
+      "type": "image/png"
+    },
+    {
+      "src": "/static/apple-touch-icon.png",
+      "sizes": "180x180",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}
