@@ -1015,11 +1015,48 @@ def _redact(text):
 
 
 
-def _log(msg):
-    """Append an event and persist it. Safe from any thread."""
+# How long a line stays open to being folded into. Generous on
+# purpose: a mode change is followed by its actuation on the NEXT poll,
+# which is poll_seconds away and configurable, and a plug that needed a
+# retry pushes it further. The exact-match and newest-event conditions
+# are what make it safe, not the window.
+ABSORB_SECONDS = 300
+
+
+def _log(msg, absorb=None, merged=None):
+    """Append an event and persist it. Safe from any thread.
+
+    ABSORB FOLDS THE LINE ABOVE. A mode change and the actuation it
+    causes are logged by different code paths a poll apart, so the
+    journal read as pairs saying the same thing twice:
+
+        Mode: Force on
+        Fan on - forced on
+
+    If the NEWEST event is exactly `absorb` and recent, it is replaced
+    by `merged` rather than a second line being added. Conditions kept
+    deliberately tight: exact string, newest position only, one
+    replacement. Anything logged in between means the two are no longer
+    adjacent and both stand - which is the honest outcome, because
+    something happened between them.
+
+    Without `absorb` this is the plain append it always was.
+    """
     with _events_lock:
         with _state_lock:
-            STATE["events"].insert(0, {"at": time.time(), "msg": msg})
+            folded = False
+            if absorb and STATE["events"]:
+                top = STATE["events"][0]
+                if (top.get("msg") == absorb
+                        and time.time() - top.get("at", 0) <= ABSORB_SECONDS):
+                    # The timestamp stays the ORIGINAL one. The mode
+                    # changed when the person clicked, not when the plug
+                    # got round to it, and the second half is what was
+                    # already implied.
+                    top["msg"] = merged or msg
+                    folded = True
+            if not folded:
+                STATE["events"].insert(0, {"at": time.time(), "msg": msg})
             del STATE["events"][EVENTS_MAX:]
             snapshot = list(STATE["events"])
         # Still outside _state_lock, so disk I/O never blocks a reader,
@@ -1215,7 +1252,9 @@ def _manual_off_locked(plug):
     # Only now: the plug has confirmed, so the promise is discharged.
     clear_manual_off_promise()
     if not already_off:
-        _log("Manual mode - switched off, now hands off")
+        _log("Manual mode - switched off, now hands off",
+             absorb="Mode: %s" % MODE_LABELS.get("manual", "manual"),
+             merged="Mode: Manual \u2014 switched off, now hands off")
 
 def _force_on(plug, gen=None):
     """Hold the fan on without consulting Protect.
@@ -1265,7 +1304,12 @@ def _force_on(plug, gen=None):
         with _state_lock:
             STATE["fan"] = True
             STATE["changed_at"] = now
-        _log("Fan on \u2014 forced on")
+        # Folds into "Mode: Force on" when that is still the newest
+        # line: same click, same second, and the mode alone already
+        # says the fan is being held on.
+        _log("Fan on \u2014 forced on",
+             absorb="Mode: %s" % MODE_LABELS.get("on", "on"),
+             merged="Mode: Force on \u2014 fan on")
 
 
 def tick():

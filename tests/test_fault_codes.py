@@ -632,5 +632,68 @@ def test_the_log_holds_a_thousand_entries():
     return "1000 kept"
 
 
+# ----------------------------------------------- folding the duplicate pair
+
+def test_a_mode_change_and_its_actuation_are_one_line():
+    C = harness.load()
+    C._log("Mode: Force on")
+    C._log("Fan on \u2014 forced on",
+           absorb="Mode: Force on",
+           merged="Mode: Force on \u2014 fan on")
+    msgs = [e["msg"] for e in C.load_events()]
+    assert len(msgs) == 1, msgs
+    assert msgs[0] == "Mode: Force on \u2014 fan on", msgs
+    return "one line, not two"
+
+
+def test_the_folded_line_keeps_the_original_time():
+    """The mode changed when the person clicked, not when the plug
+    got round to it."""
+    C = harness.load()
+    C._log("Mode: Force on")
+    first = C.load_events()[0]["at"]
+    C.time.sleep(1.1)
+    C._log("Fan on", absorb="Mode: Force on", merged="Mode: Force on - fan on")
+    assert abs(C.load_events()[0]["at"] - first) < 0.01, "timestamp moved"
+    return "timestamp is the click"
+
+
+def test_anything_in_between_stops_the_fold():
+    """If something happened between them they are not the same event,
+    and collapsing would hide the thing in the middle."""
+    C = harness.load()
+    C._log("Mode: Force on")
+    C._log("Fan switched to off outside this service")
+    C._log("Fan on", absorb="Mode: Force on", merged="folded")
+    msgs = [e["msg"] for e in C.load_events()]
+    assert len(msgs) == 3, msgs
+    assert "folded" not in msgs, msgs
+    return "an interruption keeps both lines"
+
+
+def test_a_stale_line_is_not_absorbed():
+    C = harness.load()
+    C.STATE["events"].insert(0, {"at": C.time.time() - C.ABSORB_SECONDS - 60,
+                                 "msg": "Mode: Force on"})
+    C._log("Fan on", absorb="Mode: Force on", merged="folded")
+    msgs = [e["msg"] for e in C.load_events()]
+    assert len(msgs) == 2, msgs
+    return "old lines are left alone"
+
+
+def test_the_action_still_logs_when_there_was_no_mode_change():
+    """Force on re-asserted after an external switch has no mode line
+    above it, and must still record that it acted."""
+    C = harness.load()
+    C._log("Fan switched to off outside this service")
+    C._log("Fan on \u2014 forced on",
+           absorb="Mode: Force on",
+           merged="Mode: Force on \u2014 fan on")
+    msgs = [e["msg"] for e in C.load_events()]
+    assert len(msgs) == 2, msgs
+    assert msgs[0] == "Fan on \u2014 forced on", msgs
+    return "standalone text when it stands alone"
+
+
 if __name__ == "__main__":
     sys.exit(harness.run(dict(globals())))
