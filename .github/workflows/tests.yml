@@ -67,6 +67,20 @@ jobs:
 
       - run: pip install -r requirements.txt
 
+      # SHELLCHECK IS A PACKAGE, not a Python dependency, so
+      # test_shellcheck.py SKIPS when it is absent - and the Pi does
+      # not have it. Installed here so that skip never becomes the
+      # normal case: the skip guard below then treats one as a failure,
+      # which means the scripts really are checked on every push.
+      #
+      # bash -n catches a syntax error and nothing else. Every shell
+      # bug this project has had parses perfectly: a pipeline hiding a
+      # failing exit status, an unquoted expansion, and two variables
+      # that outlived the code that used them - the last found by
+      # shellcheck the day it was installed.
+      - name: shellcheck
+        run: sudo apt-get install -y --no-install-recommends shellcheck
+
       # The reason to run this on Linux at all: every test in
       # test_durability.py needs O_DIRECTORY and every test in
       # test_restart_sh.py needs bash, so both skip wholesale on a
@@ -162,6 +176,11 @@ jobs:
           python-version: "3.13"
 
       - run: pip install -r requirements.txt
+
+      # Needed here too: this job fails on a SKIP, and
+      # test_shellcheck.py skips when the binary is absent.
+      - name: shellcheck
+        run: sudo apt-get install -y --no-install-recommends shellcheck
 
       - name: run the suite
         run: |

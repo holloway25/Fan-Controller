@@ -7,8 +7,13 @@ cd "$DIR" || exit 1
 # service of that name would suppress our start - and the cmdline cannot be
 # anchored, since the unit invokes the script relatively and the no-venv
 # fallback runs it as plain "python3". Confirm the working directory instead.
+# Unquoted on purpose: pgrep prints one PID per line and the split is
+# what iterates them. shellcheck disable is deliberate, not a silenced
+# warning - the expansion INSIDE the loop is quoted, which is the one
+# that matters.
+# shellcheck disable=SC2086
 for _pid in $(pgrep -f "[c]ontroller\.py" 2>/dev/null); do
-  [ "$(readlink -f /proc/$_pid/cwd 2>/dev/null)" = "$DIR" ] && exit 0
+  [ "$(readlink -f "/proc/$_pid/cwd" 2>/dev/null)" = "$DIR" ] && exit 0
 done
 if [ -x "$DIR/venv/bin/python" ]; then
   PY="$DIR/venv/bin/python"

@@ -38,3 +38,9 @@ __pycache__/
 fault.json
 restart.request
 manual-off.pending
+
+# Node, for the jsdom tests only. Never a runtime dependency: the
+# controller needs Python and nothing else, and the Pi has no Node at
+# all. The manifests ARE committed so the dev dependency is declared
+# and reproducible; the tree it installs is not.
+node_modules/

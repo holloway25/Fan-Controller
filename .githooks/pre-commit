@@ -68,26 +68,22 @@ if git diff --cached -U0 | grep -E '^\+' | grep -vE '^\+\+\+' | grep -qE "$priv"
 fi
 
 # 3. A credential assignment with something that is not a placeholder.
-#    Matches password/passwd/api_key/apikey/token/secret followed by a
-#    value. Empty strings and obvious placeholders pass.
-cred='(password|passwd|api[_-]?key|token|secret)[[:space:]]*[:=][[:space:]]*["'"'"']?[^"'"'"'[:space:],}]{6,}'
-placeholder='(\{\{|<|\$\{|xxx|XXX|placeholder|PLACEHOLDER|example|EXAMPLE|changeme|CHANGEME|your[_-]|redacted|REDACTED|\.\.\.|SET)'
-#    THE PLACEHOLDER TEST APPLIES TO THE MATCHED VALUE, not to the
-#    whole line. Testing the whole line meant an excusing word ANYWHERE
-#    on it vouched for the credential - a real secret assignment
-#    followed by a comment mentioning "example" passed cleanly. Found by
-#    review 2026-08-16. grep -o cuts the match out first, and the value
-#    pattern stops at whitespace, so a trailing comment can no longer
-#    speak for what precedes it.
 #
-#    The offending line is described rather than quoted here on purpose:
-#    written out, this comment trips its own rule, and a hook that needs
-#    --no-verify to commit is a hook that teaches people to use it.
-#    THE SHELL VERSION IS GONE. It read a value as everything up to
-#    the first space, so a quoted value containing spaces was only ever
-#    half seen. tools/scan_secrets.py reads the quote properly and is
-#    called by the privacy workflow too, so --no-verify no longer walks
-#    a secret past a green CI. Found by review 2026-08-16.
+#    THE SHELL VERSION IS GONE. It read a value as everything up to the
+#    first space, so a quoted value containing spaces was only ever half
+#    seen. tools/scan_secrets.py reads the quote properly, applies the
+#    placeholder test to the matched VALUE rather than the whole line,
+#    and is called by the privacy workflow too - so --no-verify no
+#    longer walks a secret past a green CI. Found by review 2026-08-16.
+#
+#    TWO VARIABLES OUTLIVED IT and sat here unused until shellcheck
+#    said so on 2026-08-17. Dead code is bad; dead code that reads as
+#    if the check still happens here is worse, because the next person
+#    to edit this file would have maintained a regex nothing runs.
+#
+#    NO PYTHON MEANS BLOCKED, not skipped. A machine that cannot run
+#    the scanner cannot commit, which is the only safe direction for a
+#    check whose absence is invisible.
 if command -v python3 >/dev/null 2>&1 && [ -f tools/scan_secrets.py ]; then
   if ! out=$(python3 tools/scan_secrets.py --staged); then
     say "staged content looks like a credential with a real value"
