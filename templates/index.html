@@ -113,24 +113,33 @@ background:#0f1520;border:1px solid var(--line);border-radius:8px;
 padding:8px 11px;cursor:pointer}
 .log{font-family:var(--mono);font-size:13px;color:var(--dim);line-height:1.9}
 .log div{display:flex;gap:10px;align-items:baseline}
-.log span.when{flex:0 0 auto;white-space:nowrap;color:var(--faint)}
+.log time.when{flex:0 0 auto;white-space:nowrap;color:var(--faint)}
 /* min-width:0 is what lets a long line wrap instead of pushing the row
    wider than the screen: a flex item will not shrink below its content
    without it, and "FC-203 Alert email failed (...)" is longer than a
    phone is wide. */
 .log span.txt{flex:1 1 auto;min-width:0;overflow-wrap:anywhere}
-.log div.fault,.log div.fault span{color:var(--warn)}
-.log div.ok,.log div.ok span{color:var(--ok)}
-.log div.m-auto,.log div.m-auto span{color:var(--air)}
-.log div.m-manual,.log div.m-manual span{color:var(--warn)}
-.log div.m-on,.log div.m-on span{color:var(--trig)}
+/* span AND time: the timestamp became a <time> element so the full
+   moment is reachable without a hover, and a selector listing only
+   span would have left it grey on every coloured row. */
+.log div.fault,.log div.fault span,.log div.fault time{color:var(--warn)}
+.log div.ok,.log div.ok span,.log div.ok time{color:var(--ok)}
+.log div.m-auto,.log div.m-auto span,.log div.m-auto time{color:var(--air)}
+.log div.m-manual,.log div.m-manual span,.log div.m-manual time{
+color:var(--warn)}
+.log div.m-on,.log div.m-on span,.log div.m-on time{color:var(--trig)}
 @media(max-width:640px){
 header{flex-direction:column;align-items:stretch;gap:10px}
 .seg{width:100%}
 .seg button{flex:1 1 0;padding:11px 4px;text-align:center}
 .row{grid-template-columns:1fr;gap:6px}
 .row input,.row select{width:100%}
-.row input[type=checkbox]{width:auto}
+/* justify-self, not just width. The row becomes a single-column grid
+   here and a grid item STRETCHES to fill its column by default, so
+   width:auto still gave a checkbox the full width of the screen with
+   its label stranded above it. Reported by review of 085e454 at
+   390px. */
+.row input[type=checkbox]{width:auto;justify-self:start}
 }
 @media(max-width:640px){
 /* 16px EXACTLY. Mobile Safari zooms the whole page in when a focused
@@ -679,8 +688,13 @@ function render(s){
     wcls="pill "+(ok?"on":"bad");
   }
   $("w").className=wcls;
-  document.querySelectorAll("#mode button").forEach(b=>
-    b.classList.toggle("sel",b.dataset.mode===c.mode));
+  // aria-pressed as well as the class: which mode is selected was
+  // carried ONLY by a colour, so a screen reader announced three
+  // identical buttons. Reported by review of 085e454.
+  document.querySelectorAll("#mode button").forEach(b=>{
+    const on=b.dataset.mode===c.mode;
+    b.classList.toggle("sel",on);
+    b.setAttribute("aria-pressed",String(on));});
   // Built as DOM nodes with textContent: event text can originate from
   // /api/clienterror, so interpolating it into innerHTML was a stored XSS.
   const logEl=$("log");
@@ -688,7 +702,11 @@ function render(s){
   if(s.events&&s.events.length){
     s.events.forEach(e=>{
       const row=document.createElement("div");
-      const when=document.createElement("span");
+      // A <time> element, not a span: the short form is for the eye and
+      // the machine-readable value goes in datetime, so the full moment
+      // is reachable without a hover. A tooltip alone was useless on a
+      // touch screen - reported by review of 085e454.
+      const when=document.createElement("time");
       when.className="when";
       const d=new Date(e.at*1000), p=n=>String(n).padStart(2,"0");
       // Explicit 24-hour formatting; toLocaleTimeString adds am/pm here.
@@ -699,7 +717,16 @@ function render(s){
       // in the file for anyone who needs it.
       when.textContent=p(d.getDate())+"/"+p(d.getMonth()+1)+"/"+
         p(d.getFullYear()%100)+" "+p(d.getHours())+":"+p(d.getMinutes());
+      // Local time with the offset, not toISOString: the log is read in
+      // the room the fan is in, and UTC would need translating by the
+      // person least able to do it - someone reading a screen reader.
+      const off=-d.getTimezoneOffset(), sg=off<0?"-":"+",
+        oh=p(Math.floor(Math.abs(off)/60)), om=p(Math.abs(off)%60);
+      when.dateTime=d.getFullYear()+"-"+p(d.getMonth()+1)+"-"+p(d.getDate())+
+        "T"+p(d.getHours())+":"+p(d.getMinutes())+":"+p(d.getSeconds())+
+        sg+oh+":"+om;
       when.title=d.toString();
+      when.setAttribute("aria-label",d.toString());
       // Every fault-related entry is red, including "Fan off - draw
       // fault", which a prefix match on the raised message missed. Fan
       // state changes are green once they are not a fault.

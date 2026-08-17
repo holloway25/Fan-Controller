@@ -187,11 +187,57 @@ def test_the_timestamp_is_short_but_the_full_one_is_reachable():
     from the message. The precision lives in events.json."""
     html = squashed()
     assert "getFullYear()%100" in html, "the year is not shortened"
-    assert "p(d.getSeconds())" not in html, (
-        "seconds are still shown in the log column")
+    # The VISIBLE assignment only. Seconds belong in the datetime
+    # attribute - a blanket "no getSeconds anywhere" assertion failed
+    # the moment the machine-readable value was added, which is the
+    # right result for the wrong reason.
+    i = html.index("when.textContent=")
+    shown = html[i:html.index(";", i)]
+    assert "getSeconds" not in shown, (
+        "seconds are still shown in the log column: %s" % shown)
+    assert "when.dateTime=" in html, "no machine-readable timestamp"
+    assert "getSeconds" in html[html.index("when.dateTime="):], (
+        "the datetime attribute drops the seconds")
     assert "when.title=" in html, (
         "the full timestamp is not reachable on hover")
-    return "short column, full value on hover"
+    return "short column, full value in datetime"
+
+
+def test_the_timestamp_is_reachable_without_a_hover():
+    """A tooltip is nothing on a touch screen."""
+    html = squashed()
+    assert 'createElement("time")' in html, (
+        "the timestamp is not a <time> element")
+    assert 'setAttribute("aria-label"' in html, (
+        "no accessible label on the timestamp")
+    return "readable by touch and by screen reader"
+
+
+def test_the_mode_buttons_announce_which_is_selected():
+    """Selection was carried by a colour alone, so a screen reader
+    announced three identical buttons."""
+    html = squashed()
+    assert 'setAttribute("aria-pressed"' in html, "no aria-pressed on modes"
+    return "selection is announced"
+
+
+def test_a_checkbox_does_not_stretch_across_the_row():
+    """A grid item stretches to fill its column by default, so
+    width:auto alone still gave a checkbox the full screen width."""
+    html = squashed()
+    assert "justify-self:start" in html, (
+        "checkboxes will stretch to the full row width on a phone")
+    return "checkbox sits with its label"
+
+
+def test_the_log_colours_reach_the_time_element():
+    """The timestamp stopped being a span. A colour rule listing only
+    span would leave it grey on every coloured row."""
+    html = squashed()
+    for cls in ("fault", "ok", "m-auto", "m-manual", "m-on"):
+        assert ".logdiv.%stime" % cls in html, (
+            "the %s colour does not reach the timestamp" % cls)
+    return "timestamps take the row colour"
 
 
 # ------------------------------------------------------ phone compatibility

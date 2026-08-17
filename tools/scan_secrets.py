@@ -45,7 +45,7 @@ KEY = r"(?:password|passwd|pwd|api[_-]?key|apikey|token|secret)"
 # in JavaScript matched and every comparison against "SET" in the
 # dashboard was reported.
 ASSIGN = re.compile(
-    r"%s\s*(?<![=!<>])[:=](?![=])\s*"
+    r"%s\s*(?<![=!<>])([:=])(?![=])\s*"
     r"(?:\"([^\"]*)\"|'([^']*)'|([^\s,;}\)]+))" % KEY,
     re.IGNORECASE)
 
@@ -73,25 +73,41 @@ IDENT = re.compile(r"^[A-Za-z_]\w*$")
 
 # Checked against the VALUE ONLY, never the surrounding line: a comment
 # saying "example" must not vouch for the secret in front of it.
+#
+# ANCHORED, AND IT MATTERS. This was a substring search and the list
+# included "password" and "secret" - added so the repo's own test value
+# would pass - which meant it also excused Password123! and
+# mysecretvalue9. A placeholder is a value that is ENTIRELY a marker,
+# optionally with a suffix; a real secret that happens to contain the
+# word "password" is still a real secret. Reported by review of
+# 085e454, and the lesson is the same one as the comment case: an
+# exclusion that can appear anywhere excuses everything eventually.
 PLACEHOLDER = re.compile(
-    r"(\{\{|\}\}|\$\{|xxx+|placeholder|example|changeme|change[_-]me|"
-    r"your[_-]|redacted|\.\.\.|dummy|sample|not[_-]a[_-]real|fake|"
-    r"todo|tbd|password|secret)",
+    r"^(?:"
+    r"changeme|change[-_]me|redacted|dummy|sample|fake|todo|tbd|"
+    r"xxx+|placeholder|example|test[-_]value|not[-_]a[-_]real"
+    r")(?:[-_.].*)?$"
+    r"|^your[-_].*$"
+    r"|^\.\.\.$",
     re.IGNORECASE)
 
 # Below this, a value is too short to be a credential worth protecting.
 MIN_LEN = 6
 
+# These three carry the patterns themselves and would match on their
+# own definitions. tests/test_secret_scanner.py USED to be here and no
+# longer is: its fixtures assemble their keys at runtime, so it is
+# scanned like anything else. One exemption fewer.
 SKIP_PATHS = (
     "tools/scan_secrets.py",
     ".githooks/pre-commit",
     ".github/workflows/privacy.yml",
-    "tests/test_secret_scanner.py",
 )
 
 
 def _value(m):
-    for g in m.groups():
+    # groups()[0] is the operator; the value is whichever quote arm hit.
+    for g in m.groups()[1:]:
         if g is not None:
             return g
     return ""
@@ -100,7 +116,8 @@ def _value(m):
 def suspicious(line):
     """The offending value, or None. Public so the tests can call it."""
     for m in ASSIGN.finditer(line):
-        quoted = m.group(1) is not None or m.group(2) is not None
+        quoted = m.group(2) is not None or m.group(3) is not None
+        yaml_style = m.group(1) == ":"
         v = _value(m).strip()
         if len(v) < MIN_LEN:
             continue
@@ -109,9 +126,27 @@ def suspicious(line):
         if INTERP.search(v):
             continue
         if not quoted:
+            # A STRAY QUOTE IS NOT PART OF THE VALUE. The unquoted arm
+            # matches up to whitespace, so prose describing an
+            # assignment - a sentence with the whole thing in quotes -
+            # left a trailing quote stuck to the value, the identifier
+            # test failed on it, and the scanner flagged its own
+            # documentation. Stripping quote characters from the ends of
+            # an UNQUOTED value cannot hide a secret: a real value
+            # ending in a quote is malformed either way.
+            v = v.strip("\"'`")
+            if len(v) < MIN_LEN:
+                continue
             if CODE.search(v):
                 continue
-            if IDENT.match(v) and not any(c.isdigit() for c in v):
+            # THE IDENTIFIER EXEMPTION IS FOR CODE, NOT FOR YAML. It
+            # exists because "password = stored_secret" is a reference,
+            # which is what correct code looks like. A YAML "password:
+            # CorrectHorseBatteryStaple" has the same shape and is a
+            # secret in a config file - there are no variables to refer
+            # to. Reported by review of 085e454.
+            if (not yaml_style and IDENT.match(v)
+                    and not any(c.isdigit() for c in v)):
                 continue
         if PLACEHOLDER.search(v):
             continue
@@ -125,8 +160,20 @@ def _report(where, lineno, line):
 
 
 def _git(*args):
-    return subprocess.run(["git"] + list(args), capture_output=True,
-                          text=True, errors="replace").stdout
+    """Run git, and REFUSE TO GUESS if it fails.
+
+    The return code was ignored, so a failed `git show` produced empty
+    output that scanned clean and reported success - the worst possible
+    failure for a check like this, because it is indistinguishable from
+    a genuinely clean tree. Reported by review of 085e454.
+    """
+    r = subprocess.run(["git"] + list(args), capture_output=True,
+                       text=True, errors="replace")
+    if r.returncode != 0:
+        raise RuntimeError(
+            "git %s failed (%d): %s"
+            % (" ".join(args), r.returncode, (r.stderr or "").strip()[:200]))
+    return r.stdout
 
 
 def scan_staged():

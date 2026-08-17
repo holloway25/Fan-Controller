@@ -68,6 +68,15 @@ CAUGHT = [
     # An excusing comment must not vouch for the value in front of it.
     _f('{k} = "areallivevalue"  # example deployment'),
     _f('{S} = "abcdef123456"'),
+    # Review of 085e454: the placeholder list was a SUBSTRING search and
+    # included the words "password" and "secret", so a real value
+    # containing either was waved through.
+    _f('{k} = "Password123!"'),
+    _f('{k} = "my{s}value9"'),
+    # Same review: the identifier exemption is for code references and
+    # was being applied to YAML, where there is nothing to refer to.
+    _f("{k}: CorrectHorseBatteryStaple"),
+    _f("{a}: SomeLongAlphabeticKey"),
 ]
 
 NOT_CAUGHT = [
@@ -135,6 +144,69 @@ def test_the_scanner_can_actually_fail():
     assert m.suspicious(_f('{k} = "zq7rtvmxk2"')), \
         "the scanner never bites"
     return "the scanner bites"
+
+
+def test_a_real_value_containing_the_word_password_is_still_caught():
+    """Review of 085e454. The placeholder list was a substring search
+    and had "password" in it, so Password123! excused itself."""
+    C = _scanner()
+    assert C.suspicious(_f('{k} = "Password123!"')), "Password123! passed"
+    assert C.suspicious(_f('{k} = "my{s}value9"')), "mysecretvalue9 passed"
+    # And the marker values must still pass, or the fix has just made
+    # the scanner unusable.
+    assert not C.suspicious(_f('{k} = "placeholder-not-a-real-password"'))
+    assert not C.suspicious(_f('{k} = "CHANGEME"'))
+    assert not C.suspicious(_f('{k} = "your-password-here"'))
+    return "the word is not a licence"
+
+
+def test_a_yaml_passphrase_is_caught():
+    """The identifier exemption exists for "password = stored_secret",
+    a reference in code. YAML has the same shape and no variables."""
+    C = _scanner()
+    assert C.suspicious(_f("{k}: CorrectHorseBatteryStaple")), \
+        "an alphabetic YAML passphrase passed"
+    # A Python reference must still pass: that is what correct code
+    # looks like and flagging it makes the scanner noise.
+    assert not C.suspicious(_f("{k} = stored_{s}"))
+    return "YAML is data, code is a reference"
+
+
+def test_a_failing_git_command_is_not_reported_as_clean():
+    """Empty output from a failed command scanned clean, which is
+    indistinguishable from a genuinely clean tree - the worst failure
+    mode a check like this can have."""
+    C = _scanner()
+    try:
+        C._git("show", "definitely-not-a-ref:nope")
+    except RuntimeError:
+        return "a git failure raises"
+    raise AssertionError("a failing git command returned quietly")
+
+
+def test_the_scanner_scans_its_own_test_file():
+    """This file used to be exempt. Its fixtures assemble their keys at
+    runtime instead, so the exemption was removed - an exemption list is
+    a thing that grows until the check means nothing."""
+    C = _scanner()
+    assert "tests/test_secret_scanner.py" not in C.SKIP_PATHS, \
+        "the test file is exempt again"
+    return "no exemption for this file"
+
+
+def test_prose_describing_an_assignment_is_not_a_secret():
+    """The unquoted arm matches up to whitespace, so a sentence with an
+    assignment quoted inside it left a trailing quote stuck to the
+    value. The identifier test then failed on it and the scanner
+    flagged its own documentation - the fifth time a check here has
+    blocked its own commit."""
+    C = _scanner()
+    line = '# exists because "{k} = stored_{s}" is a reference,'
+    assert not C.suspicious(_f(line)), "prose about a reference flagged"
+    # And the real thing is still caught, quote or no quote.
+    assert C.suspicious(_f('{k} = "Password123!"'))
+    assert C.suspicious(_f('{k}="abcdef123456"'))
+    return "prose passes, values do not"
 
 
 if __name__ == "__main__":
