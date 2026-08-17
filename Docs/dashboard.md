@@ -70,9 +70,21 @@ mode colour rather than the green of an automatic one: the same event
 should not read two ways on adjacent lines.
 
 **Colour follows the fault code series, not the wording.** `0xx` and
-`2xx` are red, `1xx` green, `3xx` takes the manual colour because
-something other than this service acted. A new code therefore inherits
-the right colour without the page being edited.
+`2xx` are red, `1xx` green. A new code therefore inherits the right
+colour without the page being edited.
+
+`3xx` DEPENDS ON THE MODE RECORDED IN THE LINE, which is the one place
+the series alone is not enough. `FC-300` says something other than this
+service moved the plug:
+
+- `(Manual)` renders as an ordinary switch. Manual exists so a person
+  can work the fan by hand, so this is the mode doing its job.
+- `(Auto)` and `(Force on)` stay highlighted. There the controller
+  believed it owned the plug and something contradicted it - a person,
+  or a second controller running against the same hardware.
+
+The mode is written into the entry rather than read from the current
+settings, because the entry outlives the mode it happened in.
 
 This matters because the rules used to match the words. They were
 anchored to `Draw fault` and `Fan `, and both stopped working the moment

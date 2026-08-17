@@ -208,8 +208,9 @@ What those targets mean for changes:
   the directory fsynced after - so a cut leaves the old file or the new
   one, and the rename itself survives, and `daily.json` is written the
   same way. `history.json` and `events.json` are renamed atomically but
-  not synced: losing their most recent update is accepted, because
-  neither controls the fan and both regenerate.
+  not synced. History regenerates from later readings; A LOST ACTIVITY
+  ENTRY IS GONE FOR GOOD - accepted because it does not control the
+  fan, not because it comes back.
 - **`daily.json` keeps what the trace cannot.** One row per day with the
   low and high for each metric, two years of them - about 40KB a year at
   80-110 bytes a row, so 80KB for the whole window. `history.json` holds

@@ -722,22 +722,81 @@ def test_normal_operation_stays_uncoded():
     return "manual paths carry no code"
 
 
+class _Plug(object):
+    """A plug that reports a state the controller did not command."""
+
+    def __init__(self, on):
+        self._on = on
+
+    def state(self):
+        return self._on
+
+    def set(self, on):
+        self._on = on
+        return None
+
+    def power_w(self):
+        return None
+
+
+class _Protect(object):
+    def readings(self, sid):
+        return {"co2": 700.0, "temp": 21.0, "humidity": 50.0}, "fake"
+
+
+def _external_switch(C, mode, plug_on):
+    """Make the plug disagree with STATE and run a real poll."""
+    C.CFG["protect"]["sensor_id"] = "fake-sensor-id"
+    C.CFG["control"].update(mode=mode, stale_minutes=0, min_run_minutes=0)
+    with C._state_lock:
+        C.STATE.update(fan=not plug_on, fault=None,
+                       changed_at=C.time.time() - 10000)
+    C._client_snapshot = lambda: (_Protect(), _Plug(plug_on),
+                                  C._cfg_generation)
+    C.tick()
+    return [e["msg"] for e in C.load_events()]
+
+
 def test_an_external_change_records_the_mode():
-    """A reader six months later cannot know what mode it was in, and
-    the mode is what the line MEANS: in Manual someone switching by
-    hand is the mode working, in Auto the controller is being
-    contradicted."""
+    """DRIVEN THROUGH tick(), not by handing _log a string.
+
+    The first version of this test built the expected message itself
+    and logged it, so it would have passed with the mode removed from
+    both production paths - which was the only thing it existed to
+    check. Reported by review of ec8be8f.
+    """
     C = harness.load()
     E.wire(C)
-    C.CFG["control"]["mode"] = "manual"
-    C._log("%s Fan off \u2014 changed outside (%s)"
-           % (C.FC_EXTERNAL_CHANGE, C._mode_now()))
-    msg = C.load_events()[0]["msg"]
-    assert msg.startswith(C.FC_EXTERNAL_CHANGE), msg
-    assert msg.endswith("(Manual)"), msg
-    C.CFG["control"]["mode"] = "auto"
-    assert C._mode_now() == "Auto"
-    return "the mode is in the line"
+    msgs = _external_switch(C, "manual", True)
+    hits = [m for m in msgs if m.startswith(C.FC_EXTERNAL_CHANGE)]
+    assert hits, "no external change logged: %r" % msgs[:4]
+    assert hits[0].endswith("(Manual)"), hits[0]
+    assert "Fan on" in hits[0], hits[0]
+    return "the poll records the mode"
+
+
+def test_the_mode_recorded_is_the_mode_it_was_in():
+    """Auto and Force on must not be reported as Manual - the whole
+    point is that the same event means different things."""
+    C = harness.load()
+    E.wire(C)
+    msgs = _external_switch(C, "auto", True)
+    hits = [m for m in msgs if m.startswith(C.FC_EXTERNAL_CHANGE)]
+    assert hits and hits[0].endswith("(Auto)"), hits[:2]
+
+    C2 = harness.load()
+    E.wire(C2)
+    C2.CFG["protect"]["sensor_id"] = "fake-sensor-id"
+    C2.CFG["control"].update(mode="on", stale_minutes=0)
+    with C2._state_lock:
+        C2.STATE.update(fan=True, fault=None)
+    # Force on notices an external switch-off through _force_on.
+    C2._force_on(_Plug(False))
+    hits2 = [e["msg"] for e in C2.load_events()
+             if e["msg"].startswith(C2.FC_EXTERNAL_CHANGE)]
+    assert hits2, "Force on logged no external change"
+    assert hits2[0].endswith("(Force on)"), hits2[0]
+    return "Manual, Auto and Force on each say so"
 
 
 if __name__ == "__main__":

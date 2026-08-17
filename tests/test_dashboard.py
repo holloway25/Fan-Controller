@@ -441,5 +441,15 @@ def test_a_manual_external_change_reads_as_ordinary():
     return "green in Manual, flagged otherwise"
 
 
+def test_the_page_shows_which_commit_it_is_running():
+    """"Which code is this box running" was unanswerable from the
+    screen, and the boxes are deliberately on different commits."""
+    html = squashed()
+    assert 'id="ver"' in html, "no version element"
+    assert "s.version" in html, "the version is never read from state"
+    assert "<footer" in html, "the version is not in a footer"
+    return "version in the corner"
+
+
 if __name__ == "__main__":
     sys.exit(harness.run(dict(globals())))
