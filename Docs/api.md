@@ -12,6 +12,16 @@ Werkzeug's own 413 page.
 | GET | `/api/state` | open | Readings, fan state, latches, events, config, `history_rev` |
 | GET | `/api/history` | open | The 24h trace, or a delta with `?since=REV&gen=GENERATION`, and the `history_rev` it was taken at |
 | GET | `/api/daily` | open | Per-day low and high for CO2, temperature and humidity, oldest first. `?days=N` returns the last N |
+| POST | `/api/clienterror` | open | Browser JS errors, logged server side |
+| GET | `/static/*` | open | Icons: browser tab and iOS home screen |
+| GET | `/signin` | required | Empty page whose only job is to raise the browser auth prompt |
+| POST | `/api/config` | required | Partial settings update; validates, then commits |
+| POST | `/api/fault/clear` | required | Acknowledge a draw fault and allow automatic runs again |
+| POST | `/api/protect/sensors` | required | Adopted sensors with their current CO2 value |
+| POST | `/api/plug/test` | required | Check the plug answers; returns relay state and watts |
+| POST | `/api/email/test` | required | Send a test message; reports the real error on failure |
+| POST | `/api/ui/password` | required | Set or clear the UI password |
+| GET | `/api/debug/sensor` | required | Raw Protect payload for the selected sensor |
 
 `/api/state` also carries `version`: the commit this process is running,
 as a short hash. Read once at import, because it cannot change while the
@@ -26,16 +36,6 @@ Where git is unavailable - a tarball deployment, or a copy without the
 `.git` directory - it falls back to a `VERSION` file beside
 `controller.py`, and then to the literal string `unknown`. The endpoint
 always returns the field; it is never absent and never null.
-| POST | `/api/clienterror` | open | Browser JS errors, logged server side |
-| GET | `/static/*` | open | Icons: browser tab and iOS home screen |
-| GET | `/signin` | required | Empty page whose only job is to raise the browser auth prompt |
-| POST | `/api/config` | required | Partial settings update; validates, then commits |
-| POST | `/api/fault/clear` | required | Acknowledge a draw fault and allow automatic runs again |
-| POST | `/api/protect/sensors` | required | Adopted sensors with their current CO2 value |
-| POST | `/api/plug/test` | required | Check the plug answers; returns relay state and watts |
-| POST | `/api/email/test` | required | Send a test message; reports the real error on failure |
-| POST | `/api/ui/password` | required | Set or clear the UI password |
-| GET | `/api/debug/sensor` | required | Raw Protect payload for the selected sensor |
 
 Every request body is capped at 8KB and a larger one is rejected with
 413. Nothing here legitimately posts more than a few hundred bytes, and

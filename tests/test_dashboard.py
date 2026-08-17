@@ -502,5 +502,61 @@ def test_a_deployment_without_git_still_has_a_version():
     return "git, then VERSION, then unknown"
 
 
+def test_a_clean_install_with_a_venv_is_not_marked_modified():
+    """The README tells you to create venv/. If it is not ignored, the
+    dirty check counts it and every clean checkout reports itself as
+    modified.
+
+    THE PROJECT'S REAL .gitignore IS COPIED IN, so removing the rules
+    from it fails this. Python's own venv module writes a
+    venv/.gitignore containing "*", which hid the problem on the
+    machine this was written on - the venv here is made WITHOUT that
+    file, the way virtualenv and older Pythons do. Reported by review
+    of e38907a.
+    """
+    import os
+    import shutil
+    import subprocess
+    import tempfile
+    C = harness.load()
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    tmp = tempfile.mkdtemp()
+    real_dir = C.DIR
+    try:
+        shutil.copy(os.path.join(root, ".gitignore"), tmp)
+        run = lambda *a: subprocess.run(a, cwd=tmp, capture_output=True)
+        run("git", "init", "-q", ".")
+        run("git", "config", "user.email", "t@t")
+        run("git", "config", "user.name", "t")
+        with open(os.path.join(tmp, "controller.py"), "w") as f:
+            f.write("# tracked\n")
+        run("git", "add", "-A")
+        run("git", "commit", "-qm", "base")
+
+        C.DIR = tmp
+        clean = C._build_version()
+        assert clean and not clean.endswith("+"), (
+            "a fresh checkout is already marked modified: %r" % clean)
+
+        # A venv WITHOUT the self-ignoring file venv creates.
+        os.makedirs(os.path.join(tmp, "venv", "bin"))
+        with open(os.path.join(tmp, "venv", "bin", "python"), "w") as f:
+            f.write("#!/bin/sh\n")
+        after = C._build_version()
+        assert after == clean, (
+            "creating a venv marked the install modified: %r -> %r"
+            % (clean, after))
+
+        # And a real edit still does mark it.
+        with open(os.path.join(tmp, "controller.py"), "a") as f:
+            f.write("# edited\n")
+        assert C._build_version().endswith("+"), (
+            "an edited tree is not marked modified")
+    finally:
+        C.DIR = real_dir
+        shutil.rmtree(tmp, ignore_errors=True)
+    return "venv ignored, real edits still counted"
+
+
 if __name__ == "__main__":
     sys.exit(harness.run(dict(globals())))
