@@ -528,6 +528,38 @@ _daily_lock = threading.Lock()
 _daily_dirty = False
 
 
+def _clean_row(x):
+    """A row from disk, normalised, or None if it cannot be trusted.
+
+    ANYTHING ON DISK IS INPUT. This accepted any dict with a "d" in it,
+    so a hand-edited or truncated file could carry a range with no
+    "lo", or a string where a count belongs - and the fold then raised
+    INSIDE tick(). See the call site for why that was worse than it
+    sounds. Reported by review of 479e6b6.
+    """
+    if not isinstance(x, dict):
+        return None
+    day = x.get("d")
+    if not isinstance(day, str) or len(day) != 10:
+        return None
+    out = {"d": day}
+    n = x.get("n")
+    out["n"] = n if (isinstance(n, int) and not isinstance(n, bool)
+                     and n >= 0) else 0
+    num = (int, float)
+    for key in ("v", "tc", "rh"):
+        r = x.get(key)
+        if not isinstance(r, dict):
+            continue
+        lo, hi = r.get("lo"), r.get("hi")
+        if not isinstance(lo, num) or not isinstance(hi, num):
+            continue
+        if isinstance(lo, bool) or isinstance(hi, bool):
+            continue
+        out[key] = {"lo": min(lo, hi), "hi": max(lo, hi)}
+    return out
+
+
 def load_daily():
     try:
         d = json.load(open(DAILY_PATH))
@@ -535,7 +567,8 @@ def load_daily():
         return []
     if not isinstance(d, list):
         return []
-    return [x for x in d if isinstance(x, dict) and "d" in x][-DAILY_KEEP_DAYS:]
+    rows = [r for r in (_clean_row(x) for x in d) if r]
+    return rows[-DAILY_KEEP_DAYS:]
 
 
 def _daily_note(now, co2, tc, rh):
@@ -573,13 +606,23 @@ def _daily_note(now, co2, tc, rh):
         _daily_dirty = True
 
 
-def save_daily(force=False):
-    """Write only when something changed. Shares the history cadence."""
+def save_daily(force=False, report_error=True):
+    """Write only when something changed. Shares the history cadence.
+
+    report_error IS FALSE FROM A SIGNAL HANDLER. _log takes
+    _events_lock, which is not reentrant, so a signal arriving while a
+    thread holds it would deadlock the shutdown path. The history
+    writer already avoids _log for this reason and prints to stderr.
+    Reported by review of 479e6b6.
+    """
     global _daily_dirty
     with _daily_lock:
         if not _daily_dirty and not force:
             return True
-        rows = list(STATE.get("daily") or [])
+        # DEEP. The rows and their ranges are mutated by the polling
+        # thread, so a shallow copy shares them and the writer could
+        # serialise a row mid-update.
+        rows = copy.deepcopy(STATE.get("daily") or [])
         _daily_dirty = False
     try:
         write_json_durable(DAILY_PATH, rows)
@@ -587,8 +630,9 @@ def save_daily(force=False):
     except OSError as e:
         with _daily_lock:
             _daily_dirty = True     # retried on the next flush
-        _log("%s Daily summary could not be written: %s"
-             % (FC_DISK_FAILED, e))
+        if report_error:
+            _log("%s Daily summary could not be written: %s"
+                 % (FC_DISK_FAILED, e))
         return False
 
 
@@ -692,7 +736,10 @@ def flush_hist(signum=None, frame=None):
     with _state_lock:
         snapshot = list(STATE["history"])
     ok = maybe_save_hist(snapshot, force=True)
-    save_daily(force=True)
+    if not save_daily(force=True, report_error=signum is None) \
+            and signum is not None:
+        print("Daily summary could not be written on shutdown.",
+              file=sys.stderr, flush=True)
     if signum is not None:
         if not ok:
             # Said out loud rather than swallowed: the graph will have a
@@ -1534,7 +1581,20 @@ def tick():
     # Outside _state_lock: the daily fold takes its own lock and must
     # not extend a hold a reader is waiting on.
     if _daily_pending:
-        _daily_note(now, *_daily_pending)
+        # NOTHING IN THE SUMMARY MAY ABORT A POLL. This runs after
+        # reading_at has been refreshed, so an exception here marks the
+        # poll failed, skips the control decision, AND leaves the
+        # stale-reading fail-safe looking at a fresh timestamp - the fan
+        # would sit off with nothing left to notice. A low-and-high
+        # record for a chart is not worth that.
+        try:
+            _daily_note(now, *_daily_pending)
+        except Exception as e:      # pragma: no cover - must never escape
+            with _daily_lock:
+                STATE["daily"] = []
+                _daily_dirty = True
+            _log("%s Daily summary reset after an error: %s: %s"
+                 % (FC_DISK_FAILED, type(e).__name__, e))
     # Persisted on the SAME cadence as history, not every poll: the
     # summary changes on every reading, and writing it each time would
     # be a file rewrite every 30 seconds on an SD card to save data
@@ -3389,7 +3449,9 @@ def api_daily():
     """
     days = request.args.get("days", type=int)
     with _daily_lock:
-        rows = list(STATE.get("daily") or [])
+        # Deep, for the same reason the writer is: a poll can mutate a
+        # range while this is being serialised.
+        rows = copy.deepcopy(STATE.get("daily") or [])
     if days and days > 0:
         rows = rows[-days:]
     return jsonify(days=rows)

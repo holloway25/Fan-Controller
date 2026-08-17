@@ -272,8 +272,15 @@ nothing because the process image goes and the lock with it.
   5 minutes rather than every poll, and a flush is attempted on SIGTERM
   so a restart usually loses nothing. That write can still fail, and
   says so in the journal rather than leaving an unexplained gap. Not in git.
+- `daily.json` - one row per day holding the low and high for CO2,
+  temperature and humidity. Exists because `history.json` is pruned to
+  24 hours, so nothing derived from it can answer a question about last
+  week. Two years kept, a few hundred bytes a year. Written on the same
+  cadence as history rather than per reading. Rows are validated on
+  load: anything on disk is input, and a malformed row must not be able
+  to raise on the polling path. Not in git.
 - `events.json` - the activity log, written on each entry and reloaded
-  at startup so switching history survives a restart. 300 kept, the
+  at startup so switching history survives a restart. 1000 kept, the
   most recent 30 returned to the UI each poll. Not in git.
 - `fault.json` - a latched draw fault. Raised, confirmed and
   acknowledged as one transaction with the in-memory copy, never as two
@@ -287,9 +294,14 @@ nothing because the process image goes and the lock with it.
 
 `config.json` and `fault.json` are written durably: the file is fsynced
 and then its directory, so the rename survives a power cut rather than
-merely a crash. `history.json` and `events.json` are not - they are
-written far more often, and what is lost is a few minutes of the graph
-or a few lines of the activity log. Neither controls the fan.
+merely a crash. `history.json`, `daily.json` and `events.json` are not
+- they are written far more often, and what is lost is a few minutes of
+the graph, a day's low and high, or a few lines of the activity log.
+None of them controls the fan, and none of them may stop it: the daily
+fold is wrapped at its call site precisely because it runs after the
+reading is timestamped, where an exception would skip the control
+decision AND leave the stale-reading fail-safe looking at a fresh
+clock.
 - In-memory only - latch state, the minimum-run lease, the draw-fault
   timer and the stale-reading clock. Deliberately not persisted: after a
   crash or a power cut there is no reason to believe a lease from before

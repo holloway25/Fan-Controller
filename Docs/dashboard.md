@@ -90,8 +90,13 @@ setting, not a fault, and a substring match turned it red.
 
 The timestamp column shows `17/08/26 11:27` - two-digit year, no
 seconds. The column is fixed width and never wraps, so every character
-it spends is taken from the message beside it. `events.json` keeps the
-full epoch and the complete timestamp is on the row as a tooltip.
+it spends is taken from the message beside it.
+
+TAP OR FOCUS A TIMESTAMP to expand it to the full local value with the
+offset; tap again to collapse it. A tooltip alone needed a mouse. The
+element is a `<time>` with a machine-readable `datetime`, so a screen
+reader announces the whole moment without expanding anything, and
+`events.json` still keeps the epoch.
 
 Log lines read state first, then reason: `Fan off - manual`,
 `FC-001 Fan on - no reading for 30 min`. The left of the dash is drawn

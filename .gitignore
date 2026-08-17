@@ -15,6 +15,7 @@ office-fan-controller.service
 
 # Runtime state and vendored dependencies
 history.json
+daily.json
 events.json
 # Every persister writes through one of these; naming them individually
 # meant fault.json.tmp was missed when the fault file was added.

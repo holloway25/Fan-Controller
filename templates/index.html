@@ -758,13 +758,18 @@ function render(s){
       // machines, so on a phone the full moment was unreachable by an
       // ordinary sighted user - reported by review of d9ad884. The
       // short form and the long one swap on activation.
-      const shortTxt=when.textContent, longTxt=d.toString();
+      // The LOCAL ISO form, not Date.toString(). The long form
+      // measured 530px against a 375px page and pushed the whole
+      // document sideways when tapped - reported by review of 479e6b6.
+      // datetime already holds exactly the value wanted, to the second
+      // and with the offset.
+      const shortTxt=when.textContent;
       when.tabIndex=0;
       when.setAttribute("role","button");
       when.setAttribute("aria-expanded","false");
       const toggle=()=>{
         const open=when.getAttribute("aria-expanded")==="true";
-        when.textContent=open?shortTxt:longTxt;
+        when.textContent=open?shortTxt:when.dateTime.replace("T"," ");
         when.setAttribute("aria-expanded",String(!open));};
       when.addEventListener("click",toggle);
       when.addEventListener("keydown",ev=>{

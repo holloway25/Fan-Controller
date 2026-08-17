@@ -99,30 +99,6 @@ landed while the fetch was in flight.
 
 ### Deltas
 
-## Daily summaries
-
-`history` is pruned to 24 hours BY TIMESTAMP, so nothing derived from it
-can describe more than the last day. `daily.json` exists to answer the
-questions that outlive that window - "was it this humid last week" -
-without making the trace longer, which is the expensive way to buy the
-same answer.
-
-One row per day: `{"d": "2026-08-17", "n": 2848, "v": {"lo": 510,
-"hi": 1069}, "tc": {...}, "rh": {...}}`. Two years are kept, which is
-kilobytes against the 188KB the 24h trace already costs.
-
-A day with no readings is ABSENT rather than zeroed. A metric the
-sensor did not report is absent from its row for the same reason: a
-zero would be a lie a chart would draw.
-
-Rollover is on the LOCAL date. "Was yesterday hot" is a question about
-the day someone lived through.
-
-Written on the same cadence as the history flush rather than on every
-reading - the summary changes with each poll, and rewriting the file
-every 30 seconds on an SD card to store what the next reading
-regenerates is not a trade worth making.
-
 `GET /api/history?since=REV&gen=GENERATION` returns only what the caller
 is missing. Measured on the live service: **110 bytes against 189,960**
 for one poll's worth of new data.
@@ -171,3 +147,26 @@ because pruning has overtaken them, or a `gen` that does not match the
 process answering. The caller is told which it received rather than
 having to infer it.
 
+## Daily summaries
+
+`history` is pruned to 24 hours BY TIMESTAMP, so nothing derived from it
+can describe more than the last day. `daily.json` exists to answer the
+questions that outlive that window - "was it this humid last week" -
+without making the trace longer, which is the expensive way to buy the
+same answer.
+
+One row per day: `{"d": "2026-08-17", "n": 2848, "v": {"lo": 510,
+"hi": 1069}, "tc": {...}, "rh": {...}}`. Two years are kept, which is
+kilobytes against the 188KB the 24h trace already costs.
+
+A day with no readings is ABSENT rather than zeroed. A metric the
+sensor did not report is absent from its row for the same reason: a
+zero would be a lie a chart would draw.
+
+Rollover is on the LOCAL date. "Was yesterday hot" is a question about
+the day someone lived through.
+
+Written on the same cadence as the history flush rather than on every
+reading - the summary changes with each poll, and rewriting the file
+every 30 seconds on an SD card to store what the next reading
+regenerates is not a trade worth making.
