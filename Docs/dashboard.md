@@ -98,6 +98,18 @@ The fault match stays anchored to the start or end of the message rather
 than searching for the word. `Changed: watts_fault_seconds` names a
 setting, not a fault, and a substring match turned it red.
 
+### The version
+
+Bottom left, quiet on purpose: it answers "which code is this box
+running" and nothing else. A short commit hash, with a trailing `+` when
+the working tree has uncommitted changes, or `unknown` where git is not
+available and no `VERSION` file exists.
+
+Worth having because boxes drift apart deliberately - a controller can
+sit on a known-good commit for days while a development copy tracks
+main, and the screen is where anyone would look first to tell them
+apart.
+
 ### On a phone
 
 The timestamp column shows `17/08/26 11:27` - two-digit year, no

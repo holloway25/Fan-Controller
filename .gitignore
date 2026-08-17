@@ -13,6 +13,17 @@ config*.json*
 office-fan-controller.service
 !config.example.json
 
+# The virtual environment the README tells you to create. Python's own
+# venv module writes venv/.gitignore containing "*", so a venv made
+# that way already hides itself - which is why this was missed. A venv
+# made with virtualenv, or with an older Python, does not, and then
+# every clean install reports itself as MODIFIED in the version footer
+# because the dirty check counts untracked files. Found by review of
+# e91cbb0 against a checkout where the self-ignore was absent.
+venv/
+.venv/
+env/
+
 # Runtime state and vendored dependencies
 history.json
 daily.json

@@ -442,13 +442,64 @@ def test_a_manual_external_change_reads_as_ordinary():
 
 
 def test_the_page_shows_which_commit_it_is_running():
-    """"Which code is this box running" was unanswerable from the
-    screen, and the boxes are deliberately on different commits."""
+    """The wiring, end to end - not three strings in the source.
+
+    The first version of this only grepped the HTML, so it would have
+    passed with /api/state no longer returning the field and the footer
+    left empty. Reported by review of e91cbb0.
+    """
+    C = harness.load()
+    C.VERSION = "abc1234"
+    body = C.app.test_client().get("/api/state").get_json()
+    assert body.get("version") == "abc1234", (
+        "the endpoint does not carry the running version: %r"
+        % body.get("version"))
+
+    # And the page puts what it receives into the footer element.
     html = squashed()
-    assert 'id="ver"' in html, "no version element"
-    assert "s.version" in html, "the version is never read from state"
-    assert "<footer" in html, "the version is not in a footer"
-    return "version in the corner"
+    assert 'id="ver"' in html, "no version element to fill"
+    assert 've=$("ver")' in html, "the footer is never located"
+    assert "ve.textContent=s.version" in html, (
+        "the footer is not filled from the state field")
+    return "endpoint carries it, page renders it"
+
+
+def test_the_version_is_always_a_string():
+    """A missing field would make the footer read "undefined". The
+    fallbacks exist so the page never has to cope with an absent
+    value."""
+    C = harness.load()
+    body = C.app.test_client().get("/api/state").get_json()
+    assert isinstance(body.get("version"), str) and body["version"], body.get(
+        "version")
+    return "never absent, never null"
+
+
+def test_a_deployment_without_git_still_has_a_version():
+    """A tarball copy with no .git is a legitimate install, and the page
+    must not break because the corner of it has nothing to say.
+
+    DIR is pointed at a directory that is genuinely not a repository,
+    so git really does fail here rather than being stubbed into
+    failing."""
+    import os
+    import shutil
+    import tempfile
+    C = harness.load()
+    real_dir = C.DIR
+    tmp = tempfile.mkdtemp()
+    try:
+        C.DIR = tmp
+        # No git, no VERSION file.
+        assert C._build_version() == "unknown", C._build_version()
+        # A VERSION file is used when git cannot answer.
+        with open(os.path.join(tmp, "VERSION"), "w") as f:
+            f.write("1.2.3-tarball\n")
+        assert C._build_version() == "1.2.3-tarball", C._build_version()
+    finally:
+        C.DIR = real_dir
+        shutil.rmtree(tmp, ignore_errors=True)
+    return "git, then VERSION, then unknown"
 
 
 if __name__ == "__main__":
