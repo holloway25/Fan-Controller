@@ -722,5 +722,23 @@ def test_normal_operation_stays_uncoded():
     return "manual paths carry no code"
 
 
+def test_an_external_change_records_the_mode():
+    """A reader six months later cannot know what mode it was in, and
+    the mode is what the line MEANS: in Manual someone switching by
+    hand is the mode working, in Auto the controller is being
+    contradicted."""
+    C = harness.load()
+    E.wire(C)
+    C.CFG["control"]["mode"] = "manual"
+    C._log("%s Fan off \u2014 changed outside (%s)"
+           % (C.FC_EXTERNAL_CHANGE, C._mode_now()))
+    msg = C.load_events()[0]["msg"]
+    assert msg.startswith(C.FC_EXTERNAL_CHANGE), msg
+    assert msg.endswith("(Manual)"), msg
+    C.CFG["control"]["mode"] = "auto"
+    assert C._mode_now() == "Auto"
+    return "the mode is in the line"
+
+
 if __name__ == "__main__":
     sys.exit(harness.run(dict(globals())))

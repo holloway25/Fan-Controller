@@ -431,5 +431,15 @@ def test_the_narrow_box_is_taller_and_keeps_its_shape():
     return "taller than desktop, not square"
 
 
+def test_a_manual_external_change_reads_as_ordinary():
+    """In Manual, a hand switch is the mode doing its job - it should
+    not be coloured as something to look at. In any other mode the same
+    line means the controller was contradicted."""
+    html = squashed()
+    assert '/\\(Manual\\)$/.test(m)?"ok":"m-manual"' in html, (
+        "FC-300 does not distinguish Manual from the other modes")
+    return "green in Manual, flagged otherwise"
+
+
 if __name__ == "__main__":
     sys.exit(harness.run(dict(globals())))

@@ -824,9 +824,11 @@ function render(s){
       if(code==="0"||code==="2")row.className="fault";
       // 1xx all-clear reads as a return to normal.
       else if(code==="1")row.className="ok";
-      // 3xx is an observation - something else moved the plug - so it
-      // takes the manual colour rather than reading as automatic.
-      else if(code==="3")row.className="m-manual";
+      // 3xx is an observation - something else moved the plug. In
+      // MANUAL that is the mode doing its job, so it reads as an
+      // ordinary switch; in any other mode the controller has been
+      // contradicted and it keeps the manual colour to stand out.
+      else if(code==="3")row.className=/\(Manual\)$/.test(m)?"ok":"m-manual";
       // Anchored, not a bare substring: "Changed: watts_fault_seconds"
       // contains the word but is a settings edit, not a fault.
       else if(/^Draw fault/i.test(m)||/draw fault$/i.test(m))

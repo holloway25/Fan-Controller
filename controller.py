@@ -1478,8 +1478,15 @@ def _force_on(plug, gen=None):
             # path does - forcing it back must not swallow the evidence.
             # Only on a confirmed False: an unreadable plug is unknown,
             # not off, and reporting it as a switch invents an event.
-            _log("%s Fan off \u2014 changed outside"
-                 % FC_EXTERNAL_CHANGE)
+            # THE MODE GOES IN THE LINE. A reader six months later
+            # cannot know what mode the box was in at the time, and it
+            # changes what the entry MEANS: in Manual someone switching
+            # the fan by hand is the mode working as intended, while in
+            # Auto the same line is the controller being contradicted -
+            # possibly by a second controller. Same code either way, so
+            # the occurrences stay countable.
+            _log("%s Fan off \u2014 changed outside (%s)"
+                 % (FC_EXTERNAL_CHANGE, _mode_now()))
         plug.set(True)               # raises: retried on the next cycle
         now = time.time()
         with _state_lock:
@@ -1589,9 +1596,10 @@ def tick():
                     # must not grant a fresh lease to a fan that was
                     # already running.
                     STATE["changed_at"] = now
-                    ext_msg = ("%s Fan %s \u2014 changed outside"
+                    ext_msg = ("%s Fan %s \u2014 changed outside (%s)"
                                % (FC_EXTERNAL_CHANGE,
-                                  "on" if actual else "off"))
+                                  "on" if actual else "off",
+                                  _mode_now()))
             fan_on = STATE["fan"]
             changed = STATE["changed_at"]
     # Recovery is an edge too, and only announced if the stale alert
