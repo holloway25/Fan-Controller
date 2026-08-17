@@ -390,9 +390,9 @@ def test_the_chart_labels_scale_up_on_a_narrow_screen():
     assert "functionfitViewBox" in html, "no responsive viewBox"
     assert 'matchMedia("(max-width:640px)")' in html, (
         "the narrow box is not tied to the phone breakpoint")
-    assert "fitViewBox(svg,700,216,345,216)" in html, (
+    assert "fitViewBox(svg,700,216,345,170)" in html, (
         "the CO2 chart does not narrow")
-    assert "fitViewBox(svg,700,159,345,185)" in html, (
+    assert "fitViewBox(svg,700,159,345,150)" in html, (
         "the mini charts do not narrow")
     return "narrower box, larger labels"
 
@@ -419,12 +419,16 @@ def test_the_narrow_box_is_taller_and_keeps_its_shape():
         narrow = int(nh) / int(nw)
         assert narrow > wide, (
             "%s x %s is not taller than %s x %s" % (nw, nh, ww, wh))
-        # 0.625 is where the phone charts landed and where they were
-        # left. A change here means the chart resized, not the text.
-        assert abs(narrow - 0.625) < 0.12, (
-            "narrow aspect %.3f moved: the chart changed height, not "
-            "just its labels" % narrow)
-    return "taller than desktop, same as before"
+        # AND NOT SO TALL THAT IT LOOKS SQUASHED SIDEWAYS. At 0.63 the
+        # CO2 chart was nearly square and the traces read as
+        # vertically stretched. The ceiling is what stops a future
+        # label enlargement being paid for in height again - narrowing
+        # the box to grow the text raises this number unless the height
+        # is brought down with it.
+        assert narrow < 0.55, (
+            "narrow aspect %.3f - the chart is squashed horizontally"
+            % narrow)
+    return "taller than desktop, not square"
 
 
 if __name__ == "__main__":
