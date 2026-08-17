@@ -268,5 +268,86 @@ def test_the_checker_can_actually_fail():
     return "the checker bites"
 
 
+# ------------------------------------------------- documentation hygiene
+
+def test_the_example_config_uses_reserved_addresses_only():
+    """192.0.2.0/24 is TEST-NET-1, reserved by RFC 5737 for exactly this.
+
+    Whoever copies config.example.json is going to paste their own
+    addresses over these, and until they do the file is what a stranger
+    reads. A real address here is either someone's actual hardware -
+    which is the boundary this repository has already been through a
+    history rewrite over - or a working address that quietly points a
+    fresh install at a machine that is not theirs.
+
+    Checked in the suite rather than left to review: it was done on
+    2026-08-14 and stayed on the open list for three days because
+    nobody went back to tick it off, which is a good argument for the
+    check saying so itself.
+    """
+    import json
+    import re
+    src = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    text = open(os.path.join(src, "config.example.json"),
+                encoding="utf-8").read()
+    found = re.findall(r"\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b", text)
+    assert found, "no addresses at all - has the file changed shape?"
+    allowed_prefix = "192.0.2."
+    bad = [a for a in found
+           if not a.startswith(allowed_prefix)
+           and a not in ("127.0.0.1", "0.0.0.0")]
+    assert not bad, (
+        "config.example.json carries non-reserved address(es) %s - use "
+        "192.0.2.x (RFC 5737 TEST-NET-1)" % ", ".join(sorted(set(bad))))
+    # And it must still parse, since it is what people copy.
+    json.loads(text)
+    return "%d addresses, all reserved" % len(found)
+
+
+def test_no_tracked_file_carries_a_private_address():
+    """The same rule the privacy workflow enforces, in the suite.
+
+    CI catches this on push. A test catches it before the commit, which
+    is where a private address is cheap to remove rather than needing a
+    history rewrite.
+    """
+    import re
+    import subprocess
+    src = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    listed = subprocess.run(["git", "ls-files"], capture_output=True,
+                            text=True, cwd=src)
+    if listed.returncode != 0:
+        return "SKIP not a git checkout"
+    # DELIBERATELY THE SAME EXPRESSION as the hook and the privacy
+    # workflow, boundaries included. Three copies that drift are worse
+    # than three that agree: the trailing-dot hole below existed in all
+    # three at once precisely because they were written together.
+    pat = re.compile(
+        r"(^|[^0-9])(10\.(?:[0-9]{1,3}\.){2}[0-9]{1,3}"
+        r"|192\.168\.[0-9]{1,3}\.[0-9]{1,3}"
+        r"|172\.(?:1[6-9]|2[0-9]|3[01])\.[0-9]{1,3}\.[0-9]{1,3})"
+        r"([^0-9]|$)")
+    # These three define or test the pattern itself.
+    exempt = {"tools/scan_secrets.py", ".githooks/pre-commit",
+              ".github/workflows/privacy.yml", "tests/test_structure.py",
+              "tests/test_fault_codes.py"}
+    hits = []
+    for rel in listed.stdout.split():
+        if rel in exempt:
+            continue
+        p = os.path.join(src, rel)
+        if not os.path.isfile(p):
+            continue
+        try:
+            with open(p, encoding="utf-8", errors="replace") as f:
+                for i, line in enumerate(f, 1):
+                    if pat.search(line):
+                        hits.append("%s:%d" % (rel, i))
+        except OSError:
+            continue
+    assert not hits, "private addresses in tracked files: %s" % ", ".join(hits)
+    return "clean"
+
+
 if __name__ == "__main__":
     sys.exit(harness.run(dict(globals())))

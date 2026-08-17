@@ -459,17 +459,17 @@ def test_no_username_means_no_authentication():
 def test_the_message_has_the_headers_a_mail_server_needs():
     C = harness.load()
     real = C.smtplib.SMTP
-    fake = with_fake(C, FakeSMTP(), recipients="a@x.com, b@y.com")
+    fake = with_fake(C, FakeSMTP(), recipients="a@example.com, b@example.net")
     try:
         C._send_mail("Fan stopped", "the body")
     finally:
         C.smtplib.SMTP = real
     sender, to, msg = fake.sent
     assert sender == "fan@invalid", sender
-    assert to == ["a@x.com", "b@y.com"], to
+    assert to == ["a@example.com", "b@example.net"], to
     assert "Subject: Fan stopped" in msg, msg[:200]
     assert "From: fan@invalid" in msg
-    assert "To: a@x.com, b@y.com" in msg
+    assert "To: a@example.com, b@example.net" in msg
     assert "charset=utf-8" in msg
     head, _, body = msg.partition("\r\n\r\n")
     assert body == "the body", repr(body)
