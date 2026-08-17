@@ -519,45 +519,6 @@ def save_hist(hist):
 
 _hist_write_lock = threading.Lock()
 
-def _build_version():
-    """The commit this process is running, for the corner of the page.
-
-    ASKED ONCE, AT IMPORT. A subprocess per request would be absurd for
-    a string that cannot change while the process lives - an execv
-    restart re-imports and asks again, which is exactly when it can
-    change.
-
-    Falls back to a VERSION file, then to "unknown". A deployment that
-    is not a git checkout is a legitimate way to install this, and the
-    page must not break because the corner of it has nothing to say.
-    NEVER RAISES: git may be absent, the directory may not be a
-    repository, and neither is worth a stack trace.
-    """
-    try:
-        import subprocess
-        r = subprocess.run(["git", "-C", DIR, "rev-parse", "--short", "HEAD"],
-                           capture_output=True, text=True, timeout=5)
-        if r.returncode == 0 and r.stdout.strip():
-            v = r.stdout.strip()
-            d = subprocess.run(["git", "-C", DIR, "status", "--porcelain"],
-                               capture_output=True, text=True, timeout=5)
-            # A running box with uncommitted edits is worth knowing
-            # about: the version alone would name a commit whose code
-            # is not what is running.
-            if d.returncode == 0 and d.stdout.strip():
-                v += "+"
-            return v
-    except Exception:
-        pass
-    try:
-        with open(os.path.join(DIR, "VERSION")) as f:
-            return f.read().strip()[:40] or "unknown"
-    except OSError:
-        return "unknown"
-
-
-VERSION = _build_version()
-
 DAILY_PATH = os.path.join(DIR, "daily.json")
 # Two years. One line per day, three metrics - kilobytes, against the
 # 188KB the 24h trace already costs. The point is to answer "was it
@@ -3457,7 +3418,6 @@ def api_state():
     # answering proves nothing, because a failed exec leaves the original
     # process serving on it.
     s["process_started_at"] = _PROC_START
-    s["version"] = VERSION
     # The same token /api/history uses. It is here so a client can tell
     # it is talking to a different process WITHOUT making a history
     # request first: revisions restart with the process, so a dashboard

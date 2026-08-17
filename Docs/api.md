@@ -23,20 +23,6 @@ Werkzeug's own 413 page.
 | POST | `/api/ui/password` | required | Set or clear the UI password |
 | GET | `/api/debug/sensor` | required | Raw Protect payload for the selected sensor |
 
-`/api/state` also carries `version`: the commit this process is running,
-as a short hash. Read once at import, because it cannot change while the
-process lives - an `execv` restart re-imports and asks again, which is
-the only moment it can.
-
-A TRAILING `+` MEANS UNCOMMITTED CHANGES in the working tree. Without it
-the field would name a commit whose code is not what is running, which
-is the state a development box spends most of its time in.
-
-Where git is unavailable - a tarball deployment, or a copy without the
-`.git` directory - it falls back to a `VERSION` file beside
-`controller.py`, and then to the literal string `unknown`. The endpoint
-always returns the field; it is never absent and never null.
-
 Every request body is capped at 8KB and a larger one is rejected with
 413. Nothing here legitimately posts more than a few hundred bytes, and
 `/api/clienterror` stays open even once auth is on, so without a cap one

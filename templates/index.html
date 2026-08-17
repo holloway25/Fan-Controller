@@ -112,11 +112,6 @@ border:1px solid rgba(52,211,153,.35)}
 background:#0f1520;border:1px solid var(--line);border-radius:8px;
 padding:8px 11px;cursor:pointer}
 .log{font-family:var(--mono);font-size:13px;color:var(--dim);line-height:1.9}
-/* Bottom left, deliberately quiet: it answers "which code is this box
-   running" and nothing else, so it must be findable and must never
-   compete with a reading. */
-footer{margin:14px 2px 4px;color:var(--faint);font-size:11px;
-font-family:var(--mono);opacity:.65}
 .log div{display:flex;gap:10px;align-items:baseline}
 .log time.when{flex:0 0 auto;white-space:nowrap;color:var(--faint);
 cursor:pointer}
@@ -334,7 +329,6 @@ font-size:16px}
 </div>
 </details>
 </div>
-<footer id="foot"><span id="ver"></span></footer>
 </div>
 <script>
 // Report script failures to the server; a load-time error is otherwise
@@ -622,12 +616,6 @@ function drawMini(hist,c){
 
 function render(s){
   const c=s.config.control;
-  // Written once. It cannot change while the process lives, and an
-  // execv restart re-imports and re-reads it, which is the only moment
-  // it can - so repainting it every five seconds would be work done to
-  // produce the same string.
-  const ve=$("ver");
-  if(s.version&&ve.textContent!==s.version)ve.textContent=s.version;
   $("ppm").textContent=(s.co2==null?"--":Math.round(s.co2))+" ppm";
   const f=$("fan");
   // Relay closed but drawing nothing means the fan is not really running.
