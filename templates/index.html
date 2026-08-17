@@ -467,9 +467,22 @@ function drawTrace(hist,c){
   svg.appendChild(txt(Math.round(last),{x:L-7,y:ly,fill:"#e8edf3",
     "font-size":13,"font-weight":600,"text-anchor":"end",
     "font-family":"ui-monospace,monospace"}));
-  svg.appendChild(txt("CO2 ppm",{x:L+4,y:TOP+11,fill:"#97a3b4",
+  // The name takes the colour of its own trace, as the mini rows do -
+  // CO2 is drawn white, so its label is white. It read as a grey
+  // caption belonging to nothing in particular.
+  const nameEl=txt("CO2 PPM",{x:L+4,y:TOP+11,fill:"#e8edf3",
     "font-size":12,opacity:.85,
-    "font-family":"ui-monospace,monospace"}));
+    "font-family":"ui-monospace,monospace"});
+  svg.appendChild(nameEl);
+  // The observed range, which this chart never showed at all. Labelled
+  // rather than written as a dash range: "705-1013" needs decoding,
+  // "Low 705  High 1013" does not.
+  const dlo=Math.min(...vs),dhi=Math.max(...vs);
+  let nw=64;
+  try{nw=nameEl.getComputedTextLength()}catch(e){}
+  svg.appendChild(txt("Low "+Math.round(dlo)+"   High "+Math.round(dhi),
+    {x:L+4+nw+12,y:TOP+11,fill:"#e8edf3",opacity:.7,"font-size":11,
+     "font-family":"ui-monospace,monospace"}));
 }
 
 function drawMini(hist,c){
@@ -496,8 +509,10 @@ function drawMini(hist,c){
   // /api/state - it is only absent from the UI. Add ["pm","#4a9eff",
   // "PM2.5 \u00b5g/m\u00b3"] here and raise the trace2 viewBox height
   // to 231 to bring it back.
-  const defs=[["tc","#f5a623","Temperature \u00b0C"],
-              ["rh","#34d399","Humidity %"]];
+  // Uppercase to match the CO2 header above them: three charts in one
+  // column reading three different ways was the whole complaint.
+  const defs=[["tc","#f5a623","TEMPERATURE \u00b0C"],
+              ["rh","#34d399","HUMIDITY %"]];
   // AXIS reserves the strip the shared time labels sit in, so row heights
   // stay what they were when the axis lived under the CO2 chart.
   const AXIS=26,GAP=10;
@@ -552,8 +567,15 @@ function drawMini(hist,c){
     if(thr){let nw=100;
       try{nw=nameEl.getComputedTextLength()}catch(e){}
       rx=L+4+nw+12;anc="start"}
-    svg.appendChild(txt(lo.toFixed(1)+"\u2013"+hi.toFixed(1),
-      {x:rx,y:top+11,fill:"#97a3b4","font-size":11,"text-anchor":anc,
+    // IN THE TRACE COLOUR, not grey, so the range belongs visibly to the
+    // row it describes - and worded, because a bare dash range reads as
+    // one number until you look twice. The observed values, NOT the
+    // padded scale: lo and hi are stretched to keep the threshold lines
+    // on screen, and reporting those as the range would claim readings
+    // that never happened.
+    const dlo=Math.min(...vs),dhi=Math.max(...vs);
+    svg.appendChild(txt("Low "+dlo.toFixed(1)+"   High "+dhi.toFixed(1),
+      {x:rx,y:top+11,fill:col,opacity:.7,"font-size":11,"text-anchor":anc,
        "font-family":MONO}))});
   // Shared time axis for both charts: they plot the same window, so one
   // set of labels at the very bottom serves the CO2 trace above too.

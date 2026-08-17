@@ -333,5 +333,47 @@ def test_the_tap_handler_is_bound_once():
     return "bound once"
 
 
+# ------------------------------------------------------- the chart headers
+
+def test_every_chart_names_itself_in_its_own_colour():
+    """CO2 was captioned grey while its trace was white, so the label
+    read as belonging to nothing in particular."""
+    html = squashed()
+    i = html.index('txt("CO2PPM"')
+    head = html[i:i + 120]
+    assert 'fill:"#e8edf3"' in head, "the CO2 label is not the trace colour"
+    return "labels match their traces"
+
+
+def test_the_chart_names_are_consistently_cased():
+    """Three charts in one column reading three different ways."""
+    html = squashed()
+    for name in ('"CO2PPM"', 'TEMPERATURE', 'HUMIDITY'):
+        assert name in html, "%s is not uppercase" % name
+    return "one casing"
+
+
+def test_every_chart_shows_a_labelled_range():
+    """A bare dash range reads as one number until you look twice, and
+    the CO2 chart showed no range at all."""
+    html = squashed()
+    assert html.count('"Low"+') == 2, (
+        'expected a labelled range on the CO2 chart and the mini rows, '
+        'found %d' % html.count('"Low"+'))
+    assert '"\\u2013"' not in html, "a dash range is still being drawn"
+    return "low and high, worded"
+
+
+def test_the_range_is_the_observed_values_not_the_padded_scale():
+    """lo and hi are stretched to keep the threshold lines on screen.
+    Reporting those as the range would claim readings that never
+    happened - a fan-on line at 70% would have the humidity row
+    claiming a 70% high on a day it never passed 55."""
+    html = squashed()
+    assert html.count("constdlo=Math.min(...vs),dhi=Math.max(...vs)") == 2, (
+        "the range is not derived separately from the padded scale")
+    return "observed, not padded"
+
+
 if __name__ == "__main__":
     sys.exit(harness.run(dict(globals())))
