@@ -349,5 +349,26 @@ def test_no_tracked_file_carries_a_private_address():
     return "clean"
 
 
+def test_the_readme_lists_every_test_module():
+    """A list of tests that misses six of them is worse than no list:
+    someone looking for coverage of a thing concludes there is none.
+
+    Found by review of 3ea51b3, which is one review too late - the
+    shellcheck module has a list-completeness test for the same reason
+    and found an unknown script the day it was written.
+    """
+    import re
+    src = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    readme = open(os.path.join(src, "README.md"), encoding="utf-8").read()
+    listed = set(re.findall(r"^- `(test_[a-z_]+\.py)`", readme, re.M))
+    have = {f for f in os.listdir(os.path.join(src, "tests"))
+            if f.startswith("test_") and f.endswith(".py")}
+    missing = sorted(have - listed)
+    gone = sorted(listed - have)
+    assert not missing, "not in the README: %s" % ", ".join(missing)
+    assert not gone, "listed but deleted: %s" % ", ".join(gone)
+    return "%d modules, all listed" % len(have)
+
+
 if __name__ == "__main__":
     sys.exit(harness.run(dict(globals())))

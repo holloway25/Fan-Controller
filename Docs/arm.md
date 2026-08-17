@@ -8,10 +8,15 @@ First measured 2026-08-13 on a Pi 3 Model B Plus Rev 1.3, 64-bit
 Raspberry Pi OS (Debian 13 trixie), kernel 6.18, aarch64, Python
 3.13.5, 905MB usable, on an idle board.
 
-The **suite** figures were remeasured 2026-08-14 at d50a754 on the same
-board, with a small heatsink fitted. The import and parse timings have
-NOT been retaken since 08-13 — they carry the older date for a reason
-and should not be quoted as if they were refreshed.
+The **suite** figures were remeasured 2026-08-17 at f4f1ecf on the same
+board, with a small heatsink fitted, immediately after the fault-code
+work was deployed to it. The import and parse timings have NOT been
+retaken since 08-13 — they carry the older date for a reason and should
+not be quoted as if they were refreshed.
+
+This line said 08-14 / d50a754 until 08-17, when the table below it
+already said otherwise: a summary and its detail disagreeing is exactly
+what the commit stamps are meant to make visible.
 
 ## Summary
 
@@ -211,7 +216,7 @@ nineteen modules the question is which ones cost, and alphabetical
 order answers a question nobody asks.
 
 **tools/mutate.py IS NOT IN THIS TABLE AND DOES NOT RUN HERE.** It
-copies the tree fifteen times and runs a module in each, which is
+copies the tree once per mutation and runs a module in each, which is
 minutes rather than seconds and far more work than this board should do
 on every change. It runs in CI on one interpreter. The suite on the Pi
 is the suite; the mutation harness is a separate claim about the suite.

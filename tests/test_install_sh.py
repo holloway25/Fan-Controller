@@ -131,7 +131,11 @@ def test_the_unit_names_this_user_and_this_directory():
         assert re.search(r"^User=%s$" % re.escape(who), unit, re.M), unit
         assert re.search(r"^WorkingDirectory=%s$" % re.escape(dest), unit,
                          re.M), unit
-        assert re.search(r"^ExecStart=%s/venv/bin/python controller\.py$"
+        # QUOTED. systemd splits an unquoted ExecStart on whitespace,
+        # so a path with a space in it named a command that does not
+        # exist. The quotes go around the executable only; everything
+        # after it is an argument.
+        assert re.search(r'^ExecStart="%s/venv/bin/python" controller\.py$'
                          % re.escape(dest), unit, re.M), unit
         # And it must not still carry the example's placeholder.
         assert "fanctl" not in unit, "the placeholder user survived"
@@ -179,6 +183,87 @@ def test_it_rejects_an_unknown_option():
         return "unknown options fail"
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _tree_at(name):
+    """A copy of the installable files in a directory called `name`."""
+    tmp = tempfile.mkdtemp(prefix="install-")
+    dest = os.path.join(tmp, name)
+    os.makedirs(dest)
+    for f in ("install.sh", "requirements.txt", "config.example.json",
+              "office-fan-controller.service.example"):
+        shutil.copy2(os.path.join(ROOT, f), dest)
+    return tmp, dest
+
+
+def test_a_path_with_a_space_produces_a_valid_unit():
+    """systemd splits an unquoted ExecStart on whitespace, so a
+    directory with a space in it produced a unit naming a command that
+    does not exist - invalid in a way only the first start reveals,
+    with the install looking finished. Reported by review of 3ea51b3.
+    """
+    import shutil as _sh
+    import subprocess as _sp
+    tmp, dest = _tree_at("fan controller")
+    try:
+        r = _sp.run(["bash", os.path.join(dest, "install.sh")],
+                    capture_output=True, text=True, cwd=dest)
+        assert r.returncode == 0, r.stdout + r.stderr
+        unit = open(os.path.join(dest, "office-fan-controller.service"),
+                    encoding="utf-8").read()
+        line = [ln for ln in unit.splitlines() if ln.startswith("ExecStart=")]
+        assert line, unit
+        assert '"%s/venv/bin/python"' % dest in line[0], line[0]
+
+        if _sh.which("systemd-analyze"):
+            v = _sp.run(["systemd-analyze", "verify",
+                         os.path.join(dest, "office-fan-controller.service")],
+                        capture_output=True, text=True)
+            assert "is not executable" not in (v.stdout + v.stderr), (
+                v.stdout + v.stderr)
+        return "a spaced path verifies"
+    finally:
+        _sh.rmtree(tmp, ignore_errors=True)
+
+
+def test_an_ampersand_in_the_path_is_not_interpreted():
+    """In a sed replacement & is the whole match, so a directory with
+    one in its name produced a mangled line rather than an error."""
+    import shutil as _sh
+    import subprocess as _sp
+    tmp, dest = _tree_at("fan & controller")
+    try:
+        r = _sp.run(["bash", os.path.join(dest, "install.sh")],
+                    capture_output=True, text=True, cwd=dest)
+        assert r.returncode == 0, r.stdout + r.stderr
+        unit = open(os.path.join(dest, "office-fan-controller.service"),
+                    encoding="utf-8").read()
+        assert dest in unit, "the path was mangled:\n%s" % unit
+        wd = [ln for ln in unit.splitlines()
+              if ln.startswith("WorkingDirectory=")]
+        assert wd == ["WorkingDirectory=%s" % dest], wd
+        return "an ampersand survives intact"
+    finally:
+        _sh.rmtree(tmp, ignore_errors=True)
+
+
+def test_the_generated_unit_verifies_where_systemd_can_check_it():
+    import shutil as _sh
+    import subprocess as _sp
+    if not _sh.which("systemd-analyze"):
+        return "SKIP systemd-analyze is not installed"
+    tmp, dest = _tree_at("plain")
+    try:
+        _sp.run(["bash", os.path.join(dest, "install.sh")],
+                capture_output=True, text=True, cwd=dest)
+        v = _sp.run(["systemd-analyze", "verify",
+                     os.path.join(dest, "office-fan-controller.service")],
+                    capture_output=True, text=True)
+        out = v.stdout + v.stderr
+        assert "is not executable" not in out, out
+        return "verified"
+    finally:
+        _sh.rmtree(tmp, ignore_errors=True)
 
 
 if __name__ == "__main__":

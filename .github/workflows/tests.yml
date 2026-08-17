@@ -120,12 +120,13 @@ jobs:
       # THE SUITE PASSING IS NOT EVIDENCE ON ITS OWN. Six external
       # reviews found the same defect over and over: tests asserting
       # the shape of the source rather than the behaviour of the
-      # system, every one of them green. tools/mutate.py breaks fifteen
-      # specific things on purpose and requires the named test module
-      # to fail for each.
+      # system, every one of them green. tools/mutate.py breaks a
+      # curated set of specific things on purpose and requires the
+      # named test to fail for each. --list says how many; a count in
+      # a comment goes stale the moment one is added.
       #
-      # ONE PYTHON ONLY. It copies the tree fifteen times and runs a
-      # module in each, so it is minutes rather than seconds - across
+      # ONE PYTHON ONLY. It copies the tree once per mutation and runs
+      # a module in each, so it is minutes rather than seconds - across
       # the whole matrix that is time spent re-proving the same claims
       # on interpreters that cannot change the answer.
       #

@@ -112,12 +112,45 @@ UNIT="office-fan-controller.service"
 # a generic user and path - the concrete ones are site detail and stay
 # out of the repository. Both the generated file and config.json are
 # gitignored.
-sed -e "s|^User=.*|User=$WHO|" \
-    -e "s|^Group=.*|Group=$(id -gn)|" \
-    -e "s|^WorkingDirectory=.*|WorkingDirectory=$WHERE|" \
-    -e "s|^ExecStart=.*|ExecStart=$WHERE/venv/bin/python controller.py|" \
-    "$UNIT_SRC" > "$UNIT" || die "could not write $UNIT"
+#
+# NOT sed. Two ways that went wrong, both reported by review of
+# 3ea51b3:
+#
+#   A PATH CONTAINING A SPACE produced an ExecStart systemd splits into
+#   a command and an argument - "/opt/fan control/venv/bin/python"
+#   became the command "/opt/fan" - so the unit was silently invalid
+#   until the first start attempt.
+#
+#   AN AMPERSAND in a path is the whole match in a sed replacement, so
+#   a directory with one in its name produced a mangled line rather
+#   than an error.
+#
+# awk with the values in variables never interprets them, and systemd
+# takes a quoted first token for exactly this case. The quotes go
+# around the executable only: everything after it is an argument.
+GROUP="$(id -gn)"
+awk -v who="$WHO" -v grp="$GROUP" -v dir="$WHERE" '
+  /^User=/            { print "User=" who; next }
+  /^Group=/           { print "Group=" grp; next }
+  /^WorkingDirectory=/{ print "WorkingDirectory=" dir; next }
+  /^ExecStart=/       { print "ExecStart=\"" dir "/venv/bin/python\" controller.py"; next }
+  { print }
+' "$UNIT_SRC" > "$UNIT" || die "could not write $UNIT"
 say "wrote $UNIT for $WHO in $WHERE"
+
+# Verified when systemd is present to verify it. A unit that is wrong
+# in a way only the first start reveals is the worst kind: the install
+# looks finished.
+if command -v systemd-analyze >/dev/null 2>&1; then
+  if out=$(systemd-analyze verify "./$UNIT" 2>&1); then
+    say "systemd-analyze verify passed"
+  else
+    printf '%s\n' "$out" >&2
+    die "the generated unit does not verify."
+  fi
+else
+  say "systemd-analyze not present, unit not verified"
+fi
 
 if [ "$WANT_UNIT" = "1" ]; then
   command -v systemctl >/dev/null 2>&1 || die "systemctl is not on PATH."

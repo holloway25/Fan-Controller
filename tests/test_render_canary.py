@@ -130,5 +130,54 @@ def test_the_empty_state_is_not_reported_as_a_failure():
     return "an empty log is allowed to be empty"
 
 
+def test_a_render_report_is_not_swallowed_by_a_script_error():
+    """SAME TEXT, DIFFERENT MEANING. Deduplication keyed on the message
+    alone let whichever arrived second be discarded - so an FC-208
+    could be silently eaten by an ordinary script error that happened
+    to say the same thing, and the render failure would never reach the
+    log. Reported by review of 3ea51b3.
+    """
+    C = harness.load()
+    cl = C.app.test_client()
+    cl.post("/api/clienterror", json={"msg": "same failure"})
+    cl.post("/api/clienterror",
+            json={"msg": "same failure", "kind": "render"})
+    msgs = [e["msg"] for e in C.load_events()]
+    coded = [m for m in msgs if m.startswith(C.FC_RENDER_EMPTY)]
+    plain = [m for m in msgs
+             if "same failure" in m and not m.startswith(C.FC_RENDER_EMPTY)]
+    assert coded, "the render report was swallowed: %r" % msgs
+    assert plain, "the script error was swallowed: %r" % msgs
+    return "both survive"
+
+
+def test_the_other_order_works_too():
+    """The bug was symmetric; a fix that only handles one order is not
+    a fix."""
+    C = harness.load()
+    cl = C.app.test_client()
+    cl.post("/api/clienterror",
+            json={"msg": "same failure", "kind": "render"})
+    cl.post("/api/clienterror", json={"msg": "same failure"})
+    msgs = [e["msg"] for e in C.load_events()]
+    assert any(m.startswith(C.FC_RENDER_EMPTY) for m in msgs), msgs
+    assert any("same failure" in m and not m.startswith(C.FC_RENDER_EMPTY)
+               for m in msgs), msgs
+    return "either order"
+
+
+def test_a_repeat_of_the_same_kind_is_still_deduplicated():
+    """The quiet period still has to work, or a page in a render loop
+    fills the log it was meant to protect."""
+    C = harness.load()
+    cl = C.app.test_client()
+    for _ in range(3):
+        cl.post("/api/clienterror",
+                json={"msg": "the same thing", "kind": "render"})
+    msgs = [e["msg"] for e in C.load_events() if "the same thing" in e["msg"]]
+    assert len(msgs) == 1, "logged %d times" % len(msgs)
+    return "repeats still collapse"
+
+
 if __name__ == "__main__":
     sys.exit(harness.run(dict(globals())))

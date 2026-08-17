@@ -163,4 +163,73 @@ tests["a machine-readable timestamp is on every row"] = async () => {
     "no accessible label - a screen reader gets the short form only");
 };
 
+tests["an expanded timestamp survives the next poll"] = async () => {
+  // THE BUG THIS EXISTS FOR: render() deletes and rebuilds every row
+  // on each poll, so state held on the element lasted five seconds -
+  // tap a timestamp, wait, and it collapsed under you. Reported by
+  // review of 3ea51b3, and missed here because the original test
+  // tapped and asserted without ever polling. A lifecycle bug needs
+  // the lifecycle.
+  const t = H.now();
+  const { document, window } = await H.open({
+    state: H.baseState({ events: [
+      { at: t, msg: "an event", cls: "" },
+      { at: t - 60, msg: "another", cls: "" },
+    ] }),
+  });
+  const el = () => rows(document)[0].querySelector("time");
+  const short = el().textContent;
+
+  el().dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+  const long = el().textContent;
+  assert.notStrictEqual(long, short);
+
+  await H.poll(window, 2);
+
+  assert.strictEqual(el().textContent, long,
+    "the timestamp collapsed on the next poll");
+  assert.strictEqual(el().getAttribute("aria-expanded"), "true");
+  // And the row beside it is untouched.
+  assert.strictEqual(rows(document)[1].querySelector("time")
+    .getAttribute("aria-expanded"), "false");
+};
+
+tests["expansion follows the event, not the row position"] = async () => {
+  // A newer event pushes everything down a row. The expanded one is
+  // still the same event and must still be expanded.
+  const t = H.now();
+  const state = H.baseState({ events: [
+    { at: t - 60, msg: "the interesting one", cls: "" },
+  ] });
+  const { document, window } = await H.open({ state });
+  const first = rows(document)[0].querySelector("time");
+  first.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+  const long = first.textContent;
+
+  state.events.unshift({ at: t, msg: "something newer", cls: "" });
+  await H.poll(window, 2);
+
+  const r = rows(document);
+  assert.strictEqual(r.length, 2, "rows: " + r.length);
+  assert.strictEqual(r[1].querySelector("time").textContent, long,
+    "expansion did not follow the event down");
+  assert.strictEqual(r[0].querySelector("time")
+    .getAttribute("aria-expanded"), "false",
+    "the new row arrived expanded");
+};
+
+tests["collapsing survives a poll too"] = async () => {
+  const t = H.now();
+  const { document, window } = await H.open({
+    state: H.baseState({ events: [{ at: t, msg: "an event", cls: "" }] }),
+  });
+  const el = () => rows(document)[0].querySelector("time");
+  const short = el().textContent;
+  el().dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+  el().dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+  await H.poll(window, 2);
+  assert.strictEqual(el().textContent, short, "it re-expanded itself");
+  assert.strictEqual(el().getAttribute("aria-expanded"), "false");
+};
+
 module.exports = tests;

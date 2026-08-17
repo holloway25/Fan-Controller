@@ -81,6 +81,17 @@ MUTATIONS = [
      "test_chart_ranges.py",
      "test_the_endpoint_sends_ranges_with_a_delta"),
 
+    # ------------------------------------------------ the render canary
+    # The same text from the two paths means different things and
+    # carries different codes. Keyed on the message alone, whichever
+    # arrived second was discarded - so an FC-208 could be eaten by an
+    # ordinary script error saying the same thing.
+    ("dedup-ignores-kind", "controller.py",
+     '    if _ui_error_is_new((kind, msg)):',
+     '    if _ui_error_is_new(msg):',
+     "test_render_canary.py",
+     "test_a_render_report_is_not_swallowed_by_a_script_error"),
+
     # ------------------------------------------------------ the fault
     ("stop-not-confirmed-claimed", "controller.py",
      '''                     ("Action taken",

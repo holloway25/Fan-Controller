@@ -3176,7 +3176,7 @@ def _fail(msg, last, code=None):
     Logged only when the message changes. The loop backs off to at most
     300s, so a sustained outage would otherwise append an identical entry
     every few minutes and push real switching history out of the
-    300-entry window.
+    1000-entry window.
     """
     with _state_lock:
         STATE["error"] = msg
@@ -3283,7 +3283,7 @@ app = Flask(__name__)
 # push arbitrary volume into the journal and events.json.
 app.config["MAX_CONTENT_LENGTH"] = 8192
 # When each recent client error was last written to the activity log, so
-# a script erroring in a render loop cannot evict the 300 entries of real
+# a script erroring in a render loop cannot evict the 1000 entries of real
 # fan history behind it. A single most-recent slot was not enough:
 # alternating messages - A, B, A, B - each differ from the one before, so
 # every one got through and the suppression did nothing.
@@ -3387,26 +3387,40 @@ def api_clienterror():
     # script did not fail, it produced nothing. Coded so one search
     # finds every occurrence, and so a reader knows immediately that
     # the fan is fine and the SCREEN is not.
-    kind = b.get("kind")
+    # Normalised here, once: anything that is not exactly "render" is a
+    # script error, so an unknown kind from a browser cannot promote
+    # itself into the fault series.
+    kind = "render" if b.get("kind") == "render" else "error"
     prefix = "%s " % FC_RENDER_EMPTY if kind == "render" else ""
     # The journal gets every report: it rotates, and the repeat count is
-    # diagnostic. The activity log does not, because it is 300 entries
-    # deep and shared with the fan events that matter. Rate limiting the
-    # journal is nginx's job, not this endpoint's.
+    # diagnostic. The activity log does not, because it is shared with
+    # the fan events that matter. Rate limiting the journal is nginx's
+    # job, not this endpoint's.
     app.logger.error("UI error: %s @ %s", msg, where)
-    if _ui_error_is_new(msg):
+    # KEYED ON KIND AS WELL AS MESSAGE. The same text means different
+    # things from the two paths - one says the script died, the other
+    # says it ran and drew nothing - and they carry different codes. On
+    # the message alone, whichever arrived second was silently
+    # discarded, so an FC-208 could be swallowed by an ordinary script
+    # error that happened to say the same thing. Reported by review of
+    # 3ea51b3.
+    if _ui_error_is_new((kind, msg)):
         _log("%sUI error: %s" % (prefix, msg[:120]))
     return jsonify(ok=True)
 
 
 def _ui_error_is_new(msg):
-    """True if this message has not been logged in the quiet period.
+    """True if this report has not been logged in the quiet period.
 
-    Per message, not just the most recent one, or two errors taking
-    turns would each look new every time. Bounded, or remembering them
+    The key is (kind, message), not the message: the same text from the
+    two paths means different things and carries different codes, so
+    keying on text alone let one swallow the other.
+
+    Per key, not just the most recent one, or two errors taking turns
+    would each look new every time. Bounded, or remembering them
     becomes its own way to fill memory: past the limit the least
     recently seen is dropped, which at worst lets one extra entry
-    through for a message nobody has reported in a while.
+    through for a report nobody has made in a while.
     """
     now = time.time()
     with _ui_error_lock:

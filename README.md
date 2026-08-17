@@ -360,6 +360,20 @@ against a live install.
   `test_email.py` because those tests pin WHEN a message sends and pass
   regardless of what it says: every template was once rewritten with
   the whole email suite green
+- `test_chart_ranges.py` - the Low/High under each chart: the observed
+  readings, never the drawn scale. A fan guide at 70% must not make the
+  row claim a 70% high on a day the room never passed 55
+- `test_daily.py` - the per-day low and high that outlive the 24h trace,
+  including that a broken summary cannot abort a poll
+- `test_render_canary.py` - FC-208, the page reporting that it drew
+  nothing while the server had data
+- `test_js.py` - runs `tests/js/` under jsdom: the page's own JavaScript
+  against a stubbed server. SKIPS where Node is absent, including the Pi
+- `test_shellcheck.py` - the five shell scripts, and that the list of
+  them is complete. SKIPS where shellcheck is absent
+- `test_mutate_tool.py` - the mutation harness itself: its verdicts, and
+  that every claim names a test that exists with an anchor that still
+  matches
 - `test_failures.py` - persistence errors and malformed request bodies
 - `test_plug_parse.py` - the shapes a Tasmota status payload arrives in,
   including the ones that are valid JSON and still carry no wattage
@@ -397,23 +411,39 @@ against a live install.
   survives a crash, and the routes that must not claim nothing changed
   when the file on disk already did
 
-`test_dashboard_source.py` needs saying out loud: there is no
-JavaScript engine on the deployment host, so it reads the template
-rather than running it. It catches a line being **deleted**, not a line
-being **wrong**. The file is named for that limit - `test_dashboard`
-was being read as "the dashboard works", and it has never meant that.
+`test_dashboard_source.py` needs saying out loud: it READS the
+template rather than running it, so it catches a line being **deleted**
+and not a line being **wrong**. The file is named for that limit -
+`test_dashboard` was being read as "the dashboard works", and it has
+never meant that.
 
-The right answer to the limit is to have less to test there. Decisions
-the page used to make - what an activity line means, which colour it
-takes - moved into `event_class`, where a mutation breaks a test. What
-is left in the page is assignment from fields, and the source
-assertions guard the contract rather than the logic.
+**The page IS executed now**, by `test_js.py`: jsdom loads it with the
+server stubbed and the page's own JavaScript runs. Eighteen tests
+covering the log rendering, the tap-to-expand timestamp and every
+branch of the render canary. That skips where Node is absent, including
+the Pi, and CI installs it so the skip cannot become normal.
+
+Two things still keep the source assertions worth having. They run
+everywhere, including the board. And they guard the CONTRACT - that the
+page takes the served class and decides nothing itself - which is a
+claim about what the code does not do, and therefore hard to make by
+executing it.
+
+WHAT IS STILL NOT TESTED: layout. jsdom has no layout engine, so the
+SVG geometry, the responsive viewBox and anything about how it looks
+need eyes or a real browser. A chart with the right elements in the
+wrong places passes everything here.
+
+The right answer to all of this was to have less in the page. Decisions
+it used to make - what an activity line means, what the chart ranges
+are - moved into `event_class` and `history_ranges`, where a mutation
+breaks a test.
 
 ### Proving the tests can fail
 
     ./venv/bin/python tools/mutate.py
 
-Fifteen deliberate breakages - stop stripping the fault-code prefix,
+Eighteen deliberate breakages - stop stripping the fault-code prefix,
 serve the log without its class, make a snapshot shallow again, let the
 secret scanner print what it caught - each paired with the test module
 that must fail. Run in a copy of the tree; the real one is never
@@ -432,7 +462,7 @@ not the mutation. A mutation reported STALE means the code moved and
 nobody re-checked the claim.
 
 The harness runs each module unmutated FIRST. Without that a broken
-harness looks like fifteen catches: the first version excluded
+harness looks like a full set of catches: the first version excluded
 `*.json` from its copies, `config.example.json` went with it, and
 every mutation was "caught" by a `FileNotFoundError`.
 

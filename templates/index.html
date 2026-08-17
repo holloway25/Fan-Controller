@@ -807,11 +807,17 @@ function render(s){
       const shortTxt=when.textContent;
       when.tabIndex=0;
       when.setAttribute("role","button");
-      when.setAttribute("aria-expanded","false");
+      // The identity of the EVENT, not of the row. Rows are rebuilt on
+      // every poll; the event is the same event.
+      const ekey=String(e.at)+":"+String(e.msg==null?"":e.msg);
+      const paint=open=>{
+        when.textContent=open?when.dateTime.replace("T"," "):shortTxt;
+        when.setAttribute("aria-expanded",String(open));};
+      paint(EXPANDED.has(ekey));
       const toggle=()=>{
-        const open=when.getAttribute("aria-expanded")==="true";
-        when.textContent=open?shortTxt:when.dateTime.replace("T"," ");
-        when.setAttribute("aria-expanded",String(!open));};
+        const open=!EXPANDED.has(ekey);
+        if(open)EXPANDED.add(ekey); else EXPANDED.delete(ekey);
+        paint(open);};
       when.addEventListener("click",toggle);
       when.addEventListener("keydown",ev=>{
         if(ev.key==="Enter"||ev.key===" "){ev.preventDefault();toggle();}});
@@ -1030,6 +1036,18 @@ document.querySelectorAll("details.card").forEach(d=>{
 // open on a wall must not turn a broken render into a request every
 // five seconds, and the server deduplicates its own log besides.
 const CANARY={log:false,trace:false};
+
+// WHICH TIMESTAMPS ARE EXPANDED, kept outside the rows themselves.
+// render() deletes and rebuilds every row on each poll, so state held
+// on an element lasts five seconds - tap a timestamp, wait, and it
+// collapses under you. Reported by review of 3ea51b3.
+//
+// Keyed on the event, not the row: "the 09:21 draw fault is expanded"
+// survives a rebuild, a position change as newer events arrive, and
+// the row object being thrown away. Bounded because the log is
+// bounded - at most EVENTS_SHOWN keys can be re-created, and anything
+// scrolled off simply never matches again.
+const EXPANDED=new Set();
 
 function canary(s){
   try{
