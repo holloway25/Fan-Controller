@@ -20,7 +20,7 @@ and should not be quoted as if they were refreshed.
 | `import flask` | 74.9 ms | 805 ms | 10.8x |
 | parse a ~189KB `history.json` | 1.86 ms | 31 ms | 16.8x |
 | service RSS, 4 threads | ~49 MB | ~44 MB | - |
-| full test suite | - | 217/217 pass, ~67s | - |
+| full test suite | - | 338/338 pass, ~89s | - |
 
 Nothing in the code is architecture specific. No source change has ever
 been needed to run on ARM.
@@ -153,15 +153,15 @@ the board at roughly 200 MB used in total, with 700 MB available.
 
 ## The test suite on ARM
 
-All 13 modules, 217 tests, pass. No failures and no skips.
+All 19 modules, 338 tests, pass. No failures and no skips.
 
-Remeasured 2026-08-14 at d50a754. These figures move as the suite
+Remeasured 2026-08-17 at f4f1ecf, ON THE DEPLOYED BOARD, immediately
+after the fault-code work went on it. These figures move as the suite
 grows, so they carry the commit they were taken at: a timing without
-one is not a measurement, it is a memory. The previous version of this
-table read 182 tests across 12 modules at 729c936, and was CORRECT for
-that commit — `test_structure.py` arrived in 3a65643, after it. It went
-stale rather than wrong, which is the failure this section's own rule
-about carrying the commit is meant to make visible.
+one is not a measurement, it is a memory. The table before this read
+217 tests across 13 modules at d50a754 and was correct for that commit;
+six modules arrived after it. That is the failure this rule exists to
+make visible, and it has now happened twice.
 
 Per-module times are from the second of two consecutive passes, each
 module invoked the way `run_all.py` invokes it — its own interpreter
@@ -172,28 +172,46 @@ soft limit never engaged and nothing here is thermally capped.
 
 | module | tests | time |
 |---|---|---|
-| `test_data` | 14 | 2.0s |
-| `test_dashboard_source` | 6 | 0.2s |
-| `test_control` | 20 | 1.6s |
-| `test_structure` | 4 | 1.0s |
-| `test_plug_parse` | 22 | 1.7s |
-| `test_email` | 44 | 8.5s |
-| `test_history` | 14 | 3.9s |
+| `test_restart_sh` | 5 | 16.3s |
+| `test_fault_codes` | 48 | 11.0s |
+| `test_restart` | 30 | 10.5s |
+| `test_email` | 44 | 9.1s |
+| `test_concurrency` | 13 | 8.0s |
+| `test_durability` | 16 | 5.9s |
+| `test_daily` | 19 | 4.7s |
+| `test_actuation` | 17 | 4.2s |
 | `test_failures` | 12 | 4.1s |
-| `test_actuation` | 17 | 3.8s |
-| `test_concurrency` | 13 | 7.7s |
-| `test_durability` | 16 | 5.8s |
-| `test_restart_sh` | 5 | 16.4s |
-| `test_restart` | 30 | 10.0s |
-| **total** | **217** | ~67s end to end |
+| `test_history` | 14 | 3.9s |
+| `test_log_classes` | 6 | 2.5s |
+| `test_data` | 14 | 2.0s |
+| `test_plug_parse` | 22 | 1.6s |
+| `test_control` | 20 | 1.6s |
+| `test_structure` | 4 | 1.1s |
+| `test_secret_scanner` | 15 | 0.9s |
+| `test_log_formats` | 3 | 0.7s |
+| `test_dashboard_source` | 27 | 0.5s |
+| `test_mutate_tool` | 9 | 0.5s |
+| **total** | **338** | ~89s end to end |
+
+Ordered slowest first, which the previous table was not - with
+nineteen modules the question is which ones cost, and alphabetical
+order answers a question nobody asks.
+
+**tools/mutate.py IS NOT IN THIS TABLE AND DOES NOT RUN HERE.** It
+copies the tree fifteen times and runs a module in each, which is
+minutes rather than seconds and far more work than this board should do
+on every change. It runs in CI on one interpreter. The suite on the Pi
+is the suite; the mutation harness is a separate claim about the suite.
+
 
 **One module runs at a time — `run_all.py` already guarantees that.**
 It starts each module as its own process with `subprocess.call`, which
 blocks until that module exits, so the suite never runs modules
 concurrently. It is the standard way to run the full suite and it is
-safe here: a complete sequential pass of all 217 tests takes about 67
-seconds on a 3B+, with 227 MB in use at peak against 905 MB available,
-and load never above 0.20.
+safe here: a complete sequential pass of all 338 tests takes about 89
+seconds on a 3B+ - 121 more tests for 22 more seconds - with 227 MB in
+use at peak against 905 MB available when last measured, and load never
+above 0.20.
 
 **That peak is LOWER than the ~300 MB recorded before it, despite 35
 more tests, and the reason matters.** Every earlier memory figure here
