@@ -518,6 +518,79 @@ def save_hist(hist):
 
 _hist_write_lock = threading.Lock()
 
+DAILY_PATH = os.path.join(DIR, "daily.json")
+# Two years. One line per day, three metrics - kilobytes, against the
+# 188KB the 24h trace already costs. The point is to answer "was it
+# this humid last week" without extending the trace, which is the
+# expensive way to buy the same answer.
+DAILY_KEEP_DAYS = 730
+_daily_lock = threading.Lock()
+_daily_dirty = False
+
+
+def load_daily():
+    try:
+        d = json.load(open(DAILY_PATH))
+    except (ValueError, OSError):
+        return []
+    if not isinstance(d, list):
+        return []
+    return [x for x in d if isinstance(x, dict) and "d" in x][-DAILY_KEEP_DAYS:]
+
+
+def _daily_note(now, co2, tc, rh):
+    """Fold one reading into today's row. Cheap and called every poll.
+
+    KEPT SEPARATELY FROM history rather than derived from it: history
+    holds 24 hours, so anything computed from it can only ever describe
+    the last day - which is the limitation this exists to lift. The
+    rollover is by LOCAL DATE, because "was yesterday hot" is a question
+    about the day someone lived through, not about UTC.
+    """
+    global _daily_dirty
+    day = time.strftime("%Y-%m-%d", time.localtime(now))
+    with _daily_lock:
+        rows = STATE.setdefault("daily", [])
+        if not rows or rows[-1].get("d") != day:
+            # A gap of days leaves gaps in the list rather than empty
+            # rows: a day the controller was off has no readings, and
+            # inventing zeroes for it would be a lie a chart would draw.
+            rows.append({"d": day, "n": 0})
+            del rows[:-DAILY_KEEP_DAYS]
+        row = rows[-1]
+        row["n"] = row.get("n", 0) + 1
+        for key, val in (("v", co2), ("tc", tc), ("rh", rh)):
+            if not isinstance(val, (int, float)):
+                continue
+            cur = row.get(key)
+            if not isinstance(cur, dict):
+                row[key] = {"lo": val, "hi": val}
+            else:
+                if val < cur["lo"]:
+                    cur["lo"] = val
+                if val > cur["hi"]:
+                    cur["hi"] = val
+        _daily_dirty = True
+
+
+def save_daily(force=False):
+    """Write only when something changed. Shares the history cadence."""
+    global _daily_dirty
+    with _daily_lock:
+        if not _daily_dirty and not force:
+            return True
+        rows = list(STATE.get("daily") or [])
+        _daily_dirty = False
+    try:
+        write_json_durable(DAILY_PATH, rows)
+        return True
+    except OSError as e:
+        with _daily_lock:
+            _daily_dirty = True     # retried on the next flush
+        _log("%s Daily summary could not be written: %s"
+             % (FC_DISK_FAILED, e))
+        return False
+
 
 def maybe_save_hist(hist, force=False):
     """Batch writes: one full rewrite per poll was 2,880 a day at 30s.
@@ -619,6 +692,7 @@ def flush_hist(signum=None, frame=None):
     with _state_lock:
         snapshot = list(STATE["history"])
     ok = maybe_save_hist(snapshot, force=True)
+    save_daily(force=True)
     if signum is not None:
         if not ok:
             # Said out loud rather than swallowed: the graph will have a
@@ -991,6 +1065,7 @@ def _client_snapshot():
 
 CFG = load_cfg()
 STATE["history"] = load_hist()
+STATE["daily"] = load_daily()
 # Reloaded, not reset: a fault must survive a restart or the acknowledgement
 # it is waiting for can be skipped by a power cycle.
 STATE["fault"] = load_fault()
@@ -1398,6 +1473,7 @@ def tick():
             _wake.set()
             return
         actual = _fan_status(h)
+        _daily_pending = None
         with _state_lock:
             STATE.update(co2=co2, co2_path=path, reading_at=now,
                          error=None,
@@ -1409,6 +1485,8 @@ def tick():
                                      "rh": vals.get('humidity'),
                                      "pm": vals.get('pm25')})
             STATE["history"][:] = prune_hist(STATE["history"], now)
+            _daily_pending = (co2, vals.get('temperature'),
+                              vals.get('humidity'))
             STATE["history_rev"] += 1
             hsnap = list(STATE["history"])
             prev = STATE["fan"]
@@ -1453,7 +1531,17 @@ def tick():
                     [("Action taken", "Normal control resumed"),
                      ("Manual action", "No"),
                      ("Controller mode", _mode_now())]))
-    maybe_save_hist(hsnap)
+    # Outside _state_lock: the daily fold takes its own lock and must
+    # not extend a hold a reader is waiting on.
+    if _daily_pending:
+        _daily_note(now, *_daily_pending)
+    # Persisted on the SAME cadence as history, not every poll: the
+    # summary changes on every reading, and writing it each time would
+    # be a file rewrite every 30 seconds on an SD card to save data
+    # that is regenerated from the next reading anyway. maybe_save_hist
+    # returns true only when it actually wrote.
+    if maybe_save_hist(hsnap):
+        save_daily()
     if ext_msg:
         _log(ext_msg)
     ran_for = (now - changed) if changed else None
@@ -3289,6 +3377,24 @@ def api_fault_clear():
                          ("Controller mode", _mode_now())]))
     _wake.set()
     return jsonify(ok=True, cleared=bool(had))
+@app.route("/api/daily")
+def api_daily():
+    """Per-day low and high, going back as far as the file does.
+
+    Separate from /api/history on purpose: history is 2800 points and
+    is fetched on a revision check, this is a few hundred bytes a year
+    and changes once a day. Nothing on the dashboard polls it yet - it
+    exists so the question "was it this humid last week" has an answer
+    at all, which the 24h trace cannot give.
+    """
+    days = request.args.get("days", type=int)
+    with _daily_lock:
+        rows = list(STATE.get("daily") or [])
+    if days and days > 0:
+        rows = rows[-days:]
+    return jsonify(days=rows)
+
+
 @app.route("/api/history")
 def api_history():
     """The 24h trace, split out of /api/state.
