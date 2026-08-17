@@ -141,5 +141,58 @@ def test_the_history_fetch_stores_what_the_response_carried():
     return "both taken from the response"
 
 
+# ------------------------------------------------- the activity log column
+
+def test_the_log_colours_on_the_code_series_not_the_wording():
+    """The rules matched "^Draw fault" and "^Fan " until 2026-08-16.
+
+    Both stopped working the moment log lines gained an FC- prefix, and
+    nothing caught it: no test reads these strings, and the only place
+    the breakage shows is a screen. Matching the SERIES means a new code
+    inherits the right colour without this list being edited.
+    """
+    html = squashed()
+    assert "FC-(" in html or "FC-\\d" in html, (
+        "the log no longer looks at the fault code at all")
+    for series in ('code==="0"', 'code==="1"', 'code==="2"', 'code==="3"'):
+        assert series in html, "no colour rule for series %s" % series
+    return "all four series coloured"
+
+
+def test_the_code_prefix_is_stripped_before_the_text_rules():
+    """An uncoded line and a coded one must take the same branch."""
+    html = squashed()
+    assert 'replace(/^FC-\\d+\\s+/,"")' in html, (
+        "the code prefix is not stripped before the text rules run")
+    return "prefix stripped"
+
+
+def test_a_folded_mode_line_is_still_coloured():
+    """Folding produces "Mode: Manual - fan off". The rule used to
+    compare the whole string, so folded lines lost their colour."""
+    # squashed() removes ALL whitespace, so the needles must too - the
+    # spaced version of the negative assertion below passed vacuously
+    # when first written, which is the failure mode of any "not in".
+    html = squashed()
+    assert 'm==="Mode:Manual"' not in html, (
+        "still comparing the whole string; a folded mode line will not "
+        "match")
+    assert '/^Mode:Manual/.test(m)' in html, "no prefix match for Manual"
+    assert '/^Mode:Auto/.test(m)' in html, "no prefix match for Auto"
+    return "folded mode lines match"
+
+
+def test_the_timestamp_is_short_but_the_full_one_is_reachable():
+    """The column never wraps, so every character it spends is taken
+    from the message. The precision lives in events.json."""
+    html = squashed()
+    assert "getFullYear()%100" in html, "the year is not shortened"
+    assert "p(d.getSeconds())" not in html, (
+        "seconds are still shown in the log column")
+    assert "when.title=" in html, (
+        "the full timestamp is not reachable on hover")
+    return "short column, full value on hover"
+
+
 if __name__ == "__main__":
     sys.exit(harness.run(dict(globals())))

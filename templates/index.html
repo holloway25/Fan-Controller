@@ -662,29 +662,54 @@ function render(s){
       const when=document.createElement("span");
       const d=new Date(e.at*1000), p=n=>String(n).padStart(2,"0");
       // Explicit 24-hour formatting; toLocaleTimeString adds am/pm here.
+      // SHORT ON PURPOSE: two-digit year, no seconds. This column is
+      // fixed-width and never wraps, so on a phone every character it
+      // spends is taken from the message beside it. events.json keeps
+      // the full epoch, so nothing is actually lost - the precision is
+      // in the file for anyone who needs it.
       when.textContent=p(d.getDate())+"/"+p(d.getMonth()+1)+"/"+
-        d.getFullYear()+" "+p(d.getHours())+":"+p(d.getMinutes())+":"+
-        p(d.getSeconds());
+        p(d.getFullYear()%100)+" "+p(d.getHours())+":"+p(d.getMinutes());
+      when.title=d.toString();
       // Every fault-related entry is red, including "Fan off - draw
       // fault", which a prefix match on the raised message missed. Fan
       // state changes are green once they are not a fault.
-      const m=typeof e.msg==="string"?e.msg:"";
+      const raw=typeof e.msg==="string"?e.msg:"";
+      // THE CODE DECIDES FIRST, and the text is only consulted for
+      // lines that have none. The old rules matched "^Draw fault" and
+      // "^Fan ", which both stopped working the moment lines gained an
+      // FC- prefix - a regression that showed nowhere except here,
+      // because nothing else reads these strings.
+      //
+      // Matching the SERIES rather than each code means a new code
+      // inherits the right colour without this list being touched.
+      const code=(raw.match(/^FC-(\d)\d\d\b/)||[])[1];
+      // The prefix is stripped before the text rules run, so an
+      // uncoded line and a coded one take the same branch.
+      const m=raw.replace(/^FC-\d+\s+/,"");
+      // 0xx alarm, 2xx failure: both are things going wrong.
+      if(code==="0"||code==="2")row.className="fault";
+      // 1xx all-clear reads as a return to normal.
+      else if(code==="1")row.className="ok";
+      // 3xx is an observation - something else moved the plug - so it
+      // takes the manual colour rather than reading as automatic.
+      else if(code==="3")row.className="m-manual";
       // Anchored, not a bare substring: "Changed: watts_fault_seconds"
       // contains the word but is a settings edit, not a fault.
-      if(/^Draw fault/i.test(m)||/draw fault$/i.test(m))
+      else if(/^Draw fault/i.test(m)||/draw fault$/i.test(m))
         row.className="fault";
       // A forced switch-on is Force on demanding the fan, not the rules
       // acting, so it takes the mode colour rather than reading as an
       // ordinary automatic switch.
-      else if(/^Fan .*forced on$/.test(m))row.className="m-on";
+      else if(/forced on$/.test(m)||/^Mode: Force on/.test(m))
+        row.className="m-on";
       else if(/^Fan /.test(m))row.className="ok";
       // Mode entries take the same colour as the mode button, so the
       // log and the selector agree on what each mode looks like.
+      // startsWith, not equality: a folded line reads "Mode: Manual -
+      // fan off", and matching the whole string left those uncoloured.
       else if(/^Mode: /.test(m))row.className=
-        m==="Mode: Manual"?"m-manual":(m==="Mode: Auto"?"m-auto":"m-on");
-      // Manual hands the fan to the plug and bypasses every rule, so its
-      // events read as manual too rather than as ordinary bookkeeping.
-      else if(/^Manual mode/.test(m))row.className="m-manual";
+        /^Mode: Manual/.test(m)?"m-manual":
+        (/^Mode: Auto/.test(m)?"m-auto":"m-on");
       row.appendChild(when);
       row.appendChild(document.createTextNode(e.msg==null?"":String(e.msg)));
       logEl.appendChild(row)});
