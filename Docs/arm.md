@@ -71,36 +71,33 @@ and roughly four. The omitted three can be run on their own:
 ./venv/bin/python tests/run_all.py --slow
 ```
 
-RUN `--all` ON A DEVELOPMENT MACHINE OR IN CI, NOT ON A CONTROLLER IN
-SERVICE. The omitted modules include the installer tests, which build
-real virtual environments and run real package installations on whatever
-machine executes them - the least appropriate thing to do on a board that
-is switching mains power.
+The omitted modules include the installer tests, which build real virtual
+environments and run real package installations on whatever machine
+executes them. Run `--all` where that work is appropriate.
 
 The figures above are the reason to trust a hosted arm64 runner less.
-They are not a reason to test in production - see the Pi rule below.
+They are not a reason to test on a board that is in service; see below.
 
 The installer does not run tests. GitHub Actions provides ARM64 architecture
 coverage using an Ubuntu runner, but that runner is not a Raspberry Pi and does
 not validate the Pi's memory, thermals, SD-card behaviour, Raspberry Pi OS
 packaging, or attached hardware.
 
-Testing on the production Pi is for fault-finding that genuinely needs
-evidence from that particular board, its operating system or its attached
-hardware.
+Deploying an update does not require running tests on the target. Pull,
+confirm the service came back, and confirm the live state.
 
-Updating or deploying the controller does not require it. Pull, confirm the
-service came back, confirm the live state - that is the deployment. Routine
-testing belongs on a development machine or in CI.
+Where a board is running a fan you depend on, treat testing on it as
+fault-finding rather than routine: run the one test that answers the
+question. The cases that genuinely need the hardware are a failure that will
+not reproduce elsewhere, suspected memory, thermal or SD-card behaviour, and
+an OS or dependency change whose effect is specific to the board.
 
-The symptoms worth the board are a failure that will not reproduce anywhere
-else, suspected memory, thermal or SD-card behaviour, and an OS or dependency
-change whose effect is specific to the hardware. When the board is the only
-place an answer can come from, run the one test that answers the question -
-never `--all`.
+`--all` is the wrong thing to run on a machine in service: the installer
+tests build real virtual environments and run real package installations
+wherever they execute.
 
-The curated mutation harness is intentionally a CI/development task and should
-not be part of routine Pi deployment:
+The curated mutation harness is a CI and development task, not part of any
+deployment. Each mutation copies the whole tree:
 
 ```sh
 ./venv/bin/python tools/mutate.py
