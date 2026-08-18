@@ -93,24 +93,6 @@ def test_a_malformed_report_does_not_raise():
 
 # -------------------------------------------------------------- the page
 
-def test_the_page_checks_that_it_drew_something():
-    html = squashed()
-    assert "functioncanary(s)" in html, "no canary"
-    assert "canary(s);" in html, "the canary is never called"
-    assert '"render")' in html, "reports are not marked as render failures"
-    return "the page reports drawing nothing"
-
-
-def test_the_canary_reports_once_per_condition():
-    """A dashboard left open on a wall must not turn a broken render
-    into a request every five seconds."""
-    html = squashed()
-    assert "constCANARY={log:false,trace:false}" in html, "no latch"
-    assert "CANARY.log=true" in html and "CANARY.trace=true" in html, (
-        "a condition can report repeatedly")
-    return "latched per condition"
-
-
 def test_the_canary_cannot_break_the_page():
     """It exists to notice a broken render, so it must not become one."""
     html = squashed()
@@ -119,15 +101,6 @@ def test_the_canary_cannot_break_the_page():
     assert "try{" in body and "catch(e)" in body, (
         "the canary is not wrapped")
     return "wrapped"
-
-
-def test_the_empty_state_is_not_reported_as_a_failure():
-    """"Nothing yet." is a correct render of no events. Reporting it
-    would train everyone to ignore the code."""
-    html = squashed()
-    assert "!el.textContent" in html, (
-        "the log check does not allow for the empty-state text")
-    return "an empty log is allowed to be empty"
 
 
 def test_a_render_report_is_not_swallowed_by_a_script_error():

@@ -290,4 +290,27 @@ tests["an event that comes back is not still expanded"] = async () => {
     "it came back already expanded, so the key was never dropped");
 };
 
+tests["the timestamp is reachable by hover and by screen reader"] = async () => {
+  // ADDED BEFORE the source assertions were deleted, not after. The two
+  // dashboard-source tests being removed asserted `when.title=` and
+  // setAttribute("aria-label") by reading the file. jsdom covered the
+  // rest of what they claimed - a <time> element, the short form, the
+  // machine-readable value - but not these two, so deleting them first
+  // would have lost real coverage while the count said otherwise.
+  const t = H.now();
+  const { document } = await H.open({ state: H.baseState({ events: [
+    { at: t, msg: "something happened", cls: "" },
+  ] }) });
+
+  const when = rows(document)[0].querySelector("time");
+  const title = when.getAttribute("title") || "";
+  const label = when.getAttribute("aria-label") || "";
+
+  assert.ok(title.length > when.textContent.length,
+    "the full timestamp is not reachable on hover");
+  assert.ok(label.length > 0, "no accessible label on the timestamp");
+  // A tooltip is nothing on a touch screen, which is why both exist.
+  assert.ok(label.length >= title.length - 1, "the label is not the full value");
+};
+
 module.exports = tests;

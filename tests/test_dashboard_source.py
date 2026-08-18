@@ -145,40 +145,6 @@ def test_the_history_fetch_stores_what_the_response_carried():
 
 
 
-def test_the_timestamp_is_short_but_the_full_one_is_reachable():
-    """The column never wraps, so every character it spends is taken
-    from the message. The precision lives in events.json."""
-    html = squashed()
-    # The year left the column entirely: today shows a time only, older
-    # entries a day and month. The full value is one tap away.
-    assert "sameDay=d.toDateString()" in html, (
-        "the column still spends width on today's date")
-    # The VISIBLE assignment only. Seconds belong in the datetime
-    # attribute - a blanket "no getSeconds anywhere" assertion failed
-    # the moment the machine-readable value was added, which is the
-    # right result for the wrong reason.
-    i = html.index("when.textContent=")
-    shown = html[i:html.index(";", i)]
-    assert "getSeconds" not in shown, (
-        "seconds are still shown in the log column: %s" % shown)
-    assert "when.dateTime=" in html, "no machine-readable timestamp"
-    assert "getSeconds" in html[html.index("when.dateTime="):], (
-        "the datetime attribute drops the seconds")
-    assert "when.title=" in html, (
-        "the full timestamp is not reachable on hover")
-    return "short column, full value in datetime"
-
-
-def test_the_timestamp_is_reachable_without_a_hover():
-    """A tooltip is nothing on a touch screen."""
-    html = squashed()
-    assert 'createElement("time")' in html, (
-        "the timestamp is not a <time> element")
-    assert 'setAttribute("aria-label"' in html, (
-        "no accessible label on the timestamp")
-    return "readable by touch and by screen reader"
-
-
 def test_the_mode_buttons_announce_which_is_selected():
     """Selection was carried by a colour alone, so a screen reader
     announced three identical buttons."""
@@ -269,34 +235,12 @@ def test_the_manifest_is_linked():
     return "installs standalone"
 
 
-def test_the_timestamp_expands_on_tap():
-    """title needs a mouse and datetime is for machines, so the full
-    moment was unreachable to an ordinary sighted phone user."""
-    html = squashed()
-    assert 'when.tabIndex=0' in html, "the timestamp cannot be focused"
-    assert 'setAttribute("role","button")' in html, "no button semantics"
-    assert 'addEventListener("click",toggle)' in html, "no tap handler"
-    assert 'ev.key==="Enter"' in html, "not reachable from a keyboard"
-    assert 'aria-expanded' in html, "state is not announced"
-    return "tap or Enter expands it"
-
-
 def test_the_expanded_timestamp_is_allowed_to_wrap():
     """The long form is wider than the column it sits in."""
     html = squashed()
     assert 'aria-expanded=true]{white-space:normal}' in html, (
         "expanded timestamps will be clipped to one line")
     return "expanded form can wrap"
-
-
-def test_the_tap_handler_is_bound_once():
-    """A patch applied twice bound the listener twice - the same tap
-    would have toggled it back and forth in one gesture."""
-    html = squashed()
-    assert html.count("constshortTxt=when.textContent") == 1, (
-        "the tap handler is bound %d times"
-        % html.count("constshortTxt=when.textContent"))
-    return "bound once"
 
 
 # ------------------------------------------------------- the chart headers
