@@ -41,7 +41,35 @@ if not os.path.exists(PY):
 
 
 # name, file, old, new, the module that must fail
+#
+# WHAT THIS SET COVERED UNTIL 2026-08-18, and did not.
+#
+# Reviewing the list by module showed all of it aimed at the log
+# colouring, the secret scanner, the daily summaries, the chart ranges,
+# the fault codes and the render canary. Not one entry named
+# test_actuation, test_concurrency, test_durability, test_restart,
+# test_plug_parse or test_control. The harness that exists because
+# tests were passing without protecting anything was proving the
+# colours can fail and saying nothing about the relay, the locks or the
+# fault transaction.
+#
+# Worse, two separate documents asserted the opposite - one recorded
+# actuation as mutation-tested against four deliberate defects, and an
+# audit recommended RESTRICTING the set to safety-critical claims as
+# though those were the entries present. The four were a manual
+# exercise done by hand on 2026-08-10 and never written down here.
+#
+# The safety-core entries below are the correction. Each one is checked
+# by hand for the right FAILURE, not merely a failure: a mutation
+# caught by an unrelated crash is not evidence.
 MUTATIONS = [
+    # ------------------------------------------------- the safety core
+    ("generation-guard-never-fires", "controller.py",
+     "    return gen is not None and gen != _cfg_generation",
+     "    return False",
+     "test_concurrency.py",
+     "test_the_actuating_helpers_refuse_a_superseded_plug"),
+
     # ---------------------------------------------------- log classes
     ("prefix-not-stripped", "controller.py",
      '    m = _CODE_PREFIX.sub("", raw)',
