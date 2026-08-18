@@ -180,8 +180,16 @@ jobs:
   # tick here is easy to over-read: this is a Neoverse server with
   # several gigabytes of memory, not a 1.4GHz Cortex-A53 with 905MB.
   # Nothing about memory pressure, thermal limits or SD-card I/O is
-  # tested here. THE SUITE STILL HAS TO BE RUN ON THE BOARD before a
-  # deploy - see Docs/arm.md, which carries the figures measured there.
+  # tested here.
+  #
+  # THAT IS NOT A REASON TO RUN THE SUITE ON THE BOARD BY DEFAULT, which
+  # is what this comment used to say. The Pi is the production
+  # controller: it switches mains power, and the installer tests build
+  # real virtual environments and run real pip installs on whatever
+  # machine executes them. Run --all on the development VM or here.
+  # Reach for the board only when a change depends on Pi-specific
+  # runtime, OS, persistence, timing or attached hardware - and then run
+  # the part that needs that evidence, not everything.
   #
   # ONE PYTHON, matching what the Pi actually runs. The x86 matrix
   # above covers the version range; repeating it here would spend

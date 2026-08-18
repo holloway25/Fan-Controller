@@ -165,6 +165,7 @@ Tests are development and CI tools; the installer does not run them.
 ```sh
 ./venv/bin/python tests/run_all.py          # the fast tier
 ./venv/bin/python tests/run_all.py --all    # every module
+./venv/bin/python tests/run_all.py --slow   # only the slow three
 ```
 
 The suite is split into two tiers by measured cost. Three modules take
@@ -174,8 +175,10 @@ runs pip, and `test_restart_sh.py` spawns real bash and waits on real
 sleeps. The default run leaves those three out and finishes in roughly a
 fifth of the time.
 
-Nothing is deleted by being slow. Run `--all` in CI, before deploying,
-and whenever `templates/index.html` changes — jsdom executing the page is
+Nothing is deleted by being slow. Run `--all` in CI, and on a development
+machine before deploying - not on the controller being deployed to, since
+the installer tests build real virtual environments there. Run it
+whenever `templates/index.html` changes — jsdom executing the page is
 what makes it safe to have few source assertions about it. CI always
 passes `--all`.
 

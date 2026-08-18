@@ -65,9 +65,22 @@ The normal development suite is:
 
 The default run omits three modules that account for most of the
 runtime. On this board that is the difference between roughly one minute
-and roughly four. Use `--all` before a deployment; the omitted modules
-include the installer tests, which are the least appropriate thing to run
-on a controller in service.
+and roughly four. The omitted three can be run on their own:
+
+```sh
+./venv/bin/python tests/run_all.py --slow
+```
+
+RUN `--all` ON A DEVELOPMENT MACHINE OR IN CI, NOT ON A CONTROLLER IN
+SERVICE. The omitted modules include the installer tests, which build
+real virtual environments and run real package installations on whatever
+machine executes them - the least appropriate thing to do on a board that
+is switching mains power.
+
+Use the Pi only when a change depends on Pi-specific runtime, OS,
+persistence, timing or attached-hardware behaviour, and then run the part
+that needs that evidence rather than the whole suite. The figures above
+are the reason to trust CI less, not a reason to test in production.
 
 The installer does not run tests. GitHub Actions provides ARM64 architecture
 coverage using an Ubuntu runner, but that runner is not a Raspberry Pi and does
