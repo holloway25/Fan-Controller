@@ -180,33 +180,8 @@ The mutation checks deliberately break important production behaviour and
 confirm that the named test fails. Browser layout still requires visual testing
 because jsdom has no layout engine.
 
-The suite currently contains these modules. The list is intentionally limited
-to filenames; the tests themselves are the source of truth for their coverage:
-
-- `test_actuation.py`
-- `test_chart_ranges.py`
-- `test_concurrency.py`
-- `test_control.py`
-- `test_daily.py`
-- `test_dashboard_source.py`
-- `test_data.py`
-- `test_durability.py`
-- `test_email.py`
-- `test_failures.py`
-- `test_fault_codes.py`
-- `test_history.py`
-- `test_install_sh.py`
-- `test_js.py`
-- `test_log_classes.py`
-- `test_log_formats.py`
-- `test_mutate_tool.py`
-- `test_plug_parse.py`
-- `test_render_canary.py`
-- `test_restart_sh.py`
-- `test_restart.py`
-- `test_secret_scanner.py`
-- `test_shellcheck.py`
-- `test_structure.py`
+The `tests/` directory is the list. The tests themselves are the source of
+truth for their coverage.
 
 ## Runtime files
 
