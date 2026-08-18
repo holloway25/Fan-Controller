@@ -3037,8 +3037,8 @@ def _retry_fault_persist():
          % FC_FAULT_PERSISTED)
     # Resets the alert edge. Without this the flag stayed raised after a
     # successful retry, and a LATER write failure sent nothing - the one
-    # thing this alert exists to catch. Found by test_email.py rather
-    # than by reading the code.
+    # thing this alert exists to catch. Found by test_alert_delivery.py
+    # rather than by reading the code.
     _unsaved_edge()
     return True
 

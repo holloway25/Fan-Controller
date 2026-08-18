@@ -4,18 +4,20 @@ Codes exist so that an episode can be found later across events.json,
 the dashboard and the mail archive with one grep. That only works if
 the code appears in all three, and if the numbers never move.
 
-WHY THIS FILE EXISTS SEPARATELY from test_email.py: those tests pin the
-EDGES - when a send happens - and they pass regardless of what the
-message says. Every template in the feature was rewritten on 2026-08-16
-and the whole email suite passed unchanged. That is the gap this file
-closes.
+WHY THIS FILE EXISTS SEPARATELY from test_alert_delivery.py: those tests
+pin the EDGES - when a send happens, and what it does to fault state -
+and they pass regardless of what the message says. Every template in the
+feature was rewritten on 2026-08-16 and that whole suite passed
+unchanged. That is the gap this file closes.
 """
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import harness
-import test_email as E
+# Imported for its fixtures, not its assertions. The delivery module
+# owns the SMTP stub and the fault-state helpers these tests drive.
+import test_alert_delivery as E
 
 
 # The numbers, written out. A test that reads the constants from the
