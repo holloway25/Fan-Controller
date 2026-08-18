@@ -163,8 +163,21 @@ The complete table and delivery rules are in
 Tests are development and CI tools; the installer does not run them.
 
 ```sh
-./venv/bin/python tests/run_all.py
+./venv/bin/python tests/run_all.py          # the fast tier
+./venv/bin/python tests/run_all.py --all    # every module
 ```
+
+The suite is split into two tiers by measured cost. Three modules take
+about four fifths of the runtime: `test_js.py` starts Node and has jsdom
+parse the page, `test_install_sh.py` builds real virtual environments and
+runs pip, and `test_restart_sh.py` spawns real bash and waits on real
+sleeps. The default run leaves those three out and finishes in roughly a
+fifth of the time.
+
+Nothing is deleted by being slow. Run `--all` in CI, before deploying,
+and whenever `templates/index.html` changes — jsdom executing the page is
+what makes it safe to have few source assertions about it. CI always
+passes `--all`.
 
 The suite uses temporary state and does not contact Protect or the plug. Some
 tests require Linux, Node/jsdom, or shellcheck and may skip when those tools are

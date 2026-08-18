@@ -59,8 +59,15 @@ important concern than write endurance.
 The normal development suite is:
 
 ```sh
-./venv/bin/python tests/run_all.py
+./venv/bin/python tests/run_all.py          # the fast tier
+./venv/bin/python tests/run_all.py --all    # every module
 ```
+
+The default run omits three modules that account for most of the
+runtime. On this board that is the difference between roughly one minute
+and roughly four. Use `--all` before a deployment; the omitted modules
+include the installer tests, which are the least appropriate thing to run
+on a controller in service.
 
 The installer does not run tests. GitHub Actions provides ARM64 architecture
 coverage using an Ubuntu runner, but that runner is not a Raspberry Pi and does

@@ -111,7 +111,14 @@ jobs:
           # suite exits non-zero and the cat below never happens - a red
           # build with nothing on screen to say what failed.
           set +e
-          python tests/run_all.py > out.txt 2>&1
+          # --all, ALWAYS. run_all.py defaults to the fast tier, which
+          # leaves out test_js.py, test_install_sh.py and
+          # test_restart_sh.py - together about four fifths of the
+          # runtime. That default exists for iteration on a developer
+          # machine. CI inheriting it would mean the three slowest and
+          # least reproducible modules ran nowhere automatically, and
+          # the build would stay green while covering less.
+          python tests/run_all.py --all > out.txt 2>&1
           status=$?
           set -e
           cat out.txt
@@ -205,7 +212,14 @@ jobs:
       - name: run the suite
         run: |
           set +e
-          python tests/run_all.py > out.txt 2>&1
+          # --all, ALWAYS. run_all.py defaults to the fast tier, which
+          # leaves out test_js.py, test_install_sh.py and
+          # test_restart_sh.py - together about four fifths of the
+          # runtime. That default exists for iteration on a developer
+          # machine. CI inheriting it would mean the three slowest and
+          # least reproducible modules ran nowhere automatically, and
+          # the build would stay green while covering less.
+          python tests/run_all.py --all > out.txt 2>&1
           status=$?
           set -e
           cat out.txt
