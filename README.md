@@ -168,12 +168,11 @@ Tests are development and CI tools; the installer does not run them.
 ./venv/bin/python tests/run_all.py --slow   # only the slow three
 ```
 
-The suite is split into two tiers by measured cost. Three modules take
-about four fifths of the runtime: `test_js.py` starts Node and has jsdom
-parse the page, `test_install_sh.py` builds real virtual environments and
-runs pip, and `test_restart_sh.py` spawns real bash and waits on real
-sleeps. The default run leaves those three out and finishes in roughly a
-fifth of the time.
+The suite is split into two tiers by measured cost. A few modules take
+most of the runtime - starting Node, building real virtual environments,
+waiting on real sleeps - and the default run leaves them out, finishing
+in roughly a fifth of the time. The runner names which ones it omitted
+and why, so the list lives in one place rather than three.
 
 Nothing is deleted by being slow. Run `--all` in CI, and on a development
 machine before deploying - not on the controller being deployed to, since

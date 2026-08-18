@@ -63,9 +63,10 @@ The normal development suite is:
 ./venv/bin/python tests/run_all.py --all    # every module
 ```
 
-The default run omits three modules that account for most of the
-runtime. On this board that is the difference between roughly one minute
-and roughly four. The omitted three can be run on their own:
+The default run omits the modules that account for most of the runtime.
+On a 3B+ that is the difference between roughly one minute and roughly
+four. The runner names the omitted modules and why, every time it skips
+them, so this document does not repeat the list. They can be run alone:
 
 ```sh
 ./venv/bin/python tests/run_all.py --slow
