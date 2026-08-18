@@ -187,9 +187,10 @@ jobs:
   # controller: it switches mains power, and the installer tests build
   # real virtual environments and run real pip installs on whatever
   # machine executes them. Run --all on the development VM or here.
-  # Reach for the board only when a change depends on Pi-specific
-  # runtime, OS, persistence, timing or attached hardware - and then run
-  # the part that needs that evidence, not everything.
+  # Testing on the board is a DIAGNOSTIC step, not a deployment one.
+  # Updating the Pi does not call for a suite run. Reach for it when
+  # something is wrong there and the evidence has to come from that
+  # hardware - and then run the part that answers the question.
   #
   # ONE PYTHON, matching what the Pi actually runs. The x86 matrix
   # above covers the version range; repeating it here would spend

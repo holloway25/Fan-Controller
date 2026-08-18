@@ -77,10 +77,18 @@ real virtual environments and run real package installations on whatever
 machine executes them - the least appropriate thing to do on a board that
 is switching mains power.
 
-Use the Pi only when a change depends on Pi-specific runtime, OS,
-persistence, timing or attached-hardware behaviour, and then run the part
-that needs that evidence rather than the whole suite. The figures above
-are the reason to trust CI less, not a reason to test in production.
+RUNNING TESTS ON THE PI IS A DIAGNOSTIC STEP, NOT A DEPLOYMENT STEP.
+Updating the board does not call for it. Pull, check the service came
+back, and confirm the live state - that is the deployment.
+
+Reach for the board when something is actually wrong there and the
+evidence has to come from that hardware: a failure that will not
+reproduce anywhere else, suspected memory, thermal or SD-card behaviour,
+or a dependency or OS change whose effect is specific to the board. Then
+run the part that answers the question, not the whole suite.
+
+The figures above are the reason to trust a hosted arm64 runner less.
+They are not a reason to test in production.
 
 The installer does not run tests. GitHub Actions provides ARM64 architecture
 coverage using an Ubuntu runner, but that runner is not a Raspberry Pi and does
