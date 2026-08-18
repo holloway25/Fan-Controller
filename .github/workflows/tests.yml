@@ -137,9 +137,9 @@ jobs:
       # the whole matrix that is time spent re-proving the same claims
       # on interpreters that cannot change the answer.
       #
-      # It is not part of run_all.py deliberately: the suite runs on
-      # the Pi, and this does far more work than that board should be
-      # asked for on every change.
+      # It is not part of run_all.py deliberately: mutations are a
+      # development and CI task, not routine validation of a running
+      # controller. Each one copies the whole tree.
       - name: mutations must be caught
         if: matrix.python == '3.14'
         run: python tools/mutate.py

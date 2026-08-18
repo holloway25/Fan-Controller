@@ -12,7 +12,7 @@ being evidence.
 A mutation is a CLAIM: break this line, and that test module must
 fail. If it does not, the test is decoration. Curated by hand rather
 than generated, because the point is not coverage arithmetic - it is
-that the twenty things which actually matter are each guarded by
+that the things which actually matter are each guarded by
 something that bites.
 
     ./venv/bin/python tools/mutate.py            # run them all

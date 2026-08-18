@@ -32,7 +32,10 @@ cost barely correlate. This list is cost.
 NOTHING IS DELETED BY BEING SLOW. The slow tier is required:
 
   - in CI, on every job, which passes --all;
-  - before any deployment;
+  - on a development machine before a deployment - NOT on the machine
+    being deployed to. test_install_sh.py builds real virtual
+    environments and runs real package installations wherever it
+    executes, which is not work for a board switching mains power;
   - for test_js.py specifically, on any change to templates/index.html,
     because jsdom executing the page is what justifies deleting source
     assertions about it. A dashboard change that skips it has no
@@ -97,7 +100,7 @@ def main(argv):
     if not every and not slow_only:
         for name in sorted(SLOW):
             print("  not run: %-20s %s" % (name, SLOW[name]))
-        print("  run these with --all before deploying.")
+        print("  run these with --all on a development machine or in CI.")
     print("")
     sys.stdout.flush()
 

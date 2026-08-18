@@ -77,28 +77,27 @@ real virtual environments and run real package installations on whatever
 machine executes them - the least appropriate thing to do on a board that
 is switching mains power.
 
-RUNNING TESTS ON THE PI IS A DIAGNOSTIC STEP, NOT A DEPLOYMENT STEP.
-Updating the board does not call for it. Pull, check the service came
-back, and confirm the live state - that is the deployment.
-
-Reach for the board when something is actually wrong there and the
-evidence has to come from that hardware: a failure that will not
-reproduce anywhere else, suspected memory, thermal or SD-card behaviour,
-or a dependency or OS change whose effect is specific to the board. Then
-run the part that answers the question, not the whole suite.
-
 The figures above are the reason to trust a hosted arm64 runner less.
-They are not a reason to test in production.
+They are not a reason to test in production - see the Pi rule below.
 
 The installer does not run tests. GitHub Actions provides ARM64 architecture
 coverage using an Ubuntu runner, but that runner is not a Raspberry Pi and does
 not validate the Pi's memory, thermals, SD-card behaviour, Raspberry Pi OS
 packaging, or attached hardware.
 
-Run tests on the Pi when a change affects Python/runtime compatibility,
-installation, service startup, persistence, timing, or hardware interaction.
-Routine documentation and test-only changes can be validated in CI or a
-development environment.
+Testing on the production Pi is for fault-finding that genuinely needs
+evidence from that particular board, its operating system or its attached
+hardware.
+
+Updating or deploying the controller does not require it. Pull, confirm the
+service came back, confirm the live state - that is the deployment. Routine
+testing belongs on a development machine or in CI.
+
+The symptoms worth the board are a failure that will not reproduce anywhere
+else, suspected memory, thermal or SD-card behaviour, and an OS or dependency
+change whose effect is specific to the hardware. When the board is the only
+place an answer can come from, run the one test that answers the question -
+never `--all`.
 
 The curated mutation harness is intentionally a CI/development task and should
 not be part of routine Pi deployment:
