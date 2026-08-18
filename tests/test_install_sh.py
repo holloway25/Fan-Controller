@@ -248,20 +248,68 @@ def test_an_ampersand_in_the_path_is_not_interpreted():
 
 
 def test_the_generated_unit_verifies_where_systemd_can_check_it():
+    """BOTH RETURN CODES ARE CHECKED, and that is the point of this
+    test rather than an incidental tidiness.
+
+    It previously ignored the install and asserted only that one
+    particular string was absent from the verifier output. An install
+    that failed outright left no unit to verify, systemd-analyze then
+    failed for that reason, the words "is not executable" did not
+    appear, and the test went green having verified nothing. Reported
+    by review of a6779ed.
+
+    THE UNKNOWN-DIRECTIVE CASE NEEDS ITS OWN ASSERTION. systemd-analyze
+    exits 0 for an unrecognised key - it warns and carries on - so a
+    return code alone does not cover it. Measured, not assumed:
+    unbalanced quoting and a non-executable command both exit 1, an
+    unknown key exits 0 with `Unknown key` on stderr.
+    """
     import shutil as _sh
     import subprocess as _sp
     if not _sh.which("systemd-analyze"):
         return "SKIP systemd-analyze is not installed"
     tmp, dest = _tree_at("plain")
     try:
-        _sp.run(["bash", os.path.join(dest, "install.sh")],
-                capture_output=True, text=True, cwd=dest)
-        v = _sp.run(["systemd-analyze", "verify",
-                     os.path.join(dest, "office-fan-controller.service")],
+        i = _sp.run(["bash", os.path.join(dest, "install.sh")],
+                    capture_output=True, text=True, cwd=dest)
+        assert i.returncode == 0, i.stdout + i.stderr
+        unit = os.path.join(dest, "office-fan-controller.service")
+        assert os.path.exists(unit), "the install produced no unit"
+        v = _sp.run(["systemd-analyze", "verify", unit],
                     capture_output=True, text=True)
         out = v.stdout + v.stderr
+        assert v.returncode == 0, out
+        assert "Unknown key" not in out, out
         assert "is not executable" not in out, out
-        return "verified"
+        return "verified, on the return code as well as the text"
+    finally:
+        _sh.rmtree(tmp, ignore_errors=True)
+
+
+def test_a_backslash_in_the_path_is_refused_before_anything_is_built():
+    """awk -v performs escape processing on the value it assigns, so a
+    checkout at fan\\controller reached the unit generator as
+    fancontroller - a unit naming a directory that does not exist.
+
+    THE OLD BEHAVIOUR WAS FAIL-SAFE ONLY BY LUCK. It was caught at the
+    verify step, which is skipped entirely where systemd-analyze is not
+    installed - and a distribution change on a second card is exactly
+    where a tool goes missing. It is refused up front now.
+
+    The venv is what this asserts on: refusing after a venv and a pip
+    install would be a slow way to reach the same answer.
+    """
+    import shutil as _sh
+    tmp, dest = _tree_at("fan\\controller")
+    try:
+        r = _run(dest)
+        assert r.returncode != 0, r.stdout
+        assert "backslash" in (r.stdout + r.stderr), r.stdout + r.stderr
+        assert not os.path.exists(os.path.join(dest, "venv")), \
+            "it built a venv before refusing"
+        assert not os.path.exists(os.path.join(dest, "config.json")), \
+            "it wrote a config before refusing"
+        return "a backslash stops the install up front"
     finally:
         _sh.rmtree(tmp, ignore_errors=True)
 

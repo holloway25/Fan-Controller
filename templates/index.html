@@ -761,6 +761,9 @@ function render(s){
   // /api/clienterror, so interpolating it into innerHTML was a stored XSS.
   const logEl=$("log");
   logEl.textContent="";
+  // BEFORE the rows are built, so the set the rows read from is already
+  // the pruned one and a single render cannot both add and drop a key.
+  pruneExpanded(s.events);
   if(s.events&&s.events.length){
     s.events.forEach(e=>{
       const row=document.createElement("div");
@@ -809,7 +812,7 @@ function render(s){
       when.setAttribute("role","button");
       // The identity of the EVENT, not of the row. Rows are rebuilt on
       // every poll; the event is the same event.
-      const ekey=String(e.at)+":"+String(e.msg==null?"":e.msg);
+      const ekey=eventKey(e);
       const paint=open=>{
         when.textContent=open?when.dateTime.replace("T"," "):shortTxt;
         when.setAttribute("aria-expanded",String(open));};
@@ -1044,10 +1047,41 @@ const CANARY={log:false,trace:false};
 //
 // Keyed on the event, not the row: "the 09:21 draw fault is expanded"
 // survives a rebuild, a position change as newer events arrive, and
-// the row object being thrown away. Bounded because the log is
-// bounded - at most EVENTS_SHOWN keys can be re-created, and anything
-// scrolled off simply never matches again.
+// the row object being thrown away.
+//
+// PRUNED AGAINST WHAT THE SERVER JUST SENT, every render. This comment
+// used to claim the set was bounded because the log is bounded, which
+// confused two different things: only EVENTS_SHOWN keys can ever be
+// MATCHED again, but nothing was removing the rest, so a key was kept
+// for every timestamp ever expanded. A wall display someone taps at
+// occasionally accumulated them for as long as the page stayed open.
+// Reported by review of a6779ed.
+//
+// Small either way - a key is tens of bytes and only a tap creates one
+// - so this is a claim being made true rather than a leak being
+// stopped. A comment asserting a bound the code does not implement is
+// the thing worth fixing.
 const EXPANDED=new Set();
+
+// ONE DEFINITION, used by the row builder and by the prune below. Two
+// copies of this expression would drift, and the failure would be
+// silent: keys that never match are indistinguishable from keys for
+// events that scrolled off.
+function eventKey(e){
+  return String(e.at)+":"+String(e.msg==null?"":e.msg);
+}
+
+// Anything the server is no longer sending can never be re-rendered,
+// so its key can never be matched again. Dropped here rather than when
+// a row disappears, because the page is not told that a row went - it
+// is handed a new list every poll and rebuilds from it.
+function pruneExpanded(events){
+  if(!events)return;
+  const visible=new Set(events.map(eventKey));
+  for(const key of EXPANDED){
+    if(!visible.has(key))EXPANDED.delete(key);
+  }
+}
 
 function canary(s){
   try{

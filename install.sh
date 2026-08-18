@@ -37,6 +37,10 @@ say() { printf '  %s\n' "$*"; }
 step() { printf '\n%s\n' "$*"; }
 die() { printf '\nSTOPPED: %s\n' "$*" >&2; exit 1; }
 
+# A literal newline, for the path check below. Written this way
+# because a newline cannot be typed inside the case pattern itself.
+NL="$(printf '\nx')" ; NL="${NL%x}"
+
 # ---------------------------------------------------------------- root
 # NOT AS ROOT. Everything below would end up owned by root - the venv,
 # config.json, history.json - and the service runs as an ordinary user,
@@ -50,6 +54,46 @@ fi
 
 WHO="$(id -un)"
 WHERE="$PWD"
+
+# ------------------------------------------------------- path characters
+# REFUSED BEFORE ANYTHING IS CREATED, rather than caught downstream. A
+# path this script cannot carry into the unit file must stop the install
+# where a person can still act on it - not after a venv, a pip run and a
+# config have been written.
+#
+# A BACKSLASH is the one that reads as safe and is not. awk -v performs
+# escape processing on the value it assigns, so a checkout at
+# /opt/fan\controller reaches the generator as /opt/fancontroller: a
+# unit naming a directory that does not exist. Reported by review of
+# a6779ed, which also found the comment further down claiming awk never
+# interprets these values.
+#
+# A DOUBLE QUOTE unbalances the quoting around ExecStart. A NEWLINE
+# splits one setting into two lines of unit file. Both are legal in a
+# POSIX path and neither survives the format it is going into.
+#
+# REFUSING BEATS ESCAPING. Three different sets of rules apply on the
+# way to the unit - awk, systemd and the shell - and a backslash in a
+# checkout path is a mistake far more often than an intention. The
+# failure this replaces was fail-safe only where systemd-analyze
+# happens to be installed, which is not something to rely on: the next
+# box planned here is a distribution change on a second SD card.
+case "$WHERE" in
+  *\\*)
+    die "the checkout path contains a backslash:
+             $WHERE
+         It cannot be carried into the systemd unit safely.
+         Move the checkout somewhere without one and run this again." ;;
+  *\"*)
+    die "the checkout path contains a double quote:
+             $WHERE
+         It cannot be carried into the systemd unit safely.
+         Move the checkout somewhere without one and run this again." ;;
+  *"$NL"*)
+    die "the checkout path contains a newline.
+         It cannot be carried into the systemd unit safely.
+         Move the checkout somewhere without one and run this again." ;;
+esac
 
 step "Installing as $WHO in $WHERE"
 
@@ -125,9 +169,16 @@ UNIT="office-fan-controller.service"
 #   a directory with one in its name produced a mangled line rather
 #   than an error.
 #
-# awk with the values in variables never interprets them, and systemd
-# takes a quoted first token for exactly this case. The quotes go
-# around the executable only: everything after it is an argument.
+# awk keeps the values out of the replacement TEXT, so an ampersand
+# and a space both survive, and systemd takes a quoted first token for
+# exactly this case. The quotes go around the executable only:
+# everything after it is an argument.
+#
+# THAT IS NOT THE SAME AS "awk never interprets them", which is what
+# this comment used to say. awk -v DOES perform escape processing on
+# the value it assigns, so a backslash in the path would be eaten right
+# here. The characters that cannot survive this step are refused at the
+# top of the script instead.
 GROUP="$(id -gn)"
 awk -v who="$WHO" -v grp="$GROUP" -v dir="$WHERE" '
   /^User=/            { print "User=" who; next }

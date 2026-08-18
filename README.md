@@ -418,9 +418,9 @@ and not a line being **wrong**. The file is named for that limit -
 never meant that.
 
 **The page IS executed now**, by `test_js.py`: jsdom loads it with the
-server stubbed and the page's own JavaScript runs. Eighteen tests
-covering the log rendering, the tap-to-expand timestamp and every
-branch of the render canary. That skips where Node is absent, including
+server stubbed and the page's own JavaScript runs, covering the log
+rendering, the tap-to-expand timestamp and every branch of the render
+canary. That skips where Node is absent, including
 the Pi, and CI installs it so the skip cannot become normal.
 
 Two things still keep the source assertions worth having. They run
@@ -443,11 +443,17 @@ breaks a test.
 
     ./venv/bin/python tools/mutate.py
 
-Eighteen deliberate breakages - stop stripping the fault-code prefix,
-serve the log without its class, make a snapshot shallow again, let the
-secret scanner print what it caught - each paired with the test module
-that must fail. Run in a copy of the tree; the real one is never
+A curated set of deliberate breakages - stop stripping the fault-code
+prefix, serve the log without its class, make a snapshot shallow again,
+let the secret scanner print what it caught - each paired with the test
+module that must fail. Run in a copy of the tree; the real one is never
 touched.
+
+    ./venv/bin/python tools/mutate.py --list
+
+is the list, and it cannot be out of date. The count used to be written
+out here and went stale three times before anyone noticed: a number in
+prose that something else determines is a bug with a delay on it.
 
 It exists because six external reviews found the same defect over and
 over: **tests that assert the shape of the source rather than the

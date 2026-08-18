@@ -232,4 +232,62 @@ tests["collapsing survives a poll too"] = async () => {
   assert.strictEqual(el().getAttribute("aria-expanded"), "false");
 };
 
+tests["a key is dropped once its event leaves the log"] = async () => {
+  // THE BUG THIS EXISTS FOR: nothing ever removed from the expanded
+  // set. Keys were added on a tap and kept for the life of the page,
+  // while the comment beside the set claimed it was bounded by the
+  // log. Only MATCHING was bounded. Reported by review of a6779ed.
+  //
+  // Asserted on the set itself rather than on the screen, because the
+  // symptom is precisely that nothing shows: a key for an event that
+  // is no longer sent has no row to be wrong about.
+  const t = H.now();
+  const state = H.baseState({ events: [
+    { at: t, msg: "the one that goes away", cls: "" },
+    { at: t - 60, msg: "the one that stays", cls: "" },
+  ] });
+  const { document, window } = await H.open({ state });
+
+  rows(document).forEach(r =>
+    r.querySelector("time").dispatchEvent(
+      new window.MouseEvent("click", { bubbles: true })));
+  assert.strictEqual(window.eval("EXPANDED.size"), 2,
+    "both taps should have been recorded");
+
+  // The older event ages out of the window the server sends.
+  state.events = [{ at: t, msg: "the one that goes away", cls: "" }];
+  await H.poll(window, 2);
+
+  assert.strictEqual(window.eval("EXPANDED.size"), 1,
+    "the key for the departed event was kept");
+  // The one still on screen is untouched by the prune.
+  assert.strictEqual(rows(document)[0].querySelector("time")
+    .getAttribute("aria-expanded"), "true",
+    "the prune took a visible event with it");
+};
+
+tests["an event that comes back is not still expanded"] = async () => {
+  // The user-visible half of the same property, and the one that would
+  // survive the set being reimplemented. Nothing in this application
+  // re-sends a departed event, so this is the behaviour the prune
+  // implies rather than a case anyone will hit.
+  const t = H.now();
+  const gone = { at: t - 60, msg: "here, then not, then here", cls: "" };
+  const state = H.baseState({ events: [{ at: t, msg: "steady", cls: "" }, gone] });
+  const { document, window } = await H.open({ state });
+
+  const target = () => rows(document)[1].querySelector("time");
+  target().dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+  assert.strictEqual(target().getAttribute("aria-expanded"), "true");
+
+  state.events = [{ at: t, msg: "steady", cls: "" }];
+  await H.poll(window, 2);
+  assert.strictEqual(rows(document).length, 1, "it did not leave");
+
+  state.events = [{ at: t, msg: "steady", cls: "" }, gone];
+  await H.poll(window, 2);
+  assert.strictEqual(target().getAttribute("aria-expanded"), "false",
+    "it came back already expanded, so the key was never dropped");
+};
+
 module.exports = tests;
