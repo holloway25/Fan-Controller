@@ -1,192 +1,103 @@
 # HTTP API
 
-Served by Flask on 127.0.0.1:8096 and fronted by nginx on the same host.
-Successful responses and validation errors are JSON. Pages,
-authentication failures and framework-generated errors are not: `/` and
-`/signin` are HTML, a 401 is plain text, and an oversized body gets
-Werkzeug's own 413 page.
+Flask serves HTTP on `127.0.0.1:8096`. nginx should provide external HTTPS.
+JSON requests are limited to 8 KB. State-changing endpoints require
+`Content-Type: application/json`.
 
-| Method | Path | Auth | Purpose |
+Authentication is optional. When a UI password is configured, endpoints marked
+**protected** require HTTP Basic authentication.
+
+| Method | Path | Access | Purpose |
 |---|---|---|---|
-| GET | `/` | open | Web UI |
-| GET | `/api/state` | open | Readings, fan state, latches, events, config, `history_rev` |
-| GET | `/api/history` | open | The 24h trace, or a delta with `?since=REV&gen=GENERATION`, and the `history_rev` it was taken at |
-| GET | `/api/daily` | open | Per-day low and high for CO2, temperature and humidity, oldest first. `?days=N` returns the last N |
-| POST | `/api/clienterror` | open | Browser JS errors, logged server side |
-| GET | `/static/*` | open | Icons: browser tab and iOS home screen |
-| GET | `/signin` | required | Empty page whose only job is to raise the browser auth prompt |
-| POST | `/api/config` | required | Partial settings update; validates, then commits |
-| POST | `/api/fault/clear` | required | Acknowledge a draw fault and allow automatic runs again |
-| POST | `/api/protect/sensors` | required | Adopted sensors with their current CO2 value |
-| POST | `/api/plug/test` | required | Check the plug answers; returns relay state and watts |
-| POST | `/api/email/test` | required | Send a test message; reports the real error on failure |
-| POST | `/api/ui/password` | required | Set or clear the UI password |
-| GET | `/api/debug/sensor` | required | Raw Protect payload for the selected sensor |
+| GET | `/` | Open | Dashboard |
+| GET | `/api/state` | Open | Current readings, fan state, latches, events and public configuration |
+| GET | `/api/history` | Open | Full 24-hour history or a revision delta |
+| GET | `/api/daily` | Open | Daily low/high summaries; `?days=N` limits the result |
+| POST | `/api/clienterror` | Open | Log a browser-side error |
+| GET | `/static/*` | Open | Static dashboard assets |
+| GET | `/signin` | Protected | Trigger the browser authentication prompt |
+| POST | `/api/config` | Protected | Validate and apply a partial settings update |
+| POST | `/api/fault/clear` | Protected | Acknowledge a draw fault |
+| POST | `/api/protect/sensors` | Protected | List adopted sensors and current CO2 values |
+| POST | `/api/plug/test` | Protected | Read relay state and power from the plug |
+| POST | `/api/email/test` | Protected | Send a test email |
+| POST | `/api/ui/password` | Protected | Set or clear the UI password |
+| GET | `/api/debug/sensor` | Protected | Return the selected sensor's raw Protect payload |
 
-Each entry in `events` carries `cls`: what the line MEANS, decided by
-`event_class` rather than by the page.
+Framework-generated errors may be HTML or plain text rather than JSON.
 
-| `cls` | Meaning |
-|---|---|
-| `fault` | An alarm (`FC-0xx`) or an operational failure (`FC-2xx`) |
-| `ok` | An all-clear (`FC-1xx`), an ordinary fan switch, or an external change while in Manual |
-| `m-manual` | Manual mode, or an external change in any mode but Manual |
-| `m-auto` | Auto mode |
-| `m-on` | Force on, including a switch caused by it |
-| `""` | Everything else - settings edits, restarts, anything unrecognised |
+## Validation and persistence
 
-They are CSS class names: the page owns what a colour looks like, the
-server owns what a line means. Served with each event and never stored,
-because recolouring a log should not mean rewriting `events.json`.
+Configuration fields are type-checked and range-checked. Unknown keys are
+rejected. Validation is all-or-nothing: one invalid field rejects the complete
+request.
 
-This moved out of the dashboard on 2026-08-17 after the rules there
-broke silently - they were anchored on wording that changed when log
-lines gained a fault-code prefix, and no test could see it.
+A failed write returns 500 and leaves the active configuration unchanged. If
+the file was replaced but the directory sync could not be confirmed, the API
+returns 200 with a `notice`: the setting is active and present on disk, but
+power-loss durability was not confirmed. Clients must read the response body.
 
-Every request body is capped at 8KB and a larger one is rejected with
-413. Nothing here legitimately posts more than a few hundred bytes, and
-`/api/clienterror` stays open even once auth is on, so without a cap one
-LAN device could push arbitrary volume into the journal and
-`events.json`. Repeated identical client errors are also written to the
-activity log at most once a minute, so a script failing in a render loop
-cannot evict the 1000 entries of real fan history behind it. The journal
-still gets every report.
-
-"Auth" applies only once a UI password is set; until then every endpoint
-is open. Reading stays open even when auth is on, so a wall display needs
-no credentials. `/api/debug/sensor` is protected because it returns the
-raw Protect payload, which is diagnostic rather than dashboard data.
+A mode change may wait for an in-progress plug command to finish. This prevents
+a command from the old mode landing after the new mode has been committed.
 
 ## Secrets
 
 `protect.password`, `plug.password`, `email.password` and
-`ui.password_hash` return the
-literal `SET` when present, and a posted `SET` is ignored rather than
-written back, so a client can round-trip the config without erasing them.
+`ui.password_hash` are returned as `SET` when configured. Posting `SET`
+preserves the stored value. Public error text is redacted before it reaches
+`/api/state`.
 
-Error text in `/api/state` passes through a redactor that strips stored
-secrets. That endpoint is public and the plug's credentials travel as
-query parameters, so an unfiltered connection error would otherwise
-publish the password.
+## Events
 
-## Validation
+Each event in `/api/state` includes a server-selected `cls` value:
 
-Every field is coerced and range-checked against a schema before being
-stored, and unknown keys are rejected. State-changing endpoints require an
-`application/json` content type; a form-encoded post returns 415.
+| `cls` | Meaning |
+|---|---|
+| `fault` | Alarm or operational failure |
+| `ok` | All-clear, normal switch, or a Manual-mode external change |
+| `m-manual` | Manual mode or an unexpected external switch |
+| `m-auto` | Auto mode |
+| `m-on` | Force on |
+| empty | Neutral event |
 
-Validation is all or nothing. One bad field rejects the whole request
-with a 400, including sections that were valid, so a post that sets
-thresholds and plug limits together changes neither if the thresholds
-are refused.
+The value is computed when served and is not stored in `events.json`.
 
-Persistence is reported separately, because "not written" and "written
-but not proven durable" need different answers. A write that never
-landed returns 500 and nothing changed. A write that landed but whose
-directory could not be synced returns 200 with a `notice` saying the
-settings are in use but power-loss durability was not confirmed - the
-file already holds them, so claiming nothing changed would be false and
-the setting would appear at the next restart anyway.
+## History
 
-`POST /api/ui/password` behaves the same way and returns `notice` for
-the same reason. Disabling authentication is the case that makes it
-matter: the file would already hold the empty hash, so a restart would
-turn authentication off after the caller had been told nothing
-changed.
+`/api/state` supplies `history_rev` and `history_generation`. A client
+fetches history only when either differs from its local copy.
 
-Read the response body rather than assuming a 200.
+For an initial or recovery fetch:
 
-A save that changes the mode waits for any switch already in progress, so
-it can block for as long as the plug takes to answer. This is deliberate:
-committing a mode midway through an actuation is what let Force on land
-after Manual had already stopped the fan. See `architecture.md`.
+```text
+GET /api/history
+```
 
-## Why history is a separate endpoint
+For an incremental fetch:
 
-The trace was ~99% of `/api/state` (188KB of 191KB), and the UI polls
-that every 5 seconds while history changes once per poll interval.
-Serving it inline meant re-sending and re-parsing thousands of points to
-redraw an unchanged chart - real battery cost on a phone left on the
-dashboard. State is now ~2.4KB.
-
-`/api/state` carries `history_rev`, bumped whenever the trace is
-appended to, and `history_generation`, identifying the process. The
-client refetches only when either differs from the copy it holds.
-
-Responses repeat both, so the client stores what it actually received.
-Storing the revision it saw in `/api/state` would lose a change that
-landed while the fetch was in flight.
-
-### Deltas
-
-`GET /api/history?since=REV&gen=GENERATION` returns only what the caller
-is missing. Measured on the live service: **110 bytes against 189,960**
-for one poll's worth of new data.
-
-Both parameters are required for a delta. `gen` is the
-`history_generation` from a previous response.
-
-`history_rev` increases by exactly one per appended point, and pruning
-only ever removes from the front. So a caller is missing `rev - since`
-points and they are the last that many - the single property the whole
-endpoint rests on. If either half stops being true the delta goes
-silently wrong rather than failing, which is why `test_history.py`
-compares a simulated client's list against the server's point for point.
+```text
+GET /api/history?since=REV&gen=GENERATION
+```
 
 | Field | Meaning |
 |---|---|
-| `full` | `true` if the whole trace was sent, `false` for a delta |
-| `history` | the whole trace. Only present when `full` is `true` |
-| `add` | points appended since `since`. Only present when `full` is `false` |
-| `first_t` | timestamp of the oldest point still held |
-| `history_rev` | the revision this response was taken at |
-| `history_generation` | which process answered. Send it back as `gen` |
+| `full` | Whether the response contains the full trace |
+| `history` | Full trace; present when `full` is true |
+| `add` | Points added since `since`; present for a delta |
+| `first_t` | Timestamp of the oldest retained point |
+| `history_rev` | Revision represented by this response |
+| `history_generation` | Process generation represented by this response |
 
-Why the generation exists: `history_rev` restarts at 1 with the process.
-A dashboard left in a background tab can hold revision 100 from a
-process that no longer exists, and if the replacement climbs back to 100
-the revisions match, nothing refetches, and the next delta is appended
-to a trace from the previous process - a silently spliced graph. So the
-dashboard compares the generation in `/api/state` to decide whether to
-fetch at all, and the server refuses a mismatched delta. Both halves are
-needed: refusing a request only helps if one is made.
+The server returns a full copy when the revision cannot be reconciled, the
+caller has fallen behind pruning, or the process generation differs. Clients
+drop locally held points older than `first_t` before appending a delta.
 
-`/api/state` also carries `process_started_at`, which `restart.sh` uses
-to prove a restart happened. Both derive from the same instant but are
-formatted differently - a float and a six-decimal string - so compare
-each only against its own kind, never one to the other.
-
-Removals are not listed. `first_t` is the oldest point still held, and
-the caller drops anything older - which describes a prune of any size,
-including one that happened while the caller was away, in one number.
-
-A full copy is sent whenever the delta reasoning does not hold: no
-`since`, one that will not parse, a negative one (never issued), a
-caller ahead of the server, more points missing than are still held
-because pruning has overtaken them, or a `gen` that does not match the
-process answering. The caller is told which it received rather than
-having to infer it.
+`process_started_at` in `/api/state` is used by `restart.sh` to verify that
+a replacement process answered.
 
 ## Daily summaries
 
-`history` is pruned to 24 hours BY TIMESTAMP, so nothing derived from it
-can describe more than the last day. `daily.json` exists to answer the
-questions that outlive that window - "was it this humid last week" -
-without making the trace longer, which is the expensive way to buy the
-same answer.
-
-One row per day: `{"d": "2026-08-17", "n": 2848, "v": {"lo": 510,
-"hi": 1069}, "tc": {...}, "rh": {...}}`. Two years are kept, which is
-kilobytes against the 188KB the 24h trace already costs.
-
-A day with no readings is ABSENT rather than zeroed. A metric the
-sensor did not report is absent from its row for the same reason: a
-zero would be a lie a chart would draw.
-
-Rollover is on the LOCAL date. "Was yesterday hot" is a question about
-the day someone lived through.
-
-Written on the same cadence as the history flush rather than on every
-reading - the summary changes with each poll, and rewriting the file
-every 30 seconds on an SD card to store what the next reading
-regenerates is not a trade worth making.
+`/api/daily` returns up to two years of local-date summaries from
+`daily.json`. Each row includes the date, sample count, and available
+low/high values for CO2, temperature and humidity. Days or metrics without
+readings are omitted rather than represented as zero.

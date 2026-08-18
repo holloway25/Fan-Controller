@@ -4,119 +4,80 @@
 
 | Mode | Behaviour |
 |---|---|
-| Auto | Thresholds below decide |
-| Manual | Switches the fan off once, then leaves it alone |
-| Force on | Holds the fan on regardless of readings |
+| Auto | Enabled thresholds control the fan |
+| Manual | Stop once, then leave the plug under external control |
+| Force on | Keep the fan on regardless of readings |
 
-Manual hands control back to Google Home or the plug itself. Entering it switches
-the fan off once so it is not left running, and after that nothing is
-touched - external switching is recorded but never undone.
+Manual and Force on are applied before reading Protect, so they remain usable
+when the sensor is unavailable. Readings are still collected in all modes.
 
-Manual and Force on are both applied before the sensor is read, so neither
-depends on Protect. Force on is the override reached for when the reading
-cannot be trusted, so it has to work while the console is unreachable, the
-payload has stopped resolving, or no sensor has been selected yet. Neither
-mode returns early: readings are still recorded, so the 24h trace has no
-gap across a forced run.
+There is no force-off mode. Older `off` values migrate to `manual`.
 
-There is no force-off mode: holding the fan off actively fought manual
-control. Configs still holding the old `off` value migrate to `manual`.
+## Trigger latches
 
-## Per-rule latching
+The three rules latch independently:
 
-Three rules latch independently, each with its own enable flag and its
-own on and off levels:
+| Rule | Enabled by | Latches on | Releases |
+|---|---|---|---|
+| CO2 | `co2_enabled` | `on_at` | `off_at` |
+| Temperature | `temp_enabled` | `temp_on` | `temp_off` |
+| Humidity | `humidity_enabled` | `humidity_on` | `humidity_off` |
 
-| Rule | Enabled by | Latches on at | Releases at |
-| --- | --- | --- | --- |
-| CO2 | `co2_enabled` (default true) | `on_at` | `off_at` |
-| Temperature | `temp_enabled` (default false) | `temp_on` | `temp_off` |
-| Humidity | `humidity_enabled` (default false) | `humidity_on` | `humidity_off` |
+The fan runs while any enabled rule is latched. Every on threshold must be
+higher than its corresponding off threshold.
 
-The fan runs while **any** enabled rule is latched. All three run the fan
-when the reading is HIGH: humidity ventilates damp air out rather than
-holding it in.
+A missing metric does not release its latch because absence does not prove the
+condition cleared. Disabling a rule releases it immediately. If all metrics
+stop, the stale-reading fail-safe may ventilate according to
+`stale_minutes`.
 
-They live in a table in `controller.py`, not as branches in `decide()`, so
-a fourth trigger is a row plus a schema entry rather than another copy of
-the same block.
+Latches are stored in memory rather than recalculated when thresholds change.
+To clear a latch deliberately, allow a valid reading to cross its off threshold
+or disable the rule.
 
-Independence matters. An earlier version required *both* inputs to be below
-their off levels before stopping, so a rule that had never triggered could
-still veto the stop. In practice a CO2-driven run was held on for hours by
-a temperature condition that had never been met.
+Disabling all rules is permitted. Auto then starts the fan only through the
+stale-reading fail-safe, if configured.
 
-Every rule can be disabled, including the last one. Auto then has nothing
-to latch on and never starts the fan; only the stale-reading fail-safe
-can. That is allowed rather than refused, because Manual already exists
-for "do not run automatically" - but it is never silent, and the UI warns
-as soon as the last trigger is unticked.
+## Mode enforcement
 
-`co2_enabled` defaults to **true** and must stay that way. `load_cfg`
-fills missing keys from `DEFAULTS`, so this is what a `config.json`
-written before the flag existed reads as. A false default would have
-stopped every upgraded install ventilating, with nothing in the log.
+Force on is reasserted by both the poll thread and the faster draw thread. This
+keeps it effective while Protect is unavailable or backing off.
 
-A missing reading is not a release, for any of the three. A reading that
-stops arriving says nothing about whether the condition cleared: the
-room was hot, the sensor went quiet, and nothing since suggests it
-cooled, so releasing would stop the fan on the strength of not knowing.
-
-This only matters during a partial outage. If every reading stops,
-`reading_at` stops advancing and the stale-reading fail-safe ventilates
-anyway. The gap was one metric dropping out while the others still
-report, which keeps the fail-safe asleep - precisely when releasing the
-latch was worst.
-
-The cost is a fan that may run longer than needed on a stale latch until
-a reading returns and falls below the off level. A rule switched off
-still releases immediately, reading or no reading. If the latched rule
-has no reading to show, the log says so - `temperature latch held, no
-reading` - rather than reporting a switch-on with no reason at all.
-
-A latch is held in memory, not derived from the current thresholds, so
-changing a threshold does not release one that is already set. Lowering
-`on_at` to start the fan and then raising it back leaves CO2 latched: the
-release condition is `co2 <= off_at`, which the reading may be nowhere
-near. The fan keeps running, correctly by the rule but surprisingly if you
-were only adjusting a number. To clear one deliberately, raise the off
-level above the current reading for a poll, then put it back.
-
-## Enforcement
-
-A mode is not a one-off command; it is re-asserted. Force on is checked by
-the poll thread and again by the draw thread on its shorter cadence, so a
-fan switched off at the plug or by Google Home comes back promptly even
-while Protect is unreachable and the poll loop is backing off. Without the
-second thread, enforcement inherited the Protect backoff and could take
-five minutes.
-
-Every actuation takes a lock and re-checks the mode before touching the
-plug, and a settings save commits the new mode under that same lock. A
-mode change and a switch therefore cannot interleave: without this, Force
-on could land after Manual's one-time stop had run, leaving the fan going
-with nothing left to correct it. See `architecture.md`.
+Every plug action is serialised and rechecks the current mode and configuration
+generation immediately before acting. A settings update cannot interleave with
+an old command and leave the plug in a state that contradicts the new mode.
 
 ## Minimum run time
 
-Once the fan starts it stays on for `min_run_minutes` even if the readings
-clear, to prevent short-cycling. Two exceptions:
+An automatically started fan remains on for `min_run_minutes` to avoid
+short-cycling. The lease does not restart merely because the service starts and
+finds the relay already on. Leaving Force on clears the lease so Auto can take
+effect immediately.
 
-- The first reading after startup does not restart the timer, so an
-  already-running fan is not granted a fresh lease on every restart.
-- Leaving Force on clears the lease, so returning to Auto takes effect at
-  once rather than serving out a timer started manually.
+The dashboard shows the configured minimum while idle and a countdown when the
+lease is the only reason an Auto-mode fan remains on.
 
-The dashboard always shows a "Min run" pill: its configured length when
-idle, and a green countdown while this is the only reason the fan is
-running - fan on, in Auto, with no rule latched. Without it a fan
-running below the off level looks like a fault rather than the
-anti-short-cycling working. The countdown is deliberately not shown in
-Force on, where the mode holds the fan rather than the lease. See
-`dashboard.md` for the colours.
+## Stale-reading fail-safe
+
+When `stale_minutes` is greater than zero and Auto has received no reading for
+that duration, the controller attempts to turn the fan on. A latched draw fault
+blocks this action because a fan believed unsafe must not be started blindly.
+
+The fail-safe is disabled in Manual and unnecessary in Force on.
+
+## Draw faults
+
+With `watts_enabled` on, the running fan must continuously report a fresh
+reading inside `watts_min` to `watts_max`. A reading inside the band resets
+the fault timer. Remaining outside it for `watts_fault_seconds` stops the fan
+and stores a fault.
+
+The fault survives restart and blocks Auto until acknowledged. If the stop is
+not confirmed, it is retried. Force on overrides the fault so repaired hardware
+can be tested.
 
 ## Responsiveness
 
-The poll loop waits on an event rather than sleeping, and saving settings
-wakes it. Mode changes therefore apply in about a second instead of
-waiting up to `poll_seconds`.
+The poll loop waits on an event rather than an unconditional sleep. Saving
+settings wakes it, so mode and configuration changes do not wait for the full
+`poll_seconds` interval.

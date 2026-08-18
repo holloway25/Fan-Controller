@@ -1,556 +1,233 @@
 # Office Fan Controller
 
-Reads CO2, temperature, humidity and PM2.5 from a UniFi Protect
-UP-AirQuality sensor and switches a fan through a Tasmota smart plug.
-CO2, temperature and humidity are independent triggers, each with its own
-hysteresis, and each can be enabled on its own. The plug's energy meter
-confirms the fan is actually drawing current. Flask listens on
-`127.0.0.1` only; nginx on the same host serves the UI over HTTPS.
+Controls a ventilation fan from a UniFi Protect UP-AirQuality sensor and a
+Tasmota smart plug. CO2, temperature and humidity can trigger the fan
+independently, with hysteresis and a minimum run time. The plug's power meter
+can also detect a fan that is not drawing the expected current.
 
-    systemctl status office-fan-controller
-    journalctl -u office-fan-controller -f
-    ./restart.sh
+Supported targets:
+
+- Debian or Ubuntu on x86-64
+- Raspberry Pi 3B+ using a 64-bit Debian-based image
+
+Flask listens only on `127.0.0.1:8096`. Use nginx on the same host for HTTPS
+and network access.
 
 ## Install
 
-    git clone https://github.com/holloway25/Fan-Controller.git
-    cd Fan-Controller
-    ./install.sh
+```sh
+git clone https://github.com/holloway25/Fan-Controller.git
+cd Fan-Controller
+./install.sh
+```
 
-That creates the venv, installs the pinned dependencies, copies
-`config.example.json` to `config.json` at mode 0600, and generates a
-systemd unit naming **this** user and **this** directory. It prints the
-three privileged commands rather than running them; `./install.sh
---unit` runs them for you.
+Run the installer as the ordinary user that will run the service, not as root.
+It creates the virtual environment, installs pinned dependencies, creates
+`config.json` with mode 0600, and generates a systemd unit for the current user
+and checkout path.
 
-**Run it as the user the service will run as, not as root.** It refuses
-if you do, because everything it creates would be root-owned - the venv,
-the config, the state files - and the service runs as an ordinary user.
-That is the most likely way to produce an install that looks fine and
-cannot start.
+The installer is safe to re-run and does not overwrite `config.json` or restart
+a running controller. It prints the required privileged commands;
+`./install.sh --unit` runs those commands.
 
-It is safe to re-run on an existing install: it never overwrites
-`config.json`, reuses a venv it finds, and re-applies 0600 to the config
-every time, since a file restored from a backup arrives with whatever
-mode it had.
+To install manually:
 
-It does **not** restart a running controller. Choosing when the fan
-service restarts belongs to a person.
+```sh
+python3 -m venv venv
+./venv/bin/pip install -r requirements.txt
+cp config.example.json config.json
+chmod 600 config.json
+cp office-fan-controller.service.example office-fan-controller.service
+# Edit User, Group, WorkingDirectory and ExecStart.
+sudo cp office-fan-controller.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now office-fan-controller
+```
 
-Doing it by hand instead, if you prefer:
+Before nginx is configured, use an SSH tunnel:
 
-    python3 -m venv venv
-    ./venv/bin/pip install -r requirements.txt
-    cp config.example.json config.json && chmod 600 config.json
-    cp office-fan-controller.service.example office-fan-controller.service
-    # edit User, Group, WorkingDirectory and ExecStart in that copy
-    sudo cp office-fan-controller.service /etc/systemd/system/
-    sudo systemctl enable --now office-fan-controller
+```sh
+ssh -L 8096:127.0.0.1:8096 <user>@<server>
+```
 
-`./run.sh` starts it without systemd, using `setsid --fork` so it
-survives an SSH session ending.
-
-Flask binds `127.0.0.1` only, so nothing reaches it except a reverse
-proxy on the same host. Before that proxy exists, reach the UI for
-first-time setup with an SSH tunnel:
-
-    ssh -L 8096:127.0.0.1:8096 <user>@<server>
-
-then browse to http://127.0.0.1:8096 on your own machine.
+Then open `http://127.0.0.1:8096` locally.
 
 ## Setup
 
-1. In UniFi, create a **local** user with no two-factor. Cloud SSO
-   logins will not work against the private Protect API.
-2. Open the dashboard, fill in the sensor card, then **Find sensors**.
-   Each sensor is listed with its CO2 reading, or "no CO2 field" if
-   Protect is not publishing one.
-3. Open **Fan plug**, enter the plug's address and web password, then
-   **Test plug**. It reports relay state and current draw. The plug's
-   HTTP command API must be enabled.
-4. Set thresholds, then select **Auto** to hand control to them.
+1. Create a local UniFi user without two-factor authentication. Cloud SSO does
+   not work with the private Protect endpoint.
+2. Open the dashboard, enter the Protect details, and select **Find sensors**.
+3. Enter the Tasmota plug address and web password, then select **Test plug**.
+   The Tasmota HTTP command API must be enabled.
+4. Configure thresholds and select **Auto**.
+5. If alerts are required, configure and test them in **Fault Handling**.
 
-## How it switches
+## Control behaviour
 
-Each enabled trigger latches on above its own on level and releases
-below its own off level, and the fan runs while any of them is latched.
-The gap between a rule's two levels prevents short-cycling, and a
-freshly started fan is held on for the minimum run time. Force on
-overrides the thresholds entirely; Manual switches the fan off once and
-then leaves it to Google Home or the plug itself.
+- **Auto** applies the enabled CO2, temperature and humidity rules.
+- **Manual** switches the fan off once, then leaves the plug alone.
+- **Force on** keeps the fan on even if Protect is unavailable.
 
-Manual and Force on are applied before the sensor is read, so both work
-when the console is down, the payload has stopped resolving, or no
-sensor has been chosen yet - Force on is the override reached for
-precisely when the reading cannot be trusted.
+Each enabled rule latches above its on threshold and releases at or below its
+off threshold. The fan runs while any rule is latched. A missing reading does
+not release an existing latch. The minimum run time prevents short-cycling.
 
-A missing reading does not release a latch. The room was hot, the sensor
-went quiet, and nothing since suggests it cooled, so releasing would
-stop the fan on the strength of not knowing. A reading that returns
-below the off level releases normally, and a rule that is switched off
-releases immediately either way.
+Power monitoring is off by default. When enabled, a continuous draw outside
+the configured band stops the fan and latches a fault. Force on can be used to
+test a repaired fan; clear the fault only after confirming the draw is healthy.
 
-The API refuses any save where a rule's on level is not above its off
-level, since that leaves the fan running forever, and refuses the whole
-request rather than the offending field. CO2's levels are checked on
-every save; temperature and humidity only when their trigger is
-enabled.
+See [Docs/control-logic.md](Docs/control-logic.md) for the complete behaviour.
 
-## When it breaks
+## Service operation
 
-Protect 7.1's documented API omits air-quality metrics entirely, so this
-reads the private `/proxy/protect/api/bootstrap` endpoint. That is
-undocumented and can change on any firmware update.
+```sh
+systemctl status office-fan-controller
+journalctl -u office-fan-controller -f
+./restart.sh
+```
 
-CO2 is found by searching the payload for a numeric field whose key
-looks like CO2, rather than a fixed path, so a rename survives. If it
-stops resolving, open `/api/debug/sensor` to see the live payload and
-adjust `CO2_HINTS` in `controller.py`.
+`restart.sh` asks the running controller to replace itself and confirms that a
+new process is answering. It preserves transient latch and timing state. It
+refuses to restart while a live fault has not been saved to disk.
 
-Once Ubiquiti publishes these fields properly, this can be replaced with
-a few lines against the documented API.
+Use `sudo systemctl restart office-fan-controller` only as a fallback. A
+systemd restart does not preserve transient latch or lease state, although a
+saved draw fault remains persistent.
 
-## What it does not do
-
-It does not push, and there is no mobile app or home automation
-integration. Alerting is email only.
-
-Alerts are off until configured in the **Fault Handling** card, and an
-install that has not filled them in still tells you nothing: a draw
-fault stops the fan and says so on the dashboard and in the activity
-log, and nowhere else. What sends, and what deliberately does not, is
-in `Docs/configuration.md`.
-
-Every alert carries a **fault code**, in its subject, its body and the
-matching activity log line. The series says where to look before you
-read the line:
-
-    FC-0xx   an alert was emailed - check the mailbox too
-    FC-1xx   an all-clear was emailed
-    FC-2xx   something failed and NO email was sent
-    FC-3xx   worth knowing, nothing failed
-
-The codes never change and are never reused, so `grep FC-003
-events.json` finds an episode in an archive of any age - and because
-every alert-worthy transition is logged, an episode comes back as
-several lines under one code rather than a single entry. The full table
-is in `Docs/configuration.md`.
-
-Normal operation stays uncoded. A manual stop is the system doing what
-it was told, and coding that would make a code stop meaning something
-happened.
-
-## Documentation
-
-- [Docs/architecture.md](Docs/architecture.md) - design, and why the
-  private Protect API is used
-- [Docs/control-logic.md](Docs/control-logic.md) - modes, latching,
-  minimum run time
-- [Docs/configuration.md](Docs/configuration.md) - every setting
-- [Docs/dashboard.md](Docs/dashboard.md) - what the screen shows, and
-  what each colour means
-- [Docs/api.md](Docs/api.md) - HTTP endpoints
-- [Docs/troubleshooting.md](Docs/troubleshooting.md) - known failure
-  modes
-- [Docs/arm.md](Docs/arm.md) - running on a Raspberry Pi: what has been
-  measured, and how to repeat it
-- [deploy/nginx.conf.example](deploy/nginx.conf.example) - reference
-  nginx site config, since Flask binds loopback and needs a proxy
-
-## Hardware
-
-Two targets, both first class:
-
-- **x86-64 Debian or Ubuntu.** What it is developed and run on. Two
-  cores and 1GB is comfortable; it has not been tried below that.
-- **A Raspberry Pi 3B+ on the 64-bit image.** 1.4GHz quad-core
-  Cortex-A53, 1GB. This is the board the ARM measurements were taken on
-  - see `Docs/arm.md`. A plain 3B is the same design a little slower and
-  is expected to work, but has not been verified; a 4 or a 5 is more
-  machine than this needs and will run it without complaint. Prefer the 64-bit image over the 32-bit one: both
-  boards are ARMv8 so either boots, but wheel coverage on PyPI is much
-  better for arm64, and that is not hypothetical: MarkupSafe, already a
-  dependency, publishes aarch64 wheels for every Python here and no
-  `armv7l` wheels at all, so a 32-bit image builds it from source and
-  needs a compiler.
-
-Neither covers the other, and they are tight on different axes. Memory
-is close: 1GB against 905MB usable on a 3B+, so the Pi is the slightly
-smaller box. The Pi is slower at everything - a modern x86-64 core
-against a 1.4GHz Cortex-A53 is not a close comparison, and a VM also
-has much faster memory and much faster storage than an SD card. The Pi's
-four cores do not close that gap, because this is one process whose
-threads are mostly idle or blocked on I/O, not parallel work.
-
-**Size both memory and time against the smaller target.** Judge
-resident memory and anything that accumulates on whichever box has less
-of it, and judge startup, JSON parsing and anything CPU-bound on the
-slower one. In service the process is about 44MB with four threads on a
-3B+ and about 49MB on an x86 VM, but those are not like for like: the
-figure tracks how much history is currently held. Nothing in the code is
-architecture specific.
-
-Measurements below are x86 unless stated. On a 3B+ running the 64-bit
-Trixie image with Python 3.13, imports are roughly 11x slower than x86
-and JSON parsing roughly 16x; the suite passes 217/217 in about 67s with
-a 227MB peak, measured at d50a754. See `Docs/arm.md` for the method and
-the per-module breakdown. Every
-pinned dependency installed from PyPI as a wheel with nothing built
-from source, which is the arm64 claim above, tested rather than
-assumed.
-
-What those targets mean for changes:
-
-- **Python 3.10 to 3.14.** The floor is set by the pinned
-  dependencies, not the syntax: `click`, `requests` and `urllib3` all
-  declare `requires-python >=3.10`, so `requirements.txt` cannot install
-  below it. The source itself parses back to 3.9, which is not the same
-  thing - a version it compiles on but cannot get its libraries on is
-  not a version it supports. That rules out Bullseye; Bookworm is 3.11,
-  Trixie 3.13, and production runs 3.14. CI covers 3.10, 3.11 and 3.14.
-- **Four third-party imports** - Flask, Werkzeug, requests, urllib3.
-  With their own dependencies that is twelve pins, and on 64-bit ARM
-  every one installs from a wheel: ten are architecture-neutral, while
-  MarkupSafe and charset-normalizer publish aarch64 builds
-  (charset-normalizer also keeps a pure-Python fallback). Nothing is
-  compiled during install. Keep it that way - a dependency that builds
-  from source is a much bigger ask on a Pi than it looks on a laptop.
-- **A restart is cheap.** Measured on x86-64: `/api/state` unavailable
-  for 0.10s, and a new process answering 0.26s after the trigger. A 3B+
-  is slower to start an interpreter and import Flask, so expect a few
-  seconds there - still an order of magnitude inside `restart.sh`'s 60s
-  timeout.
-- **Disk writes are not a concern.** `history.json` is rewritten whole
-  every 5 minutes: about 55MB a day, 20GB a year. That is orders of
-  magnitude below what any current SD card is rated for, high-endurance
-  or otherwise. The SD failure worth designing against is corruption
-  from power loss mid-write. `config.json`, `fault.json` and
-  `manual-off.pending` are written to a temporary, fsynced, renamed, and
-  the directory fsynced after - so a cut leaves the old file or the new
-  one, and the rename itself survives, and `daily.json` is written the
-  same way. `history.json` and `events.json` are renamed atomically but
-  not synced. History regenerates from later readings; A LOST ACTIVITY
-  ENTRY IS GONE FOR GOOD - accepted because it does not control the
-  fan, not because it comes back.
-- **`daily.json` keeps what the trace cannot.** One row per day with the
-  low and high for each metric, two years of them - about 40KB a year at
-  80-110 bytes a row, so 80KB for the whole window. `history.json` holds
-  24 hours, so "was it this humid last week" had no answer on disk at
-  all; extending the trace to a year would have cost roughly 70MB for
-  the same answer. Written durably, unlike history: a lost day of
-  extremes cannot be reconstructed from anything. Served at
-  `/api/daily`.
-
-One coupling to remember: `history.json` is parsed at startup, so the
-retention window sets how long starting takes. At the default 24 hours
-and a 30s poll that is around 2,900 points and 190KB; a week would be
-roughly 1.3MB. It is the only part of startup that grows.
+`./run.sh` is available where systemd is unavailable. Do not run it alongside
+the systemd service because two controllers could drive the same plug.
 
 ## Upgrading
 
-Pulling changes is not always enough. The installed unit at
-`/etc/systemd/system/office-fan-controller.service` is a **copy**, not a
-symlink to the one in the repo, so a change to `ExecStart` reaches the
-repo without reaching the running service. Nothing breaks immediately -
-the process already has its code loaded - and the failure appears at the
-next restart or reboot, which then will not start.
+```sh
+git pull --ff-only
+./install.sh
+./restart.sh
+```
 
-The tracked file is `office-fan-controller.service.example` and your
-edited copy is gitignored, so a pull cannot overwrite your user and
-paths - and will not carry a unit change into your copy either. After a
-pull that touches the example, diff it against your own and reapply,
-then reinstall:
+The installed systemd unit is a copy. If
+`office-fan-controller.service.example` changes, update the local
+`office-fan-controller.service`, reinstall it, and reload systemd:
 
-    sudo cp office-fan-controller.service /etc/systemd/system/
-    sudo systemctl daemon-reload
-    sudo systemctl restart office-fan-controller
+```sh
+sudo cp office-fan-controller.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl restart office-fan-controller
+```
 
-The 2026-08 release renamed `co2fan.py` to `controller.py`, so upgrading
-across it requires exactly that. Verify with:
+Verify the result with `systemctl is-active office-fan-controller` and the
+service journal.
 
-    systemctl is-active office-fan-controller
-    journalctl -u office-fan-controller -n5
+## HTTPS and authentication
 
-The journal reports `Serving Flask app 'controller'`. The name comes
-from the module, so it is the quickest confirmation the new file is
-running.
+[deploy/nginx.conf.example](deploy/nginx.conf.example) is the reference nginx
+site. Replace its example hostname and certificate paths, enable the site, and
+reload nginx after `nginx -t` succeeds.
 
-Do not run `./run.sh` until the unit is reinstalled. It guards against a
-double start by looking for the running process by name, and a stale
-unit means it will not recognise what is running and will start a second
-instance - two processes driving the same plug, both writing
-`config.json`.
+UI authentication is off by default. Set a password with:
 
-## Restarting
+```sh
+curl -X POST https://<your-host>/api/ui/password \
+  -H 'Content-Type: application/json' \
+  -d '{"password":"your-password"}'
+```
 
-Ask the controller to restart itself. No privilege needed:
+An empty password disables authentication. Read-only dashboard endpoints stay
+open so a wall display does not need credentials. State-changing and diagnostic
+endpoints require authentication once a password is set.
 
-    ./restart.sh
+## Private Protect API
 
-It writes `restart.request`, waits for the controller to take it, and
-proves a new process is answering before reporting success. Doing it by
-hand is the same thing without the checking:
+Air-quality readings are obtained from Protect's private
+`/proxy/protect/api/bootstrap` endpoint because the documented sensor API does
+not provide them. This endpoint can change with Protect firmware. If metrics
+stop resolving, see [Docs/troubleshooting.md](Docs/troubleshooting.md).
 
-    touch restart.request
+## Alerts and fault codes
 
-The watcher checks every two seconds, then replaces its own process with
-`execv`. The PID does not change and systemd is not involved. The
-activity log shows `Restarting on request` followed by `Resumed after
-restart`; if the second line is missing, the exec failed and systemd
-caught it.
+Alerts are disabled until configured. Each operational event uses a stable
+fault-code series:
 
-A restart carries the state that exists only in memory - the per-rule
-latches, the minimum-run lease, the draw-fault timer and the
-stale-reading clock - across to the replacement process, so it does not
-release a latched fan or short-cycle the motor. That handover rides in
-the environment, which survives `execv` and nothing else, so a crash or
-a `systemctl restart` correctly starts clean rather than resuming a
-lease that expired hours ago.
+| Series | Meaning |
+|---|---|
+| `FC-0xx` | Alarm email delivered |
+| `FC-1xx` | All-clear email delivered |
+| `FC-2xx` | Operational failure; no email delivered |
+| `FC-3xx` | Informational event; no failure |
 
-**A restart is refused while a fault is live but unsaved.** The
-dashboard shows `Fault not saved to disk` in that state. The fault
-exists only in memory, so a replacement would load `fault.json`, find
-nothing, and let Auto start a fan that was stopped for drawing wrong.
-`restart.sh` exits 1 and says so. Clear the fault, or fix whatever is
-stopping `fault.json` being written, then try again.
-
-`sudo systemctl restart office-fan-controller` still works and is the
-fallback if the watcher is not running. It cannot refuse: a signalled
-stop makes one last attempt to write the fault and then goes ahead
-either way. If that attempt fails the journal says so in capitals, and
-the fan will not be held off on the next start - check the draw before
-running it. Prefer `./restart.sh` whenever the dashboard shows an
-unsaved fault.
-
-Otherwise restarting is safe: `history.json` is flushed on `SIGTERM`,
-and `config.json`, `events.json` and `fault.json` are untouched. A saved
-draw fault survives deliberately.
+The complete table and delivery rules are in
+[Docs/configuration.md](Docs/configuration.md).
 
 ## Tests
 
-    ./venv/bin/python tests/run_all.py
+Tests are development and CI tools; the installer does not run them.
 
-GitHub Actions runs the same suite on Ubuntu against 3.10, 3.11 and 3.14
-on every push. That matters because the tests needing Linux - the
-durability suite and the shell tests - skip everywhere else, so CI is
-the only place they run without someone remembering to. The workflow
-fails if anything reports SKIP, since a skip on Linux means the suite is
-covering less than it appears to.
+```sh
+./venv/bin/python tests/run_all.py
+```
 
-No dependencies beyond the venv. Each module imports `controller.py`
-against a throwaway directory, so `config.json`, `history.json`,
-`events.json`, `fault.json` and `manual-off.pending` are never read or
-written, and no plug or Protect console is contacted. Safe to run
-against a live install.
+The suite uses temporary state and does not contact Protect or the plug. Some
+tests require Linux, Node/jsdom, or shellcheck and may skip when those tools are
+absent. GitHub Actions runs the full suite on supported x86 Python versions and
+an ARM64 runner, fails on unexpected skips, and runs the curated mutation
+checks on one Python version:
 
-- `test_control.py` - `decide()`, the per-rule latches, the min-run
-  lease
-- `test_data.py` - `_coerce` validation, `prune_hist`, `find_metric`
-- `test_concurrency.py` - the actuation paths under `_act_lock`,
-  including that a settings change mid-cycle can neither command the
-  previous plug nor record a reading from the previous sensor
-- `test_actuation.py` - `_force_on` and `_enforce_stop`: the mode
-  re-checks under the lock, the fault write kept outside it, and an
-  unreadable plug never being mistaken for a fan that is off
-- `test_email.py` - the alert edges, the draw-fault cause text, and the
-  authentication choice. `login()` is deliberately not used, because it
-  falls back from CRAM-MD5 to PLAIN in the clear; a test asserts that
-- `test_fault_codes.py` - the codes themselves, and that each one
-  reaches the subject, the body and the activity log. Separate from
-  `test_email.py` because those tests pin WHEN a message sends and pass
-  regardless of what it says: every template was once rewritten with
-  the whole email suite green
-- `test_chart_ranges.py` - the Low/High under each chart: the observed
-  readings, never the drawn scale. A fan guide at 70% must not make the
-  row claim a 70% high on a day the room never passed 55
-- `test_daily.py` - the per-day low and high that outlive the 24h trace,
-  including that a broken summary cannot abort a poll
-- `test_render_canary.py` - FC-208, the page reporting that it drew
-  nothing while the server had data
-- `test_js.py` - runs `tests/js/` under jsdom: the page's own JavaScript
-  against a stubbed server. SKIPS where Node is absent, including the Pi
-- `test_shellcheck.py` - the five shell scripts, and that the list of
-  them is complete. SKIPS where shellcheck is absent
-- `test_mutate_tool.py` - the mutation harness itself: its verdicts, and
-  that every claim names a test that exists with an anchor that still
-  matches
-- `test_failures.py` - persistence errors and malformed request bodies
-- `test_plug_parse.py` - the shapes a Tasmota status payload arrives in,
-  including the ones that are valid JSON and still carry no wattage
-- `test_structure.py` - invariants the other tests cannot see: every
-  plug-touching function carries a generation, the direct actuators
-  check under the lock and first, and the exemption list is real
-- `test_log_formats.py` - walks the SOURCE, because a log line on the
-  restart path cannot be reached without breaking the process. No `_log`
-  call may concatenate a formatted fragment (`%` binds tighter than `+`,
-  and one such line compiled, passed everything, and would have raised
-  the first time it ran), and every literal format string must have as
-  many placeholders as values
-- `test_secret_scanner.py` - what `tools/scan_secrets.py` must catch and
-  what it must not. Its fixtures assemble their keys at runtime, because
-  the scanner correctly flags its own test data otherwise
-- `test_history.py` - `/api/history` deltas, including the round trip
-  that proves a client ends up holding exactly what the server holds
-- `test_restart.py` - the restart trigger, the handover, and the
-  last-chance fault write on a signalled stop
-- `test_install_sh.py` - runs `install.sh` for real in a throwaway
-  tree, creating an actual venv: the mode on `config.json`, the unit
-  naming this user and directory, and that a second run changes nothing
-- `test_restart_sh.py` - the exit codes `restart.sh` reports, driven
-  against a stub controller: a proved restart, a failed exec, a refusal,
-  an ignored trigger and an unreachable service
-- `test_dashboard_source.py` - SOURCE assertions on
-  `templates/index.html`. Named for what it does, because
-  "test_dashboard passed" was read as "the dashboard works" and it does
-  not mean that
-- `test_log_classes.py` - what each activity line MEANS: alarm,
-  all-clear, mode change, observation. Decided in `event_class` rather
-  than in the page, so breaking a rule breaks a test
-- `test_durability.py` - the durable writes and the Manual stop promise:
-  a failed directory sync reported rather than hidden, a stop that
-  survives a crash, and the routes that must not claim nothing changed
-  when the file on disk already did
+```sh
+./venv/bin/python tools/mutate.py
+```
 
-`test_dashboard_source.py` needs saying out loud: it READS the
-template rather than running it, so it catches a line being **deleted**
-and not a line being **wrong**. The file is named for that limit -
-`test_dashboard` was being read as "the dashboard works", and it has
-never meant that.
+The mutation checks deliberately break important production behaviour and
+confirm that the named test fails. Browser layout still requires visual testing
+because jsdom has no layout engine.
 
-**The page IS executed now**, by `test_js.py`: jsdom loads it with the
-server stubbed and the page's own JavaScript runs, covering the log
-rendering, the tap-to-expand timestamp and every branch of the render
-canary. That skips where Node is absent, including
-the Pi, and CI installs it so the skip cannot become normal.
+The suite currently contains these modules. The list is intentionally limited
+to filenames; the tests themselves are the source of truth for their coverage:
 
-Two things still keep the source assertions worth having. They run
-everywhere, including the board. And they guard the CONTRACT - that the
-page takes the served class and decides nothing itself - which is a
-claim about what the code does not do, and therefore hard to make by
-executing it.
+- `test_actuation.py`
+- `test_chart_ranges.py`
+- `test_concurrency.py`
+- `test_control.py`
+- `test_daily.py`
+- `test_dashboard_source.py`
+- `test_data.py`
+- `test_durability.py`
+- `test_email.py`
+- `test_failures.py`
+- `test_fault_codes.py`
+- `test_history.py`
+- `test_install_sh.py`
+- `test_js.py`
+- `test_log_classes.py`
+- `test_log_formats.py`
+- `test_mutate_tool.py`
+- `test_plug_parse.py`
+- `test_render_canary.py`
+- `test_restart_sh.py`
+- `test_restart.py`
+- `test_secret_scanner.py`
+- `test_shellcheck.py`
+- `test_structure.py`
 
-WHAT IS STILL NOT TESTED: layout. jsdom has no layout engine, so the
-SVG geometry, the responsive viewBox and anything about how it looks
-need eyes or a real browser. A chart with the right elements in the
-wrong places passes everything here.
+## Runtime files
 
-The right answer to all of this was to have less in the page. Decisions
-it used to make - what an activity line means, what the chart ranges
-are - moved into `event_class` and `history_ranges`, where a mutation
-breaks a test.
+The following local files are excluded from Git:
 
-### Proving the tests can fail
+- `config.json` — settings and credentials
+- `history.json` — rolling 24-hour readings
+- `daily.json` — daily low/high summaries
+- `events.json` — activity history
+- `fault.json` — persistent draw fault
+- `manual-off.pending` — a promised Manual stop not yet confirmed
 
-    ./venv/bin/python tools/mutate.py
+Do not commit live configuration, credentials, private hostnames, addresses, or
+runtime state.
 
-A curated set of deliberate breakages - stop stripping the fault-code
-prefix, serve the log without its class, make a snapshot shallow again,
-let the secret scanner print what it caught - each paired with the test
-module that must fail. Run in a copy of the tree; the real one is never
-touched.
+## Documentation
 
-    ./venv/bin/python tools/mutate.py --list
-
-is the list, and it cannot be out of date. The count used to be written
-out here and went stale three times before anyone noticed: a number in
-prose that something else determines is a bug with a delay on it.
-
-It exists because six external reviews found the same defect over and
-over: **tests that assert the shape of the source rather than the
-behaviour of the system**, all of them green. Two were written the same
-day they were caught - a deep-copy test that did its own deepcopy, and
-a test that searched `controller.py` for the word `try`. Neither could
-fail. The suite going green had stopped being evidence.
-
-Each entry is a claim: break this, and that test notices. A mutation
-that SURVIVES means the test beside it is decoration - fix the test,
-not the mutation. A mutation reported STALE means the code moved and
-nobody re-checked the claim.
-
-The harness runs each module unmutated FIRST. Without that a broken
-harness looks like a full set of catches: the first version excluded
-`*.json` from its copies, `config.example.json` went with it, and
-every mutation was "caught" by a `FileNotFoundError`.
-
-It runs in CI on one interpreter, not in `run_all.py`. The suite runs
-on the Pi; this does far more work than that board should do on every
-change.
-
-The concurrency tests gate the interleaving with events rather than
-sleeping. Timing alone does not reproduce these races, and a test that
-only widens the window can pass against code with the lock removed.
-
-Some tests need the deployment host and report `SKIP` elsewhere rather
-than failing, with the count on the summary line so a skip cannot pass
-unnoticed:
-
-- one test in `test_restart.py` needs Linux `/proc/self/fd`. It covers
-  descriptor inheritance across the `execv`, which is what stopped the
-  replacement binding port 8096 the first time.
-- all of `test_restart_sh.py` needs a working `bash`. That is probed by
-  running it rather than inferred from the platform: macOS has bash and
-  should run these, while on Windows the name can resolve to a WSL
-  launcher that is present but blocked.
-- all of `test_durability.py` needs Linux `O_DIRECTORY`, since every
-  test in it reaches a directory fsync.
-
-`test_durability.py` is not the only module that reaches that fsync,
-which is why the harness stubs it out where `O_DIRECTORY` does not
-exist. `write_json_durable` calls `_fsync_dir`, and `save_cfg`,
-`promise_manual_off` and `save_fault` all call `write_json_durable` - so
-without the stub an ordinary config save raises `AttributeError` on
-Windows and takes dozens of unrelated tests down with it. The harness
-prints a `NOTE` when it does this: the run is real, but the directory
-fsync is not exercised anywhere in it.
-
-An earlier version of this section listed the three skips above and
-implied everything else passed on Windows. It did not. That was wrong
-until the stub and the `test_restart_sh.py` platform skip were added.
-
-So a green run on Windows does not cover the restart path, and does not
-cover durability either. Run the suite on the host, or read CI, before
-trusting a change to either.
-
-## Serving it over HTTPS
-
-Flask binds `127.0.0.1`, so a reverse proxy on the same host is required
-for network access.
-[deploy/nginx.conf.example](deploy/nginx.conf.example) is a working site
-config - copy it to `/etc/nginx/sites-available/`, replace
-`example.com`, symlink it into `sites-enabled`, then check and apply it:
-
-    sudo nginx -t && sudo systemctl reload nginx
-
-It declares its own `limit_req_zone` at the top of the file, which works
-because Debian and Ubuntu include `sites-enabled` from the http context.
-No edit to `nginx.conf` is needed.
-
-It expects a certificate at the usual certbot path. Any issuance method
-works; DNS-01 suits a host with no inbound port 80, e.g. with the
-Cloudflare plugin:
-
-    sudo apt install nginx certbot python3-certbot-dns-cloudflare
-    sudo certbot certonly --dns-cloudflare \
-      --dns-cloudflare-credentials /etc/letsencrypt/cloudflare.ini \
-      -d example.com
-
-Scope the API token narrowly - DNS edit rights on the one zone are
-enough, and a zone-wide token can mint a certificate for any name you
-host. Add a deploy hook so nginx reloads on renewal, or it keeps serving
-the old certificate from memory until it expires:
-
-    printf '#!/bin/sh\nsystemctl reload nginx\n' | sudo tee \
-      /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh
-    sudo chmod 755 /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh
-
-## Authentication
-
-Off by default. Setting a password protects everything that changes
-state while leaving the dashboard readable, so a wall display needs no
-login:
-
-    curl -X POST https://<your-host>/api/ui/password \
-      -H 'Content-Type: application/json' -d '{"password":"..."}'
-
-Post an empty password to disable it again. See
-[Docs/configuration.md](Docs/configuration.md).
+- [Architecture](Docs/architecture.md)
+- [Control logic](Docs/control-logic.md)
+- [Configuration and alerts](Docs/configuration.md)
+- [Dashboard](Docs/dashboard.md)
+- [HTTP API](Docs/api.md)
+- [Troubleshooting](Docs/troubleshooting.md)
+- [Raspberry Pi and ARM](Docs/arm.md)
