@@ -299,6 +299,56 @@ def test_a_cause_chain_that_loops_does_not_hang_the_poll_thread():
     return "bounded walk returns"
 
 
+def test_a_login_http_failure_is_a_protect_failure():
+    """raise_for_status raises HTTPError, which is not a ProtectError.
+
+    The poll loop catches ProtectError and PlugError by name and files
+    everything else under FC-200 unclassified. So a console returning
+    503 - a UniFi service restarting is the ordinary case - was
+    reported as an unclassified fault in this controller rather than
+    as the Protect outage it is. requests also puts the full login URL
+    in that message, which then reached the activity log.
+
+    Both halves are asserted: the class, and the absence of the URL.
+    """
+    import requests as R
+    C = harness.load()
+
+    class Reply(object):
+        status_code = 503
+        headers = {}
+
+        def raise_for_status(self):
+            # The real thing, URL included. Without this the stub only
+            # proves that SOMETHING non-ProtectError escapes; the
+            # regression being guarded is specifically HTTPError, and
+            # the leaked URL is half of what makes it a defect.
+            raise R.exceptions.HTTPError(
+                "503 Server Error: Service Unavailable for url: "
+                "https://console.invalid/api/auth/login")
+
+    class Session(object):
+        verify = False
+
+        def post(self, *a, **k):
+            return Reply()
+
+    C.requests.Session = Session
+    try:
+        C.Protect("console.invalid", "u", "p", False).login()
+    except C.ProtectError as exc:
+        assert "503" in str(exc), exc
+        assert "https://" not in str(exc), exc
+        assert "console.invalid" not in str(exc), exc
+    except Exception as exc:
+        assert False, (
+            "a login HTTP failure escaped as %s, so the poll loop files "
+            "it as unclassified: %r" % (type(exc).__name__, exc))
+    else:
+        assert False, "HTTP 503 was accepted as a successful login"
+    return "a login HTTP failure reads as FC-201"
+
+
 def test_a_console_serving_html_is_a_protect_fault_not_an_unclassified_one():
     """A UDM mid OS update answers 200 with a holding page.
 

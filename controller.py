@@ -1066,7 +1066,16 @@ class Protect:
             raise ProtectError("UniFi rejected those credentials (HTTP %d). "
                                "Use a local user, not a UI Cloud login."
                                % r.status_code)
-        r.raise_for_status()
+        if r.status_code >= 400:
+            # Was raise_for_status(). Its HTTPError is not a
+            # ProtectError, so the poll loop caught it in the catch-all
+            # and filed a Protect outage as FC-200 unclassified - and
+            # requests puts the full login URL in the message, which
+            # then reached the activity log. Every other failure in
+            # this method already reports as FC-201; this was the one
+            # gap.
+            raise ProtectError("UniFi login returned HTTP %d"
+                               % r.status_code)
         self._csrf = r.headers.get("X-CSRF-Token")
         self._s = s
 
@@ -4240,9 +4249,13 @@ def _announce_start(resumed):
            % (FC_COLD_START,
               "standing fault %s still held" % standing if standing
               else "no standing fault"))
-    # _log writes events.json before it returns, so this is on disk
-    # ahead of the first reading rather than riding on the periodic
-    # history flush that the 2026-08-18 readings were lost with.
+    # _log attempts the events.json write before it returns, so the
+    # line is offered to disk ahead of the first reading rather than
+    # riding on the periodic history flush that the 2026-08-18 readings
+    # were lost with. ATTEMPTED, NOT GUARANTEED: save_events swallows
+    # OSError and does not sync the directory, deliberately, because a
+    # lost event is recoverable and does not control the fan. Do not
+    # read this as a durability promise.
     _log(msg)
     return msg
 

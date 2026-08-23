@@ -310,13 +310,19 @@ def test_a_clean_cold_start_says_there_was_no_fault():
     return "no fault is said out loud"
 
 
-def test_the_cold_start_line_is_on_disk_before_the_threads_start():
+def test_the_cold_start_line_is_written_before_the_threads_start():
     """It has to outlive the thing it explains.
 
     The readings either side of the 2026-08-18 interruptions were lost
     with the periodic history flush. events.json is written inside
-    _log, not on a timer, and this pins that difference: the line is
-    durable at the moment it is made, which is before any thread runs.
+    _log, not on a timer, and this pins that difference: the write is
+    made at the moment the line is, which is before any thread runs.
+
+    WRITTEN, NOT DURABLE. save_events swallows OSError and does not
+    directory-sync, by the same policy that governs every other event:
+    a lost entry is recoverable and does not control the fan. This
+    test asserts the ordering, not a survival guarantee, and calling
+    it durable would misdescribe what the code promises.
     """
     C = harness.load()
     C._announce_start(False)
@@ -328,7 +334,7 @@ def test_the_cold_start_line_is_on_disk_before_the_threads_start():
     on_disk = json.load(open(C.EVENTS_PATH))
     assert on_disk, "events.json was written but empty"
     assert on_disk[0]["msg"].startswith(C.FC_COLD_START), on_disk[0]
-    return "durable before the first poll"
+    return "written before the first poll"
 
 
 def test_handover_is_consumed_exactly_once():
