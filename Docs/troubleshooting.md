@@ -69,6 +69,21 @@ Check the current mode, latch values and minimum-run lease in `/api/state`.
 - The minimum-run lease may keep an Auto-mode fan running after every latch has
   released.
 
+### Fan stopped for no apparent reason
+
+A stop that breaks the latch and lease rules - the fan going off at a reading
+well above `off_at`, seconds into a minimum-run lease - is usually a restart
+that did not come through `./restart.sh`. Latches and the minimum-run lease
+live in memory and are carried only by the requested-restart handover, so a
+systemd restart, a crash or a loss of power correctly begins with neither.
+
+Look for `FC-301` immediately below the stop in the activity log. It names the
+cold start and says what was not carried. A requested restart logs "Resumed
+after restart" instead, and carries both.
+
+If neither line is present the process did not restart, and the mode, latches
+and lease in `/api/state` are the next thing to read.
+
 ### Fan is on but reports no power
 
 Confirm that the fan is connected, free to turn, and not tripped. Zero watts is
@@ -196,6 +211,8 @@ grep FC-003 events.json
 
 `FC-0xx` opens an emailed alarm, `FC-1xx` closes one, `FC-2xx` records an
 operational failure without email, and `FC-3xx` records useful information.
+Searching `FC-301` lists every cold start, which is the quickest way to
+separate a power or restart event from a control problem.
 Recovery of a `2xx` problem uses the same code, such as
 `FC-201 Poll recovered`.
 

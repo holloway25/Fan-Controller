@@ -492,10 +492,19 @@ def event_class(msg):
         # 1xx is an all-clear: a return to normal.
         if ser == "1":
             return "ok"
-        # 3xx is an observation. In Manual, something else moving the
-        # plug is the mode doing its job; in any other mode the
-        # controller has been contradicted and it should stand out.
         if ser == "3":
+            # A cold start is an observation about THIS process, not
+            # about the plug, and on a PoE board it is routine. Neutral
+            # deliberately: the colours are how the log says which lines
+            # want attention, and a line that appears every time the
+            # network switch reboots must not join that column. The
+            # information is in the text for whoever is already reading.
+            if raw.startswith(FC_COLD_START):
+                return ""
+            # The rest of 3xx is the plug moving without this service
+            # commanding it. In Manual that is the mode doing its job;
+            # in any other mode the controller has been contradicted and
+            # it should stand out.
             return "ok" if m.endswith("(Manual)") else "m-manual"
     # Anchored, not a bare substring: "Changed: watts_fault_seconds"
     # contains the word but is a settings edit, not a fault.
@@ -925,6 +934,82 @@ def find_metric(obj, hints):
     return hits[0] if hits else None
 
 
+# Which kinds of request failure get a short name of their own.
+# Ordered most specific first: ConnectTimeout and ReadTimeout both
+# subclass Timeout and both say something more useful than it does.
+_REQUEST_CAUSES = (
+    ("ConnectTimeout", "timed out connecting"),
+    ("ReadTimeout", "no reply before the timeout"),
+    ("Timeout", "timed out"),
+    ("TooManyRedirects", "too many redirects"),
+    ("ConnectionError", "no connection"),
+)
+
+
+def _dns_failure(e):
+    """Whether a request failed because the name would not resolve.
+
+    Worth separating from every other connection failure because the
+    remedy is a different one and troubleshooting.md sends people to
+    the resolver for it - `getent hosts`, `resolvectl status` - which
+    is wasted advice for a console that resolved fine and refused the
+    connection.
+
+    Walks the cause chain by TYPE, never by text, because the text is
+    exactly what is being thrown away here and matching on it would
+    reintroduce the coupling. socket.gaierror is stdlib and stable.
+    urllib3's NameResolutionError is neither - it does not exist in
+    1.x - so it is recognised by name without being imported, and a
+    version that lacks it simply falls through to "no connection".
+
+    The walk is bounded. requests wraps urllib3, urllib3 wraps the
+    socket error, and a chain that loops would otherwise hang the poll
+    thread inside its own error handler.
+    """
+    seen = 0
+    while isinstance(e, BaseException) and seen < 10:
+        if isinstance(e, socket.gaierror):
+            return True
+        if type(e).__name__ == "NameResolutionError":
+            return True
+        nxt = getattr(e, "reason", None)
+        if not isinstance(nxt, BaseException):
+            nxt = e.__cause__ or e.__context__
+        if not isinstance(nxt, BaseException):
+            args = getattr(e, "args", None) or ()
+            nxt = args[0] if args and isinstance(args[0],
+                                                 BaseException) else None
+        e = nxt
+        seen += 1
+    return False
+
+
+def _why(e):
+    """One short phrase for a failed HTTP request.
+
+    requests renders a connection failure as its whole retry stack -
+    the pool, the port, the full URL, the wrapped urllib3 error and the
+    errno underneath it - and that reached the activity log verbatim.
+    The 2026-08-21 UDM OS update is the example worth keeping: the
+    console rebooted, the name stopped resolving, and every poll wrote
+    the same four-line paragraph to say so. On a phone it filled the
+    log.
+
+    The sentence this joins already names the subsystem and, where it
+    matters, the host. All that is wanted here is WHICH KIND of failure
+    it was. An unrecognised class falls back to its own name, which is
+    short, stable, and cannot contain a URL - the same choice
+    Tasmota._cmd already made for the same reason.
+    """
+    if _dns_failure(e):
+        return "host name did not resolve"
+    for name, phrase in _REQUEST_CAUSES:
+        cls = getattr(requests.exceptions, name, None)
+        if cls is not None and isinstance(e, cls):
+            return phrase
+    return type(e).__name__
+
+
 class ProtectError(Exception):
     pass
 
@@ -969,7 +1054,8 @@ class Protect:
             # reported cleanly. Most visible on restart: logging in is the
             # first thing the poll loop does, and the resolver may not be
             # answering yet. Wording matches _get() deliberately.
-            raise ProtectError("Cannot reach the UniFi console: %s" % e)
+            raise ProtectError("Cannot reach the UniFi console (%s)"
+                               % _why(e))
         if r.status_code == 499:
             raise ProtectError("That account has two-factor enabled. Create a "
                                "separate local user without 2FA.")
@@ -995,20 +1081,37 @@ class Protect:
                 r = self._s.get(self.base + path, headers=h, timeout=20)
             except requests.exceptions.SSLError as e:
                 self._s = None
+                # Truncated like login()'s. An OpenSSL failure prints a
+                # verify chain, and the untruncated version here was the
+                # second-longest line the log could produce.
                 raise ProtectError(
                     "TLS verification failed for %s. Check the certificate "
                     "covers this name and has not expired, or turn off "
-                    "Verify certificate. (%s)" % (self.host, e))
+                    "Verify certificate. (%s)"
+                    % (self.host, str(e)[:120]))
             except requests.RequestException as e:
                 self._s = None
-                raise ProtectError("Cannot reach the UniFi console: %s" % e)
+                raise ProtectError("Cannot reach the UniFi console (%s)"
+                                   % _why(e))
         if r.status_code in (401, 403) and retry:
             self._s = None
             return self._get(path, retry=False)
         if r.status_code >= 400:
             raise ProtectError("Protect returned HTTP %d for %s"
                                % (r.status_code, path))
-        return r.json()
+        try:
+            return r.json()
+        except ValueError:
+            # A console part-way through an OS update answers 200 with
+            # an HTML holding page. r.json() then raised JSONDecodeError
+            # out of the poll loop's catch-all, so the log said "FC-200
+            # JSONDecodeError: Expecting value: line 1 column 1" -
+            # pointing at this controller, in the series that means
+            # unclassified, for something Protect did and recovered from
+            # on its own. Named here so it lands as FC-201 beside the
+            # unreachable case it sits between.
+            raise ProtectError("Protect replied with something that is not "
+                               "JSON. The console may be restarting.")
 
     def sensors(self):
         return self._get("/proxy/protect/api/bootstrap").get("sensors") or []
@@ -2443,6 +2546,22 @@ FC_FAULT_PERSISTED = "FC-102"
 # normal operation would make a code stop meaning "something
 # happened".
 FC_EXTERNAL_CHANGE = "FC-300"
+
+# FC-301 is THIS PROCESS STARTING WITHOUT A HANDOVER: a systemd start, a
+# crash, or the board losing power. Only the execv path wrote anything,
+# so a cold start left no mark at all - and a cold start deliberately
+# begins with no latch and no minimum-run lease. The activity log then
+# showed a fan stopping at a reading well above off_at, seconds into a
+# lease, with nothing above it to explain why. It read as the rules
+# breaking. It cost a false defect report on 2026-08-18.
+#
+# 3xx and not 2xx: NOTHING FAILED. The controller is powered over
+# Ethernet, so this is routine - a switch reboot, a switch firmware
+# update, a PoE renegotiation or a power-budget event each take the
+# board down and bring it back. The line exists to be read afterwards,
+# not to be acted on, so it is not emailed and it is not coloured as a
+# problem. See event_class.
+FC_COLD_START = "FC-301"
 
 # 2xx: SOMETHING FAILED, NOBODY WAS EMAILED. Operational errors that
 # reach the activity log and stop there.
@@ -4085,6 +4204,49 @@ def _apply_resume():
     return True
 
 
+def _announce_start(resumed):
+    """Say so when the process started cold, and what it did not carry.
+
+    THE PROBLEM THIS SOLVES IS A READING PROBLEM, not a control one.
+    Every cold start drops the rule latch and the minimum-run lease by
+    design - they are memory-only, and only the execv handover carries
+    them. So the log showed a fan stopping at a reading well above
+    off_at, seconds into a lease that should have held it, and nothing
+    above it saying the process was new. That is correct behaviour
+    rendered as a mystery, and it was investigated as a defect on
+    2026-08-18 before anyone thought to ask whether the board had lost
+    power.
+
+    WHAT IT MUST SAY is what was NOT carried, because that is the part
+    that explains the lines underneath: no latch, no lease, and whether
+    a fault was found on disk. The fault is the one piece of state that
+    DOES survive - it is written to fault.json precisely so a restart
+    cannot re-arm a fan already judged unsafe - so a line listing what
+    was dropped is misleading unless it also names what was kept.
+
+    Returns the line, or None after a handover. A handover already logs
+    "Resumed after restart" with the values it carried; two lines
+    saying the same thing differently is how the log got noisy before.
+
+    Called before any thread starts, so it cannot arrive after the
+    first poll's events and it cannot race the first draw cycle.
+    """
+    if resumed:
+        return None
+    with _state_lock:
+        f = STATE["fault"]
+        standing = (f.get("code") or "unknown") if f else None
+    msg = ("%s Started cold \u2014 no latch, no minimum-run lease, %s"
+           % (FC_COLD_START,
+              "standing fault %s still held" % standing if standing
+              else "no standing fault"))
+    # _log writes events.json before it returns, so this is on disk
+    # ahead of the first reading rather than riding on the periodic
+    # history flush that the 2026-08-18 readings were lost with.
+    _log(msg)
+    return msg
+
+
 def _consume_restart_request():
     """Take the restart trigger if there is a fresh one.
 
@@ -4268,6 +4430,9 @@ if __name__ == "__main__":
     # Before any thread starts, so the first decide() sees the lease and
     # the latches the previous process was holding.
     resumed = _apply_resume()
+    # Immediately after, and before anything else can log: this line is
+    # what explains every line that appears below it.
+    _announce_start(resumed)
     # A promise that outlived the process that made it. Only honoured
     # while the stored mode is still Manual - a marker left by a mode
     # that has since moved on is stale, not owed. Skipped after a

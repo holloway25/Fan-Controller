@@ -36,6 +36,10 @@ an event means; CSS decides how that class appears. `FC-0xx` and `FC-2xx`
 are faults, `FC-1xx` is an all-clear, and `FC-300` depends on the mode
 recorded with the event.
 
+`FC-301` is neutral. A cold start is routine on a mains- or PoE-powered board
+and there is nothing to act on, so it does not take a colour that would put it
+in with the entries that need attention.
+
 ## Mobile behaviour
 
 Compact timestamps use a two-digit year and omit seconds. Tap or focus a

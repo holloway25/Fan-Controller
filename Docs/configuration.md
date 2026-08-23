@@ -117,6 +117,7 @@ alerts.
 | `FC-207` | Stale-reading fail-safe failed to ventilate |
 | `FC-208` | Dashboard rendered no data despite server data |
 | `FC-300` | Plug state changed outside this controller |
+| `FC-301` | The process started cold, carrying no latch and no lease |
 
 The code series are stable:
 
@@ -128,6 +129,11 @@ The code series are stable:
 Alerts are sent once when entering the relevant state. All-clear messages send
 only when the matching original warning was successfully delivered. Normal
 switching, settings changes and mode changes are logged but not emailed.
+
+`FC-301` records a start that did not come through `./restart.sh`: a systemd
+start, a crash, or a loss of power. Those starts deliberately begin with no
+rule latch and no minimum-run lease, so the line names what was dropped and
+whether a saved fault was found. It is informational and is never emailed.
 
 Three intentional alert silences are:
 

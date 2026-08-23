@@ -83,7 +83,9 @@ asking systemd to start a second process.
 
 The requested-restart handover preserves latch state, the minimum-run lease,
 draw-fault timing, stale-reading timing and original process start time. A crash
-or systemd restart starts with clean transient state.
+or systemd restart starts with clean transient state, and logs `FC-301` saying
+so, because a dropped latch and lease otherwise appear in the activity log as a
+fan stopping for no stated reason.
 
 A requested restart is refused while a live fault has not been saved. The fault
 lock is held from the final check through `execv`, preventing the replacement

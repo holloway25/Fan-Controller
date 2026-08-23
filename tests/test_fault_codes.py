@@ -31,6 +31,8 @@ EXPECTED = {
     "FC_FAULT_UNSAVED": "FC-005",
     "FC_RESTART_FAULT": "FC-006",
     "FC_SENSOR_RETURNED": "FC-100",
+    "FC_EXTERNAL_CHANGE": "FC-300",
+    "FC_COLD_START": "FC-301",
 }
 
 
@@ -64,6 +66,24 @@ def test_alarms_are_0xx_and_all_clears_are_1xx():
     n = int(C.FC_SENSOR_RETURNED.split("-")[1])
     assert n >= 100, "the all-clear is not in the 1xx series"
     return "0xx alarms, 1xx clears"
+
+
+def test_a_cold_start_is_informational_not_a_failure():
+    """The series is the mail rule. 0xx and 2xx say something went
+    wrong; a cold start did not.
+
+    Getting this wrong is not cosmetic. The board is powered over
+    Ethernet, so a switch reboot or a PoE renegotiation produces one of
+    these - and in the 0xx series that would be an alert per switch
+    event, which is how an address gets muted before the next real
+    fault.
+    """
+    C = harness.load()
+    n = int(C.FC_COLD_START.split("-")[1])
+    assert 300 <= n < 400, \
+        "FC_COLD_START is %s, which is not the informational series" \
+        % C.FC_COLD_START
+    return "cold start is 3xx"
 
 
 # ------------------------------------------------- draw fault classification

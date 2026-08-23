@@ -202,6 +202,143 @@ def test_failed_stop_confirmation_is_retried():
     return "retried and landed"
 
 
+def test_an_unreachable_console_does_not_paste_the_retry_stack():
+    """THE LINE FROM 2026-08-21, shortened.
+
+    requests renders a connection failure as the pool, the port, the
+    full request URL, the wrapped urllib3 error and the errno under it.
+    That went into the activity log verbatim, once per poll, for as
+    long as the UDM took to finish its OS update - four wrapped lines
+    on a phone to say the console was not answering.
+
+    The assertion is on LENGTH and on the absence of the machinery,
+    because the failure mode is verbosity itself; a test that only
+    checked for the words "no connection" would pass with the whole
+    stack appended after them.
+    """
+    import requests as R
+    C = harness.load()
+    e = R.exceptions.ConnectionError(
+        "HTTPSConnectionPool(host='console.invalid', port=443): Max retries "
+        "exceeded with url: /proxy/protect/api/bootstrap (Caused by "
+        "NameResolutionError(\"<urllib3.connection.HTTPSConnection object at "
+        "0x7f00>: Failed to resolve 'console.invalid' ([Errno -3] Temporary "
+        "failure in name resolution)\"))")
+    why = C._why(e)
+    assert len(why) < 40, "still long: %r" % why
+    for junk in ("HTTPSConnectionPool", "Max retries", "urllib3", "Errno",
+                 "/proxy/", "port=443"):
+        assert junk not in why, "%r survived into %r" % (junk, why)
+    return "the stack does not reach the log"
+
+
+def test_a_name_that_does_not_resolve_says_so():
+    """DNS gets its own phrase because it has its own remedy.
+
+    troubleshooting.md sends people to `getent hosts` and
+    `resolvectl status` for this, which is wasted advice for a console
+    that resolved fine and refused the connection.
+
+    Built as a real wrapped exception rather than by matching text, so
+    this pins the chain walk and not a string.
+    """
+    import socket as S
+    import requests as R
+    C = harness.load()
+    inner = S.gaierror(-3, "Temporary failure in name resolution")
+    outer = R.exceptions.ConnectionError(inner)
+    assert C._dns_failure(outer), "a wrapped gaierror was not recognised"
+    assert "resolve" in C._why(outer), C._why(outer)
+    # And an ordinary refusal is NOT reported as a name problem.
+    plain = R.exceptions.ConnectionError("connection refused")
+    assert not C._dns_failure(plain)
+    assert "resolve" not in C._why(plain), C._why(plain)
+    return "DNS distinguished from every other refusal"
+
+
+def test_a_cause_chain_that_loops_does_not_hang_the_poll_thread():
+    """The walk is bounded on purpose.
+
+    requests wraps urllib3, urllib3 wraps the socket error, and nothing
+    guarantees the chain is acyclic. An unbounded walk here hangs the
+    poll thread INSIDE ITS OWN ERROR HANDLER - the controller stops
+    reading and stops reporting, which is a worse outage than whatever
+    it was trying to describe.
+
+    UNDER AN ALARM, because the failure mode is non-termination and a
+    plain assert cannot observe that: an unbounded loop never reaches
+    the assertion, so the test hangs and the run reports nothing rather
+    than a failure. This was not theoretical - the bound was removed
+    accidentally while mutation-testing this change, and the only
+    symptom was a suite that stopped producing output. The alarm turns
+    that into a named failure.
+    """
+    import signal
+    import requests as R
+    if not hasattr(signal, "SIGALRM"):
+        harness.skip("SIGALRM is POSIX-only")
+
+    def ring(signum, frame):
+        raise AssertionError(
+            "_dns_failure did not terminate on a cyclic cause chain; "
+            "the poll thread would hang in its own error handler")
+
+    C = harness.load()
+    a = R.exceptions.ConnectionError("a")
+    b = R.exceptions.ConnectionError("b")
+    a.__cause__ = b
+    b.__cause__ = a
+
+    old = signal.signal(signal.SIGALRM, ring)
+    signal.setitimer(signal.ITIMER_REAL, 5.0)
+    try:
+        assert C._dns_failure(a) is False
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, old)
+    return "bounded walk returns"
+
+
+def test_a_console_serving_html_is_a_protect_fault_not_an_unclassified_one():
+    """A UDM mid OS update answers 200 with a holding page.
+
+    r.json() then raised JSONDecodeError out of the poll loop's
+    catch-all, and the log said "FC-200 JSONDecodeError: Expecting
+    value: line 1 column 1" - the unclassified series, pointing at this
+    controller, for something Protect did and recovered from on its
+    own.
+    """
+    C = harness.load()
+
+    class Reply(object):
+        status_code = 200
+        content = b"<html>Updating</html>"
+
+        def json(self):
+            raise ValueError("Expecting value: line 1 column 1 (char 0)")
+
+    p = C.Protect("console.invalid", "u", "p", False)
+    p._s = type("S", (), {"get": lambda *a, **k: Reply()})()
+    p._csrf = "x"
+    try:
+        p._get("/proxy/protect/api/bootstrap")
+    except C.ProtectError as exc:
+        assert "JSON" in str(exc), exc
+        assert "Expecting value" not in str(exc), exc
+    except Exception as exc:
+        # THE POINT OF THE TEST. Anything other than ProtectError means
+        # the decode error reached the poll loop's catch-all, which
+        # files it as FC-200 unclassified and blames this controller
+        # for a console that was restarting. Caught here so that
+        # regression reads as a failure rather than as a broken test.
+        assert False, (
+            "a non-JSON reply escaped as %s, so the poll loop records it "
+            "as unclassified: %r" % (type(exc).__name__, exc))
+    else:
+        assert False, "a non-JSON reply was accepted"
+    return "HTML holding page reads as a Protect problem"
+
+
 def test_readings_survive_a_payload_without_co2():
     """CO2 can be disabled, so a missing CO2 field is not fatal.
 

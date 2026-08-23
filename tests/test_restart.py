@@ -248,6 +248,89 @@ def test_handover_carries_the_latches_and_the_lease():
     return "latches, lease, draw and fail-safe clocks all carried"
 
 
+def test_a_cold_start_says_what_it_did_not_carry():
+    """THE 2026-08-18 FALSE DEFECT REPORT, as a test.
+
+    A cold start drops the latch and the minimum-run lease by design.
+    Without a line saying so, the log showed a fan stopping at a
+    reading well above off_at, seconds into a lease - correct
+    behaviour, read as the rules breaking, investigated as a bug.
+
+    Both facts are asserted because either one alone leaves the reader
+    with half an explanation.
+    """
+    C = harness.load()
+    msg = C._announce_start(False)
+    assert msg is not None, "a cold start logged nothing"
+    assert msg.startswith(C.FC_COLD_START), msg
+    assert "no latch" in msg, "the dropped latch is not mentioned: %r" % msg
+    assert "lease" in msg, "the dropped lease is not mentioned: %r" % msg
+    assert C.STATE["events"][0]["msg"] == msg, "it did not reach the log"
+    return "cold start names the latch and the lease"
+
+
+def test_a_handover_does_not_also_announce_a_cold_start():
+    """execv already logs "Resumed after restart" with what it carried.
+
+    Two lines describing the same start, one of them wrong about it,
+    is worse than the silence this replaced.
+    """
+    C = harness.load()
+    before = len(C.STATE["events"])
+    assert C._announce_start(True) is None, "a handover announced a cold start"
+    assert len(C.STATE["events"]) == before, \
+        "a handover wrote a cold-start line as well as its own"
+    return "the handover path stays quiet"
+
+
+def test_a_cold_start_names_a_fault_that_survived_it():
+    """The one thing a cold start DOES carry.
+
+    A line listing what was dropped, with no mention of the fault still
+    held on disk, invites exactly the wrong conclusion - that the
+    process came back clean and Auto is free to run. It is not: the
+    fault blocks Auto until it is acknowledged.
+    """
+    C = harness.load()
+    with C._state_lock:
+        C.STATE["fault"] = {"msg": "x", "code": C.FC_UNDER_POWER, "at": 1.0}
+    msg = C._announce_start(False)
+    assert C.FC_UNDER_POWER in msg, \
+        "a standing fault was not named in the cold-start line: %r" % msg
+    return "the surviving fault is named"
+
+
+def test_a_clean_cold_start_says_there_was_no_fault():
+    """Absence stated, not left to be inferred from a missing clause."""
+    C = harness.load()
+    with C._state_lock:
+        C.STATE["fault"] = None
+    msg = C._announce_start(False)
+    assert "no standing fault" in msg, msg
+    return "no fault is said out loud"
+
+
+def test_the_cold_start_line_is_on_disk_before_the_threads_start():
+    """It has to outlive the thing it explains.
+
+    The readings either side of the 2026-08-18 interruptions were lost
+    with the periodic history flush. events.json is written inside
+    _log, not on a timer, and this pins that difference: the line is
+    durable at the moment it is made, which is before any thread runs.
+    """
+    C = harness.load()
+    C._announce_start(False)
+    # Existence asserted separately: a missing file raises out of
+    # json.load, and an error is not the same as a failure to whoever
+    # reads the run.
+    assert os.path.exists(C.EVENTS_PATH), \
+        "the cold-start line was never written to events.json"
+    on_disk = json.load(open(C.EVENTS_PATH))
+    assert on_disk, "events.json was written but empty"
+    assert on_disk[0]["msg"].startswith(C.FC_COLD_START), on_disk[0]
+    return "durable before the first poll"
+
+
 def test_handover_is_consumed_exactly_once():
     """Left in place it would resume a lease that expired long ago."""
     C = harness.load()
