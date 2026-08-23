@@ -775,18 +775,23 @@ function render(s){
       when.className="when";
       const d=new Date(e.at*1000), p=n=>String(n).padStart(2,"0");
       // Explicit 24-hour formatting; toLocaleTimeString adds am/pm here.
-      // SHORT ON PURPOSE: two-digit year, no seconds. This column is
-      // fixed-width and never wraps, so on a phone every character it
-      // spends is taken from the message beside it. events.json keeps
-      // the full epoch, so nothing is actually lost - the precision is
-      // in the file for anyone who needs it.
-      // TODAY NEEDS NO DATE. The column is fixed width and never wraps,
-      // so on a phone the date took roughly 40% of the row and pushed
-      // every message onto two or three lines - for entries that are
-      // almost always from the last few hours. Anything older keeps a
-      // day and month; the year is in the expansion, a tap away.
-      const sameDay=d.toDateString()===new Date().toDateString();
-      when.textContent=(sameDay?"":p(d.getDate())+"/"+p(d.getMonth()+1)+" ")+
+      // SHORT, BUT ALWAYS DATED: day and month, no year and no seconds.
+      // The column is fixed width and never wraps, so every character
+      // it spends is taken from the message beside it - but the date is
+      // not the place to save them.
+      //
+      // Today's rows used to render the time alone. It cost less width
+      // than it was worth: a log is read to work out WHEN something
+      // happened, and a bare "18:29" three rows below a dated one
+      // leaves the reader deciding which day it belongs to. The
+      // midnight boundary is the bad case - entries either side of it
+      // are minutes apart and a day apart, and only one of them said
+      // so.
+      //
+      // The year is still omitted, and is a tap away in the expansion
+      // along with the seconds and the UTC offset. events.json keeps
+      // the full epoch either way, so nothing is lost from the record.
+      when.textContent=p(d.getDate())+"/"+p(d.getMonth()+1)+" "+
         p(d.getHours())+":"+p(d.getMinutes());
       // Local time with the offset, not toISOString: the log is read in
       // the room the fan is in, and UTC would need translating by the

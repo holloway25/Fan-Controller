@@ -42,9 +42,10 @@ in with the entries that need attention.
 
 ## Mobile behaviour
 
-Compact timestamps use a two-digit year and omit seconds. Tap or focus a
-timestamp to show the complete local time and offset; activate it again to
-collapse it. The underlying `<time>` element retains a machine-readable value.
+Compact timestamps are `DD/MM HH:MM`, on every row including today's. The year
+and the seconds are omitted. Tap or focus a timestamp to show the complete
+local time and offset; activate it again to collapse it. The underlying
+`<time>` element retains a machine-readable value.
 
 Inputs remain at least 16 px on narrow screens to prevent mobile Safari from
 zooming on focus. The web font does not block rendering, so the dashboard

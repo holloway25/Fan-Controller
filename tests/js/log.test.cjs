@@ -82,23 +82,6 @@ tests["event text is never treated as markup"] = async () => {
   assert.ok(/<img/.test(r[0].textContent), r[0].textContent);
 };
 
-tests["today shows a time, older entries show a date"] = async () => {
-  const t = H.now();
-  const { document } = await H.open({
-    state: H.baseState({ events: [
-      { at: t, msg: "today", cls: "" },
-      { at: t - 3 * 86400, msg: "three days ago", cls: "" },
-    ] }),
-  });
-  const r = rows(document);
-  const todayStamp = r[0].querySelector("time").textContent;
-  const oldStamp = r[1].querySelector("time").textContent;
-  assert.ok(/^\d{2}:\d{2}$/.test(todayStamp),
-    "today should be a time only: " + todayStamp);
-  assert.ok(/^\d{2}\/\d{2} \d{2}:\d{2}$/.test(oldStamp),
-    "older should carry a day and month: " + oldStamp);
-};
-
 tests["the timestamp expands on a tap and collapses again"] = async () => {
   const t = H.now();
   const { document, window } = await H.open({
@@ -150,6 +133,30 @@ tests["the expanded form is longer than the column"] = async () => {
     "expanded form has no date: " + el.textContent);
   assert.ok(/[+-]\d{2}:\d{2}$/.test(el.textContent),
     "expanded form has no offset: " + el.textContent);
+};
+
+tests["every row carries a day and month, today included"] = async () => {
+  // Today's rows used to show the time alone, to save width in a
+  // fixed-width column. It read badly: a bare "18:29" sitting below a
+  // dated row leaves the reader working out which day it belongs to,
+  // and entries either side of midnight are minutes apart and a day
+  // apart with only one of them saying so.
+  //
+  // Asserted on BOTH a fresh event and an old one, because the bug
+  // this replaces was conditional on the date matching today - a test
+  // using only an old timestamp passed throughout.
+  const t = H.now();
+  const { document } = await H.open({
+    state: H.baseState({ events: [
+      { at: t, msg: "from today", cls: "" },
+      { at: t - 86400 * 3, msg: "from three days ago", cls: "" },
+    ] }),
+  });
+  for (const row of rows(document)) {
+    const shown = row.querySelector("time").textContent;
+    assert.ok(/^\d{2}\/\d{2} \d{2}:\d{2}$/.test(shown),
+      "row is not dated DD/MM HH:MM: " + JSON.stringify(shown));
+  }
 };
 
 tests["a machine-readable timestamp is on every row"] = async () => {
