@@ -64,6 +64,36 @@ if not os.path.exists(PY):
 # caught by an unrelated crash is not evidence.
 MUTATIONS = [
     # ------------------------------------------------- the safety core
+    #
+    # The run record behind the "Fan off" line. Four consecutive
+    # reviews found the same defect in a different confirmed-stop path,
+    # so each surviving path is claimed separately here rather than
+    # trusting one entry to stand for the set. A stale record does not
+    # move the relay; it makes the activity log name rules that never
+    # ran, against readings from a different run.
+    ("confirmed-off-does-not-end-the-run", "controller.py",
+     '            if actual is False:\n                # A CONFIRMED OFF ENDS THE RUN',
+     '            if False:\n                # A CONFIRMED OFF ENDS THE RUN',
+     "test_actuation.py",
+     "test_a_restart_that_finds_the_plug_off_ends_the_carried_run"),
+    # Unknown is not off. Clearing on an unreadable plug discards a run
+    # that may still be going, on no evidence at all.
+    # Anchored on the comment beneath it: the bare `if actual is False:`
+    # occurs twice, here and in _force_on, and an anchor that matches
+    # both proves nothing about either.
+    ("unreadable-plug-treated-as-off", "controller.py",
+     '            if actual is False:\n                # A CONFIRMED OFF ENDS THE RUN',
+     '            if actual is not True:\n                # A CONFIRMED OFF ENDS THE RUN',
+     "test_actuation.py",
+     "test_an_unreadable_plug_does_not_end_the_run"),
+    # Force on ends the physical run it interrupted. What follows is a
+    # new run and is not driven by the rules at all.
+    ("force-on-carries-the-interrupted-run", "controller.py",
+     '            if actual is False:\n                # The physical run ended',
+     '            if False:\n                # The physical run ended',
+     "test_actuation.py",
+     "test_force_on_ends_the_run_it_interrupted"),
+
     ("generation-guard-never-fires", "controller.py",
      "    return gen is not None and gen != _cfg_generation",
      "    return False",

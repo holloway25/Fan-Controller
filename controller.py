@@ -1662,26 +1662,36 @@ def _fan_status(plug):
 
 
 def _end_run_locked():
-    """Forget which rules ran the fan. Requires _state_lock.
+    """Clear the live run record. Requires _state_lock.
 
-    EVERY CONFIRMED STOP CALLS THIS, AND THERE ARE FIVE OF THEM. Four
-    consecutive reviews found the same defect in a different one, each
-    time because the record was cleared where the stop was convenient
-    to notice rather than everywhere a stop is confirmed:
+    FOR THE CONFIRMED STOPS THAT decide() CANNOT SEE - four of them.
+    Four consecutive reviews found the same defect in a different one,
+    each time because the record was cleared where a stop was
+    convenient to notice rather than everywhere one is confirmed:
 
-      1. tick(), after a commanded switch-off the plug accepted.
-      2. tick(), when the plug is READ as off - someone switched it by
+      1. tick(), when the plug is READ as off - someone switched it by
          hand, from the vendor app, or from a second controller. No
          command is issued, so nothing else on that path can end the
-         run.
-      3. _manual_off_locked(), after the plug takes the manual stop.
+         run. This also covers the first poll after a restart, where
+         the handover has restored a record but not the cached fan
+         state, so there is nothing to have "changed" from.
+      2. _manual_off_locked(), after the plug takes the manual stop.
          tick() returns before the control decision in manual mode, so
          the decision path cannot see this one at all.
-      4. _confirm_fault_stopped(), in the branch where the fault write
+      3. _confirm_fault_stopped(), in the branch where the fault write
          landed. A draw fault ends the run.
-      5. _force_on(), when the plug is confirmed off before being
+      4. _force_on(), when the plug is confirmed off before being
          forced back on. The physical run ended even though the fan is
          about to start again, and the new run is not the old one.
+
+    THE COMMANDED AUTOMATIC STOP IS NOT ONE OF THESE, and deliberately
+    so. decide() clears a COPY, and tick() commits that copy only once
+    the relay has accepted the switch-off - so a stop the plug refused
+    leaves the live record intact for the retry to name. Routing it
+    through here instead would clear on intent rather than on
+    confirmation, which is the defect this whole sequence began with.
+    So the clearing is not literally in one place; it is in one place
+    per transaction model, and this is the non-transactional half.
 
     ONLY ON A CONFIRMED OFF. An unreadable plug is unknown, not off,
     and clearing on unknown would lose a run that is still going.
