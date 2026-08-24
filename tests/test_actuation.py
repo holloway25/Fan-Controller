@@ -556,5 +556,185 @@ def test_an_unstoppable_relay_keeps_the_promise_owed():
     return "unconfirmed stop stays owed"
 
 
+
+
+# ------------------------------------------------- the per-run rule record
+#
+# THESE GO THROUGH tick() AND THE RELAY PATHS ON PURPOSE. The first set
+# of tests for this feature called decide() directly, and decide() is
+# not where the lifecycle lives: production returns before it in manual
+# mode, and calls it before the relay has agreed to anything. Every one
+# of the four defects reported against 1ff1415 was invisible from
+# there and obvious from here.
+
+
+class _Protect(object):
+    """Readings high enough to latch CO2 and temperature."""
+
+    def __init__(self, co2=1200.0, temp=27.0, humidity=50.0):
+        self._v = {"co2": co2, "temp": temp, "humidity": humidity,
+                   "temperature": temp}
+
+    def readings(self, sid):
+        return dict(self._v), "fake"
+
+
+def _auto(C, plug, protect, fan=False, ran_with=None, fault=None):
+    """Wire tick() to fixtures and run one real poll."""
+    C.CFG["protect"]["sensor_id"] = "fake-sensor-id"
+    C.CFG["control"].update(mode="auto", stale_minutes=0, min_run_minutes=0,
+                            on_at=1000.0, off_at=700.0,
+                            temp_enabled=True, temp_on=26.5, temp_off=24.0,
+                            humidity_enabled=False)
+    with C._state_lock:
+        C.STATE.update(fan=fan, fault=fault,
+                       changed_at=C.time.time() - 10000)
+        C.STATE["ran_with"] = dict(ran_with or {})
+    C._client_snapshot = lambda: (protect, plug, C._cfg_generation)
+    return C.tick()
+
+
+def test_a_failed_start_does_not_record_rules_for_a_fan_that_never_ran():
+    """The relay refused, so nothing ran, so nothing should be named.
+
+    decide() is called before h.set(). Handing it the live record meant
+    a failed switch-on left CO2 and temperature recorded against a fan
+    that never started, and the next genuine stop named them.
+    """
+    C = harness.load()
+    plug = BrokenPlug(C, on=False)
+    try:
+        _auto(C, plug, _Protect(), fan=False)
+    except C.PlugError:
+        pass
+    assert C.STATE["ran_with"] == {}, \
+        "rules were recorded for a start that failed: %r" % C.STATE["ran_with"]
+    return "a failed start records nothing"
+
+
+def test_a_failed_stop_keeps_the_run_record():
+    """The fan is still running, so the run is not over.
+
+    Clearing on the attempt meant the retry that finally stopped the
+    fan had nothing left to name.
+    """
+    C = harness.load()
+    plug = BrokenPlug(C, on=True)
+    try:
+        _auto(C, plug, _Protect(co2=650.0, temp=22.0), fan=True,
+              ran_with={"co2": True, "temp": True})
+    except C.PlugError:
+        pass
+    assert C.STATE["ran_with"].get("co2") is True, \
+        "a failed stop discarded the run: %r" % C.STATE["ran_with"]
+    assert C.STATE["ran_with"].get("temp") is True, C.STATE["ran_with"]
+    return "a failed stop keeps the run"
+
+
+def test_a_confirmed_stop_names_the_run_and_then_clears_it():
+    """The whole point, end to end through tick()."""
+    C = harness.load()
+    plug = Plug(on=True)
+    with C._state_lock:
+        C.STATE["events"] = []
+    _auto(C, plug, _Protect(co2=650.0, temp=22.0), fan=True,
+          ran_with={"co2": True, "temp": True})
+    assert plug.calls == [False], plug.calls
+    log = events(C)
+    assert "650 ppm" in log and "22.0 C" in log, log
+    assert C.STATE["ran_with"] == {}, \
+        "the record survived a confirmed stop: %r" % C.STATE["ran_with"]
+    return "named, then cleared"
+
+
+def test_a_mid_run_cycle_commits_what_it_accumulated():
+    """No relay command, but a rule latched. It must still be recorded."""
+    C = harness.load()
+    plug = Plug(on=True)
+    # CO2 already holding the fan on; temperature crosses now.
+    with C._state_lock:
+        C.STATE["latch"]["co2"] = True
+    _auto(C, plug, _Protect(co2=1200.0, temp=27.0), fan=True)
+    assert plug.calls == [], "no switch should have been needed"
+    assert C.STATE["ran_with"].get("temp") is True, \
+        "a rule that latched mid-run was not recorded: %r" % C.STATE["ran_with"]
+    return "mid-run accumulation is committed"
+
+
+def test_a_manual_stop_clears_the_run_record():
+    """PRODUCTION MANUAL NEVER REACHES decide().
+
+    tick() calls _manual_off() and returns before the control decision,
+    so the clear inside decide() is dead code on this path. The stop
+    that actually happens has to do it.
+    """
+    C = harness.load()
+    plug = Plug(on=True)
+    C.CFG["control"]["mode"] = "manual"
+    with C._state_lock:
+        C.STATE["manual_off_pending"] = True
+        C.STATE["ran_with"] = {"co2": True, "temp": True}
+    with C._act_lock:
+        C._manual_off_locked(plug)
+    assert plug.calls == [False], plug.calls
+    assert C.STATE["ran_with"] == {}, \
+        "a manual stop left the run record behind: %r" % C.STATE["ran_with"]
+    return "manual stop ends the run"
+
+
+def test_a_manual_stop_that_failed_keeps_the_run_record():
+    """The flag stays set and the stop is retried, so the run stands."""
+    C = harness.load()
+    plug = BrokenPlug(C, on=True)
+    C.CFG["control"]["mode"] = "manual"
+    with C._state_lock:
+        C.STATE["manual_off_pending"] = True
+        C.STATE["ran_with"] = {"co2": True}
+    try:
+        with C._act_lock:
+            C._manual_off_locked(plug)
+    except C.PlugError:
+        pass
+    assert C.STATE["ran_with"].get("co2") is True, \
+        "a failed manual stop discarded the run: %r" % C.STATE["ran_with"]
+    return "a failed manual stop keeps the run"
+
+
+def test_a_confirmed_fault_stop_clears_the_run_record():
+    """A draw fault ends the run, as the documentation says it does."""
+    C = harness.load()
+    with C._state_lock:
+        C.STATE["fault"] = {"at": C.time.time(), "msg": "draw fault",
+                            "stopped": False}
+        C.STATE["ran_with"] = {"humidity": True}
+    assert C._confirm_fault_stopped() is True, "the stop was not confirmed"
+    assert C.STATE["ran_with"] == {}, \
+        "a confirmed fault stop left the run record: %r" % C.STATE["ran_with"]
+    return "a confirmed fault stop ends the run"
+
+
+def test_an_unconfirmed_fault_stop_keeps_the_run_record():
+    """Until the stop lands the fan may still be running on those rules.
+
+    _confirm_fault_stopped writes to disk first and returns False if
+    that write fails, leaving the stop to be retried. The record has to
+    survive that, for the same reason the failed relay stop does.
+    """
+    C = harness.load()
+
+    def boom(_snap):
+        raise OSError("disk full")
+
+    C.save_fault = boom
+    with C._state_lock:
+        C.STATE["fault"] = {"at": C.time.time(), "msg": "draw fault",
+                            "stopped": False}
+        C.STATE["ran_with"] = {"humidity": True}
+    assert C._confirm_fault_stopped() is False, "an unsaved stop was confirmed"
+    assert C.STATE["ran_with"].get("humidity") is True, \
+        "an unconfirmed fault stop discarded the run: %r" % C.STATE["ran_with"]
+    return "an unconfirmed fault stop keeps the run"
+
+
 if __name__ == "__main__":
     sys.exit(harness.run(dict(globals())))

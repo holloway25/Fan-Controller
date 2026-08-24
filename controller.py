@@ -1698,6 +1698,12 @@ def _manual_off_locked(plug):
         STATE["manual_off_pending"] = False
         STATE["fan"] = False
         STATE["changed_at"] = time.time()
+        # THE RUN ENDED HERE, and this is the only place that can say
+        # so. tick() returns before decide() in manual mode, so the
+        # clear inside decide() never runs in production - a stop this
+        # path made would otherwise leave its rules to be named by
+        # whatever Auto run came next.
+        STATE["ran_with"] = {}
     # Only now: the plug has confirmed, so the promise is discharged.
     clear_manual_off_promise()
     if not already_off:
@@ -1941,16 +1947,34 @@ def tick():
         if gen != _cfg_generation:
             _wake.set()
             return
+        # A COPY, COMMITTED ONLY ONCE THE RELAY HAS AGREED. decide()
+        # mutates what it is given, and it is called BEFORE h.set().
+        # Handing it the live record meant a switch-on that then failed
+        # left rules recorded for a fan that never started, and a
+        # failed switch-off cleared the record of a run still going -
+        # so the eventual stop line named the wrong run, or no run.
+        # Nothing here changes the relay; it changes whether the
+        # activity log tells the truth about it.
+        ran_snapshot = dict(STATE["ran_with"])
         want, why = decide(co2, vals.get('temperature'), fan_on, cur,
                            ran_for, STATE["latch"], STATE["fault"],
                            humidity=vals.get('humidity'),
-                           ran_with=STATE["ran_with"])
+                           ran_with=ran_snapshot)
         if want is None or want == fan_on:
+            # No command needed, so the fan is already in the state the
+            # record describes. This is the path most cycles take, and
+            # the one that accumulates a rule latching mid-run.
+            with _state_lock:
+                STATE["ran_with"] = ran_snapshot
             return
         h.set(want)
         with _state_lock:
             STATE["fan"] = want
             STATE["changed_at"] = now
+            # Committed here and not before: if h.set raised we never
+            # reach this line, the live record is untouched, and the
+            # retry on the next cycle still has the run to name.
+            STATE["ran_with"] = ran_snapshot
     _log("Fan %s \u2014 %s" % ("on" if want else "off", why))
 
 
@@ -2929,6 +2953,12 @@ def _confirm_fault_stopped():
                 if STATE["fault"] is not None:
                     STATE["fault"]["stopped"] = True
                     STATE["fault_unsaved"] = False
+                # The fan is confirmed off and a fault is standing, so
+                # the run is over. Cleared on CONFIRMATION rather than
+                # when the fault was raised: an unconfirmed stop may
+                # still be retried, and until it lands the fan may yet
+                # be running on the rules recorded here.
+                STATE["ran_with"] = {}
     if report_unsaved:
         _unsaved_edge()
         return False

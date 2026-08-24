@@ -42,11 +42,18 @@ Rules that were never latched are not named. A CO2-only run reports
 `Fan off - 672 ppm`, not the temperature and humidity readings that had no
 bearing on it.
 
-The record is per-run and is cleared when the fan stops. Switching to Manual
-and latching a draw fault both end a run without a rule releasing, and both
-clear it too. A requested restart carries it; a cold start does not, and
-`FC-301` announces that so a shorter line afterwards is not read as the whole
-story.
+The record is per-run and is tied to what the relay confirmed, not to what was
+decided. It is committed only once a switch has been accepted, so a switch-on
+that failed records nothing and a switch-off that failed keeps the run intact
+for the retry that eventually stops the fan.
+
+It is cleared when a stop is confirmed. Switching to Manual and a draw fault
+both end a run without a rule releasing, and both clear it at the point the
+stop is confirmed rather than when the mode changed or the fault was raised -
+until the stop lands, the fan may still be running on the rules recorded.
+
+A requested restart carries it; a cold start does not, and `FC-301` announces
+that so a shorter line afterwards is not read as the whole story.
 
 ## Latch storage
 
