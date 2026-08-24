@@ -1661,6 +1661,38 @@ def _fan_status(plug):
         return None
 
 
+def _end_run_locked():
+    """Forget which rules ran the fan. Requires _state_lock.
+
+    EVERY CONFIRMED STOP CALLS THIS, AND THERE ARE FIVE OF THEM. Four
+    consecutive reviews found the same defect in a different one, each
+    time because the record was cleared where the stop was convenient
+    to notice rather than everywhere a stop is confirmed:
+
+      1. tick(), after a commanded switch-off the plug accepted.
+      2. tick(), when the plug is READ as off - someone switched it by
+         hand, from the vendor app, or from a second controller. No
+         command is issued, so nothing else on that path can end the
+         run.
+      3. _manual_off_locked(), after the plug takes the manual stop.
+         tick() returns before the control decision in manual mode, so
+         the decision path cannot see this one at all.
+      4. _confirm_fault_stopped(), in the branch where the fault write
+         landed. A draw fault ends the run.
+      5. _force_on(), when the plug is confirmed off before being
+         forced back on. The physical run ended even though the fan is
+         about to start again, and the new run is not the old one.
+
+    ONLY ON A CONFIRMED OFF. An unreadable plug is unknown, not off,
+    and clearing on unknown would lose a run that is still going.
+
+    A stop that was attempted and FAILED must not call this: the fan
+    may still be running, the stop will be retried, and the retry needs
+    the record to name.
+    """
+    STATE["ran_with"].clear()
+
+
 def _manual_off(plug, gen=None):
     """The one-time switch-off on entering manual mode.
 
@@ -1698,12 +1730,9 @@ def _manual_off_locked(plug):
         STATE["manual_off_pending"] = False
         STATE["fan"] = False
         STATE["changed_at"] = time.time()
-        # THE RUN ENDED HERE, and this is the only place that can say
-        # so. tick() returns before decide() in manual mode, so the
-        # clear inside decide() never runs in production - a stop this
-        # path made would otherwise leave its rules to be named by
-        # whatever Auto run came next.
-        STATE["ran_with"] = {}
+        # tick() returns before the control decision in manual mode,
+        # so this is the only place that can end this run.
+        _end_run_locked()
     # Only now: the plug has confirmed, so the promise is discharged.
     clear_manual_off_promise()
     if not already_off:
@@ -1747,6 +1776,13 @@ def _force_on(plug, gen=None):
             return
         with _state_lock:
             was_on = STATE["fan"] is True
+            if actual is False:
+                # The physical run ended, even though the fan is about
+                # to be forced back on. What follows is a NEW run and
+                # is not driven by the rules at all, so carrying the
+                # old record into it would let a later Auto stop name
+                # rules from before the override.
+                _end_run_locked()
         if actual is False and was_on:
             # Confirmed off while we believed it on, so something else
             # switched it. Recorded before we undo it, as the automatic
@@ -1861,6 +1897,19 @@ def tick():
             STATE["history_rev"] += 1
             hsnap = list(STATE["history"])
             prev = STATE["fan"]
+            if actual is False:
+                # A CONFIRMED OFF ENDS THE RUN, however we got here and
+                # whatever we believed a moment ago. Deliberately not
+                # inside the "changed" branch below: after a requested
+                # restart STATE["fan"] is None, so an off plug is not a
+                # CHANGE and that branch is skipped - while the
+                # handover has just restored a run record from before
+                # the restart. Deliberately not guarded on the previous
+                # value either, for the same reason.
+                #
+                # Harmless when the fan was already off and the record
+                # already empty, which is the common case.
+                _end_run_locked()
             if actual is not None and actual != prev:
                 # Someone switched it outside this service. Trust the
                 # bridge, and restart the minimum-run clock from now.
@@ -1871,24 +1920,6 @@ def tick():
                     # must not grant a fresh lease to a fan that was
                     # already running.
                     STATE["changed_at"] = now
-                    if prev and not actual:
-                        # THE RUN ENDED, AND NOTHING ELSE WILL SAY SO.
-                        # Someone switched the plug off by hand or from
-                        # the vendor app. decide() then sees a fan that
-                        # is already off, wants it off, and returns on
-                        # the no-command path - which commits the
-                        # record back unchanged. The rules from the
-                        # finished run survived into the next one and
-                        # were printed against ITS readings, so a
-                        # CO2-only run stopped with a temperature
-                        # figure that had never triggered anything.
-                        #
-                        # Cleared here rather than in decide() for the
-                        # same reason the Manual and fault stops are:
-                        # this is where the stop is confirmed. The
-                        # plug has been read, not commanded, and it
-                        # says the fan is off.
-                        STATE["ran_with"].clear()
                     ext_msg = ("%s Fan %s \u2014 changed outside (%s)"
                                % (FC_EXTERNAL_CHANGE,
                                   "on" if actual else "off",
@@ -2971,12 +3002,11 @@ def _confirm_fault_stopped():
                 if STATE["fault"] is not None:
                     STATE["fault"]["stopped"] = True
                     STATE["fault_unsaved"] = False
-                # The fan is confirmed off and a fault is standing, so
-                # the run is over. Cleared on CONFIRMATION rather than
-                # when the fault was raised: an unconfirmed stop may
-                # still be retried, and until it lands the fan may yet
-                # be running on the rules recorded here.
-                STATE["ran_with"] = {}
+                # Confirmed, so the run is over. Reached only when
+                # the fault write landed: an unconfirmed stop is
+                # retried, and until it lands the fan may still be
+                # running on the rules recorded here.
+                _end_run_locked()
     if report_unsaved:
         _unsaved_edge()
         return False

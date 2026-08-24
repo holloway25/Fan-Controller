@@ -47,17 +47,32 @@ decided. It is committed only once a switch has been accepted, so a switch-on
 that failed records nothing and a switch-off that failed keeps the run intact
 for the retry that eventually stops the fan.
 
-It is cleared when a stop is confirmed, whichever path stopped the fan. Three
-end a run without any rule releasing: switching to Manual, a draw fault, and
-someone switching the plug off outside this controller. Each clears the record
-at the point the stop is confirmed rather than when the mode changed, the fault
-was raised, or the switch was noticed - until the stop lands, the fan may still
-be running on the rules recorded.
+It is cleared wherever a stop is confirmed, and there are five such places:
 
-The external case is the one with no command behind it: the plug is read, not
-switched, and the controller simply agrees the fan is off. Automatic control
-sees a fan already in the state it wants and issues nothing, so nothing else on
-that path can end the run.
+| Path | Confirmed by |
+|---|---|
+| Automatic stop | the plug accepting the switch-off |
+| Plug read as off | the plug reporting off, with nothing commanded |
+| Manual | the plug taking the one-time manual stop |
+| Draw fault | the fault record reaching disk |
+| Force on | the plug reporting off before it is forced back on |
+
+The distinction throughout is CONFIRMED, not intended. A stop that was
+attempted and failed leaves the record intact, because the fan may still be
+running and the retry needs it. A plug that cannot be read is unknown rather
+than off, and clears nothing.
+
+Three of these end a run with no rule releasing, so the control decision never
+sees them. Manual returns before the decision is made at all; a plug read as
+off leaves automatic control looking at a fan already in the state it wants, so
+it issues nothing; and Force on ends the physical run even though the fan is
+about to start again, because what follows is a new run and is not driven by
+the rules.
+
+The plug-read case also covers the first poll after a restart, where the
+handover has restored a run record but not the cached fan state. That is why it
+is expressed as a confirmed OFF rather than as a change of state - at that
+point there is nothing to have changed from.
 
 A requested restart carries it; a cold start does not, and `FC-301` announces
 that so a shorter line afterwards is not read as the whole story.

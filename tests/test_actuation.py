@@ -716,6 +716,84 @@ def test_a_run_record_does_not_survive_into_the_next_run():
     return "each run is reported on its own"
 
 
+def test_a_restart_that_finds_the_plug_off_ends_the_carried_run():
+    """prev is None here, so "changed" is the wrong question to ask.
+
+    The handover restores the run record but not STATE["fan"], so the
+    first poll after a requested restart has prev=None. An off plug is
+    then not a CHANGE, the external branch is skipped, and a record
+    carried across the restart survived into whatever ran next.
+    """
+    C = harness.load()
+    plug = Plug(on=False)
+    _auto(C, plug, _Protect(co2=650.0, temp=22.0),
+          fan=None,                                  # as after a handover
+          ran_with={"co2": True, "temp": True})
+    assert plug.calls == [], "nothing should have been commanded"
+    assert C.STATE["ran_with"] == {}, \
+        "a carried run record outlived the restart: %r" % C.STATE["ran_with"]
+    return "a restart onto an off plug ends the run"
+
+
+def test_force_on_ends_the_run_it_interrupted():
+    """Forcing back on starts a NEW run, and it is not the old one.
+
+    _force_on confirms the plug is off, logs the external switch and
+    re-asserts. The physical run ended at the switch; carrying its
+    rules forward lets a later Auto stop name them.
+    """
+    C = harness.load()
+    C.CFG["control"]["mode"] = "on"
+    with C._state_lock:
+        C.STATE.update(fan=True, fault=None, events=[],
+                       changed_at=C.time.time() - 10000)
+        C.STATE["ran_with"] = {"co2": True, "temp": True}
+    plug = Plug(on=False)
+    C._force_on(plug, C._cfg_generation)
+    assert plug.calls == [True], "the fan was not forced back on"
+    assert C.STATE["ran_with"] == {}, \
+        "Force on carried the interrupted run: %r" % C.STATE["ran_with"]
+    # The evidence of the external switch must survive the clear.
+    assert "changed outside" in events(C), events(C)
+    return "Force on ends the interrupted run"
+
+
+def test_an_unreadable_plug_does_not_end_the_run():
+    """Unknown is not off.
+
+    _fan_status returns None when the plug cannot be read. Clearing on
+    that would discard a run that is still going, on no evidence.
+
+    THE READINGS ARE BELOW EVERY THRESHOLD AND THE LEASE IS FRESH, so
+    the cycle latches nothing and commands nothing. The first version
+    of this test used readings that re-latched both rules on the same
+    cycle, which refilled the record whether or not the clear had run -
+    it passed against a mutation that cleared on an unreadable plug,
+    which is the only thing it exists to catch.
+    """
+    C = harness.load()
+    C.CFG["protect"]["sensor_id"] = "fake-sensor-id"
+    C.CFG["control"].update(mode="auto", stale_minutes=0,
+                            min_run_minutes=15,          # lease still held
+                            on_at=1000.0, off_at=700.0,
+                            temp_enabled=True, temp_on=26.5, temp_off=24.0,
+                            humidity_enabled=False)
+    plug = Plug(on=True, readable=False)
+    with C._state_lock:
+        C.STATE.update(fan=True, fault=None, events=[],
+                       changed_at=C.time.time())        # lease just started
+        C.STATE["ran_with"] = {"co2": True}
+        C.STATE["latch"] = {"co2": True, "temp": False, "humidity": False}
+    C._client_snapshot = lambda: (_Protect(co2=650.0, temp=22.0), plug,
+                                  C._cfg_generation)
+    C.tick()
+
+    assert plug.calls == [], "nothing should have been commanded: %r" % plug.calls
+    assert C.STATE["ran_with"].get("co2") is True, \
+        "an unreadable plug was treated as a stop: %r" % C.STATE["ran_with"]
+    return "an unreadable plug keeps the run"
+
+
 def test_a_manual_stop_clears_the_run_record():
     """PRODUCTION MANUAL NEVER REACHES decide().
 
