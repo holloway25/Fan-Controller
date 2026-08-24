@@ -140,6 +140,60 @@ def test_humidity_latches_above_and_releases_below():
     assert latch["humidity"] is False and want is False
 
 
+def test_a_stop_names_only_the_rule_that_was_holding_it_on():
+    """THE STOP LINE IS ABOUT ONE RULE, not every enabled metric.
+
+    With CO2, temperature and humidity all enabled but only CO2 ever
+    latching, the log read "Fan off - 672 ppm, 21.9 C, 54% RH". The
+    two extra numbers were never part of the decision, and their
+    presence implies they were.
+
+    Asserted by ABSENCE as well as presence: a test that only checked
+    the CO2 figure was there would pass against the old line too.
+    """
+    latch = fresh()
+    c = cfg(temp_enabled=True, temp_on=26.5, temp_off=24.0,
+            humidity_enabled=True, humidity_on=70.0, humidity_off=60.0)
+    latch["humidity"] = False
+    # CO2 alone takes the fan on.
+    want, _ = C.decide(1200, 21.9, False, c, None, latch, humidity=54.0)
+    assert want is True and latch["co2"] is True, (want, latch)
+    # ...and CO2 alone releasing is what stops it.
+    want, why = C.decide(672, 21.9, True, c, 9999, latch, humidity=54.0)
+    assert want is False, (want, why)
+    assert "672 ppm" in why, why
+    assert "21.9 C" not in why, "an unlatched rule appeared in the stop: %r" % why
+    assert "54% RH" not in why, "an unlatched rule appeared in the stop: %r" % why
+    return "the stop names CO2 only"
+
+
+def test_a_stop_names_every_rule_that_was_holding_it_on():
+    """Two latched rules releasing together are both the reason."""
+    latch = fresh()
+    c = cfg(temp_enabled=True, temp_on=26.5, temp_off=24.0)
+    want, _ = C.decide(1200, 27.0, False, c, None, latch)
+    assert want is True and latch["co2"] and latch["temp"], latch
+    want, why = C.decide(672, 23.0, True, c, 9999, latch)
+    assert want is False, (want, why)
+    assert "672 ppm" in why and "23.0 C" in why, why
+    return "both released rules named"
+
+
+def test_a_stop_with_nothing_latched_still_says_something():
+    """Auto taking back a fan it never started.
+
+    No rule released, so there is nothing to name. The fallback must
+    not produce the empty string the "Fan on" branch was already fixed
+    for once.
+    """
+    latch = fresh()
+    want, why = C.decide(500, None, True, cfg(), 9999, latch)
+    assert want is False, (want, why)
+    assert why and why.strip(), "a stop with no latch printed nothing"
+    assert "500 ppm" in why, why
+    return "falls back to the enabled readings"
+
+
 def test_humidity_disabled_by_default():
     latch = fresh()
     C.decide(400, None, False, cfg(), None, latch, humidity=95.0)

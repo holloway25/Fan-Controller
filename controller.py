@@ -1537,6 +1537,10 @@ def decide(co2, temp, fan_on, c, ran_for, latch, fault=None,
         for r in RULES:
             latch[r["key"]] = False
         return None, None
+    # Snapshot before the loop mutates it. The stop line names the
+    # rules that were HOLDING the fan on, and by the time the decision
+    # is reached every one of them has already released.
+    was_latched = {r["key"]: bool(latch.get(r["key"])) for r in RULES}
     for r in RULES:
         key, val = r["key"], readings.get(r["key"])
         if not bool(c.get(r["flag"], r["default"])):
@@ -1583,8 +1587,28 @@ def decide(co2, temp, fan_on, c, ran_for, latch, fault=None,
     if fan_on and ran_for is not None and \
             ran_for < c["min_run_minutes"] * 60:
         return None, None
-    parts = [r["fmt"](readings[r["key"]]) for r in active_rules(c)
-             if readings.get(r["key"]) is not None]
+    # NAME WHAT WAS HOLDING IT ON, not every metric that happens to be
+    # enabled. A CO2-driven run ended with "Fan off - 672 ppm, 21.9 C,
+    # 54% RH": three numbers, two with no bearing on the stop, and the
+    # reader still left to work out which rule released. "Fan on"
+    # already names only its trigger, so this makes the pair read the
+    # same way round.
+    #
+    # A rule that was latched has a reading here by construction - a
+    # missing one leaves the latch alone, which would have kept the fan
+    # on - except where the rule was disabled mid-run, so the None
+    # guard stays.
+    parts = [r["fmt"](readings[r["key"]]) for r in RULES
+             if was_latched.get(r["key"])
+             and readings.get(r["key"]) is not None]
+    if not parts:
+        # Nothing was latched, so no rule released and there is nothing
+        # to name. The fan was on for some other reason and Auto is
+        # taking it back. Report the enabled readings rather than
+        # nothing, which is the empty-string the "Fan on" branch above
+        # already had to be fixed for.
+        parts = [r["fmt"](readings[r["key"]]) for r in active_rules(c)
+                 if readings.get(r["key"]) is not None]
     return False, ", ".join(parts) if parts else "no reading"
 
 
