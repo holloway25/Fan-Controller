@@ -337,6 +337,60 @@ def test_the_cold_start_line_is_written_before_the_threads_start():
     return "written before the first poll"
 
 
+def test_the_run_record_survives_a_requested_restart():
+    """A restart mid-run must not shorten the stop line that follows.
+
+    `ran_with` records which rules have latched during the current run
+    so the stop can name all of them. It is memory-only, like the
+    latches, so without carrying it a restart halfway through a run
+    produces a stop that names only whatever was still latched at the
+    end - silently under-reporting, with nothing to say it had.
+
+    A cold start loses it and that is accepted: FC-301 already says no
+    latch was carried, which is the reader's cue that the line after it
+    describes less than the whole run.
+    """
+    C = harness.load()
+    with C._state_lock:
+        C.STATE["latch"]["co2"] = True
+        C.STATE["ran_with"] = {"co2": True, "temp": True}
+    carried = json.dumps(C._resume_payload())
+
+    with C._state_lock:
+        C.STATE["ran_with"] = {}
+    C.os.environ[C.RESUME_ENV] = carried
+    assert C._apply_resume() is True, "the handover was not taken"
+
+    assert C.STATE["ran_with"].get("co2") is True, \
+        "the run record was lost, so the stop will under-report"
+    assert C.STATE["ran_with"].get("temp") is True, \
+        "a rule that ran was dropped from the run record"
+    return "the run record is carried"
+
+
+def test_a_junk_run_record_is_discarded_not_trusted():
+    """Same rule as the latches: a real bool, and a known rule.
+
+    This one only shapes a log line rather than the fan, but a restart
+    that invented a rule would misattribute the stop that follows it.
+    """
+    C = harness.load()
+    with C._state_lock:
+        C.STATE["ran_with"] = {}
+    payload = json.loads(json.dumps(C._resume_payload()))
+    payload["ran_with"] = {"co2": "yes", "temp": True, "nonsense": True}
+    C.os.environ[C.RESUME_ENV] = json.dumps(payload)
+    assert C._apply_resume() is True, "the handover was not taken"
+
+    assert "co2" not in C.STATE["ran_with"], \
+        "a truthy string was taken as a rule that ran"
+    assert "nonsense" not in C.STATE["ran_with"], \
+        "an unknown rule survived the handover"
+    assert C.STATE["ran_with"].get("temp") is True, \
+        "a valid entry was discarded alongside the junk"
+    return "junk dropped, the valid entry kept"
+
+
 def test_handover_is_consumed_exactly_once():
     """Left in place it would resume a lease that expired long ago."""
     C = harness.load()

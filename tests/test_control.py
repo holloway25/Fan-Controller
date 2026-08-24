@@ -179,6 +179,96 @@ def test_a_stop_names_every_rule_that_was_holding_it_on():
     return "both released rules named"
 
 
+def test_a_stop_names_rules_that_released_earlier_in_the_run():
+    """THE WHOLE RUN, not whichever rule happened to let go last.
+
+    Temperature and humidity take the fan on alongside CO2, then both
+    fall back inside their bands while CO2 keeps it running. Snapshotting
+    the latches at the stop names CO2 alone, which is true of that
+    instant and misleading about the run: the fan ran on three rules.
+
+    The mid-run cycle returns want=True with no message, so the only
+    place this can be recorded is the accumulator - and the only way to
+    catch a regression is a stop that happens SEVERAL cycles after the
+    releases.
+    """
+    latch = fresh()
+    ran = {}
+    c = cfg(temp_enabled=True, temp_on=26.5, temp_off=24.0,
+            humidity_enabled=True, humidity_on=70.0, humidity_off=60.0)
+    C.decide(1200, 27.0, False, c, None, latch, humidity=75.0, ran_with=ran)
+    # Temperature and humidity release; CO2 alone holds the fan on.
+    C.decide(1200, 23.0, True, c, 9999, latch, humidity=55.0, ran_with=ran)
+    assert latch["temp"] is False and latch["humidity"] is False, latch
+    want, why = C.decide(672, 23.0, True, c, 9999, latch,
+                         humidity=55.0, ran_with=ran)
+    assert want is False, (want, why)
+    for expected in ("672 ppm", "23.0 C", "55% RH"):
+        assert expected in why, \
+            "a rule that ran was dropped from the stop: %r" % why
+    return "the whole run is named"
+
+
+def test_a_rule_that_joined_mid_run_is_named_at_the_stop():
+    """Latching later still counts as having run the fan."""
+    latch = fresh()
+    ran = {}
+    c = cfg(temp_enabled=True, temp_on=26.5, temp_off=24.0)
+    C.decide(1200, 20.0, False, c, None, latch, ran_with=ran)
+    C.decide(1200, 27.0, True, c, 9999, latch, ran_with=ran)
+    want, why = C.decide(672, 23.0, True, c, 9999, latch, ran_with=ran)
+    assert want is False, (want, why)
+    assert "672 ppm" in why and "23.0 C" in why, why
+    return "a late latch is still part of the run"
+
+
+def test_the_run_record_does_not_leak_into_the_next_run():
+    """The accumulator is per-run, and the stop is what ends it.
+
+    Without a reset, the next CO2-only run would report temperature and
+    humidity it never touched - the original defect, made worse by
+    being wrong about a different run.
+    """
+    latch = fresh()
+    ran = {}
+    c = cfg(temp_enabled=True, temp_on=26.5, temp_off=24.0,
+            humidity_enabled=True, humidity_on=70.0, humidity_off=60.0)
+    C.decide(1200, 27.0, False, c, None, latch, humidity=75.0, ran_with=ran)
+    C.decide(672, 23.0, True, c, 9999, latch, humidity=55.0, ran_with=ran)
+    assert ran == {}, "the accumulator survived the stop: %r" % ran
+    # A second run on CO2 alone.
+    C.decide(1200, 20.0, False, c, None, latch, humidity=40.0, ran_with=ran)
+    want, why = C.decide(672, 20.0, True, c, 9999, latch,
+                         humidity=40.0, ran_with=ran)
+    assert want is False, (want, why)
+    assert "672 ppm" in why, why
+    assert "C" not in why and "RH" not in why, \
+        "the previous run's rules appeared in this stop: %r" % why
+    return "each run is named on its own"
+
+
+def test_manual_mode_ends_the_run_record():
+    """Switching to Manual ends the run, so nothing carries out of it."""
+    latch = fresh()
+    ran = {}
+    c = cfg(temp_enabled=True, temp_on=26.5, temp_off=24.0)
+    C.decide(1200, 27.0, False, c, None, latch, ran_with=ran)
+    assert ran, "nothing was recorded to begin with"
+    C.decide(1200, 27.0, True, cfg(mode="manual"), 9999, latch, ran_with=ran)
+    assert ran == {}, "Manual left a run record behind: %r" % ran
+    return "Manual clears the run record"
+
+
+def test_a_stop_still_works_without_a_run_record():
+    """ran_with is optional; callers testing one decision omit it."""
+    latch = fresh()
+    c = cfg(temp_enabled=True, temp_on=26.5, temp_off=24.0)
+    C.decide(1200, 27.0, False, c, None, latch)
+    want, why = C.decide(672, 23.0, True, c, 9999, latch)
+    assert want is False and "672 ppm" in why, (want, why)
+    return "falls back to the latches at the stop"
+
+
 def test_a_stop_with_nothing_latched_still_says_something():
     """Auto taking back a fan it never started.
 

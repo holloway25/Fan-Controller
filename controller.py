@@ -1277,6 +1277,13 @@ STATE = {
     "temperature": None, "humidity": None, "pm25": None,
     "watts": None, "watts_at": None,
     "latch": {"co2": False, "temp": False, "humidity": False},
+    # Which rules have latched at any point during the CURRENT run.
+    # Separate from "latch" rather than folded into it because that dict
+    # is the live state - the handover iterates its keys and the stop
+    # confirmation reads them - and a rule that released an hour ago
+    # must not read as still holding the fan on. Accumulated while the
+    # fan runs, cleared when it stops.
+    "ran_with": {},
     "manual_off_pending": False,
     "history": [], "events": [], "history_rev": 0, "fault": None,
     # True when the fault in memory could not be written to disk, so
@@ -1513,7 +1520,7 @@ def active_rules(c):
 
 
 def decide(co2, temp, fan_on, c, ran_for, latch, fault=None,
-           humidity=None):
+           humidity=None, ran_with=None):
     """Per-rule latching hysteresis. Mutates `latch` in place.
 
     Each input latches on above its own on-level and releases below its
@@ -1524,6 +1531,12 @@ def decide(co2, temp, fan_on, c, ran_for, latch, fault=None,
     With every rule disabled there is nothing to latch, so Auto never
     starts the fan. That is allowed - the UI warns rather than refusing -
     and the stale-reading fail-safe still runs.
+
+    `ran_with`, when given, is mutated in place to record every rule
+    that has latched during the current run, so the stop line can name
+    all of them and not merely whichever was last to let go. It is
+    cleared when the fan stops. Optional so that callers testing a
+    single decision need not carry run-length state.
     """
     readings = {"co2": co2, "temp": temp, "humidity": humidity}
     if c["mode"] == "on":
@@ -1532,10 +1545,17 @@ def decide(co2, temp, fan_on, c, ran_for, latch, fault=None,
     # repaired fan can be tested. Past here, a fault blocks automatic
     # starts, including the stale-reading failsafe.
     if fault:
+        if ran_with is not None:
+            ran_with.clear()
         return False, "draw fault"
     if c["mode"] == "manual":
         for r in RULES:
             latch[r["key"]] = False
+        # The run is over and no rule ended it. Leaving the accumulator
+        # populated would let a later Auto stop name rules from a run
+        # that finished before the mode changed.
+        if ran_with is not None:
+            ran_with.clear()
         return None, None
     # Snapshot before the loop mutates it. The stop line names the
     # rules that were HOLDING the fan on, and by the time the decision
@@ -1571,6 +1591,13 @@ def decide(co2, temp, fan_on, c, ran_for, latch, fault=None,
         elif val <= c[r["off"]]:
             latch[key] = False
     want = any(latch.get(r["key"]) for r in RULES)
+    # BEFORE the early return below, which is the path taken for most of
+    # a run: a rule that latches and releases again while the fan is
+    # already on would otherwise never be recorded.
+    if ran_with is not None and want:
+        for r in RULES:
+            if latch.get(r["key"]):
+                ran_with[r["key"]] = True
     if want == bool(fan_on):
         return (True, None) if want else (False, None)
     if want:
@@ -1598,8 +1625,18 @@ def decide(co2, temp, fan_on, c, ran_for, latch, fault=None,
     # missing one leaves the latch alone, which would have kept the fan
     # on - except where the rule was disabled mid-run, so the None
     # guard stays.
+    held = dict(ran_with) if ran_with else {}
+    for r in RULES:
+        if was_latched.get(r["key"]):
+            held[r["key"]] = True
+    # The run ends here, so the accumulator starts again empty. Cleared
+    # after it is read, not before, and not at the caller: a stop that
+    # forgot to clear would carry rules into the next run and name them
+    # there.
+    if ran_with is not None:
+        ran_with.clear()
     parts = [r["fmt"](readings[r["key"]]) for r in RULES
-             if was_latched.get(r["key"])
+             if held.get(r["key"])
              and readings.get(r["key"]) is not None]
     if not parts:
         # Nothing was latched, so no rule released and there is nothing
@@ -1906,7 +1943,8 @@ def tick():
             return
         want, why = decide(co2, vals.get('temperature'), fan_on, cur,
                            ran_for, STATE["latch"], STATE["fault"],
-                           humidity=vals.get('humidity'))
+                           humidity=vals.get('humidity'),
+                           ran_with=STATE["ran_with"])
         if want is None or want == fan_on:
             return
         h.set(want)
@@ -4162,6 +4200,7 @@ def _resume_payload():
         return {
             "v": 1,
             "latch": dict(STATE["latch"]),
+            "ran_with": dict(STATE["ran_with"]),
             "changed_at": STATE["changed_at"],
             "reading_at": STATE["reading_at"],
             "manual_off_pending": bool(STATE["manual_off_pending"]),
@@ -4206,6 +4245,14 @@ def _apply_resume():
                 # True, and a latch is what keeps the fan running.
                 raw = latch.get(k)
                 STATE["latch"][k] = raw if isinstance(raw, bool) else False
+        ran = d.get("ran_with")
+        if isinstance(ran, dict):
+            # Same rule as the latches: a real bool only. This one only
+            # shapes a log line rather than the fan, but a restart that
+            # invented a rule would misattribute the stop that follows.
+            STATE["ran_with"] = {
+                k: True for k in STATE["latch"]
+                if isinstance(ran.get(k), bool) and ran[k]}
         STATE["changed_at"] = _n(d.get("changed_at"))
         STATE["reading_at"] = _n(d.get("reading_at"))
         # A real bool, like the latches: anything truthy would promise a
