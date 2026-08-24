@@ -1871,6 +1871,24 @@ def tick():
                     # must not grant a fresh lease to a fan that was
                     # already running.
                     STATE["changed_at"] = now
+                    if prev and not actual:
+                        # THE RUN ENDED, AND NOTHING ELSE WILL SAY SO.
+                        # Someone switched the plug off by hand or from
+                        # the vendor app. decide() then sees a fan that
+                        # is already off, wants it off, and returns on
+                        # the no-command path - which commits the
+                        # record back unchanged. The rules from the
+                        # finished run survived into the next one and
+                        # were printed against ITS readings, so a
+                        # CO2-only run stopped with a temperature
+                        # figure that had never triggered anything.
+                        #
+                        # Cleared here rather than in decide() for the
+                        # same reason the Manual and fault stops are:
+                        # this is where the stop is confirmed. The
+                        # plug has been read, not commanded, and it
+                        # says the fan is off.
+                        STATE["ran_with"].clear()
                     ext_msg = ("%s Fan %s \u2014 changed outside (%s)"
                                % (FC_EXTERNAL_CHANGE,
                                   "on" if actual else "off",

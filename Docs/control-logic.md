@@ -47,10 +47,17 @@ decided. It is committed only once a switch has been accepted, so a switch-on
 that failed records nothing and a switch-off that failed keeps the run intact
 for the retry that eventually stops the fan.
 
-It is cleared when a stop is confirmed. Switching to Manual and a draw fault
-both end a run without a rule releasing, and both clear it at the point the
-stop is confirmed rather than when the mode changed or the fault was raised -
-until the stop lands, the fan may still be running on the rules recorded.
+It is cleared when a stop is confirmed, whichever path stopped the fan. Three
+end a run without any rule releasing: switching to Manual, a draw fault, and
+someone switching the plug off outside this controller. Each clears the record
+at the point the stop is confirmed rather than when the mode changed, the fault
+was raised, or the switch was noticed - until the stop lands, the fan may still
+be running on the rules recorded.
+
+The external case is the one with no command behind it: the plug is read, not
+switched, and the controller simply agrees the fan is off. Automatic control
+sees a fan already in the state it wants and issues nothing, so nothing else on
+that path can end the run.
 
 A requested restart carries it; a cold start does not, and `FC-301` announces
 that so a shorter line afterwards is not read as the whole story.

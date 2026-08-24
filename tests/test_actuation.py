@@ -661,6 +661,61 @@ def test_a_mid_run_cycle_commits_what_it_accumulated():
     return "mid-run accumulation is committed"
 
 
+def test_an_external_switch_off_ends_the_run():
+    """Someone stopped the fan from the vendor app, and Auto agrees.
+
+    decide() never commands anything here: the fan is already off and
+    wanted off, so it returns on the no-command path and commits the
+    record back untouched. Nothing else on this path can end the run.
+    """
+    C = harness.load()
+    plug = Plug(on=False)                       # the plug says OFF
+    _auto(C, plug, _Protect(co2=650.0, temp=22.0),
+          fan=True,                             # ...but we thought ON
+          ran_with={"co2": True, "temp": True})
+    assert C.STATE["fan"] is False, "the external switch was not accepted"
+    assert plug.calls == [], "the fan should not have been commanded"
+    assert C.STATE["ran_with"] == {}, \
+        "an external stop left the run record: %r" % C.STATE["ran_with"]
+    return "an external stop ends the run"
+
+
+def test_a_run_record_does_not_survive_into_the_next_run():
+    """THE CONSEQUENCE, end to end.
+
+    The stale entry is not merely stale - it is printed against the NEW
+    run's readings, so the line reports a temperature that never
+    triggered anything. Asserted on the message, because that is the
+    thing the reader is misled by.
+    """
+    C = harness.load()
+    # A two-rule run is ended externally.
+    _auto(C, Plug(on=False), _Protect(co2=650.0, temp=22.0),
+          fan=True, ran_with={"co2": True, "temp": True})
+    assert C.STATE["ran_with"] == {}, C.STATE["ran_with"]
+
+    # A fresh run on CO2 alone, kept clear of temperature entirely.
+    C.CFG["control"]["temp_enabled"] = True
+    with C._state_lock:
+        C.STATE["events"] = []
+        C.STATE["latch"] = {"co2": False, "temp": False, "humidity": False}
+    plug = Plug(on=False)
+    _auto(C, plug, _Protect(co2=1200.0, temp=20.0), fan=False,
+          ran_with=dict(C.STATE["ran_with"]))
+    assert plug.calls == [True], "the fresh run did not start: %r" % plug.calls
+
+    with C._state_lock:
+        C.STATE["fan"] = True
+    _auto(C, plug, _Protect(co2=650.0, temp=20.0), fan=True,
+          ran_with=dict(C.STATE["ran_with"]))
+    log = events(C)
+    assert "Fan off" in log, log
+    assert "650 ppm" in log, log
+    assert " C" not in log.split("Fan off")[-1], \
+        "a rule from the previous run was printed against this one: %r" % log
+    return "each run is reported on its own"
+
+
 def test_a_manual_stop_clears_the_run_record():
     """PRODUCTION MANUAL NEVER REACHES decide().
 
