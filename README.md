@@ -72,6 +72,9 @@ Each enabled rule latches above its on threshold and releases at or below its
 off threshold. The fan runs while any rule is latched. A missing reading does
 not release an existing latch. The minimum run time prevents short-cycling.
 
+When the fan stops, the activity log names every rule that latched during that
+run, including any that released earlier while another kept the fan going.
+
 Power monitoring is off by default. When enabled, a continuous draw outside
 the configured band stops the fan and latches a fault. Force on can be used to
 test a repaired fan; clear the fault only after confirming the draw is healthy.

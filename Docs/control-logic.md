@@ -31,6 +31,25 @@ condition cleared. Disabling a rule releases it immediately. If all metrics
 stop, the stale-reading fail-safe may ventilate according to
 `stale_minutes`.
 
+## What the stop line names
+
+`Fan off` names every rule that latched during the run, not only whichever was
+last to release. A run started by CO2, temperature and humidity, where the
+latter two fall back inside their bands while CO2 keeps the fan going, still
+reports all three.
+
+Rules that were never latched are not named. A CO2-only run reports
+`Fan off - 672 ppm`, not the temperature and humidity readings that had no
+bearing on it.
+
+The record is per-run and is cleared when the fan stops. Switching to Manual
+and latching a draw fault both end a run without a rule releasing, and both
+clear it too. A requested restart carries it; a cold start does not, and
+`FC-301` announces that so a shorter line afterwards is not read as the whole
+story.
+
+## Latch storage
+
 Latches are stored in memory rather than recalculated when thresholds change.
 To clear a latch deliberately, allow a valid reading to cross its off threshold
 or disable the rule.

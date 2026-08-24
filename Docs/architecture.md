@@ -81,8 +81,9 @@ does not unnecessarily delay a mode change.
 is safe and replaces the process with `execv`, without changing the PID or
 asking systemd to start a second process.
 
-The requested-restart handover preserves latch state, the minimum-run lease,
-draw-fault timing, stale-reading timing and original process start time. A crash
+The requested-restart handover preserves latch state, the record of which
+rules have latched during the current run, the minimum-run lease, draw-fault
+timing, stale-reading timing and original process start time. A crash
 or systemd restart starts with clean transient state, and logs `FC-301` saying
 so, because a dropped latch and lease otherwise appear in the activity log as a
 fan stopping for no stated reason.
