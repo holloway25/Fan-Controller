@@ -50,10 +50,10 @@ DEFAULTS = {
                 "humidity_off": 60.0,
                 "stale_minutes": 0},
 }
-CO2_HINTS = ("co2", "carbondioxide")
-EXTRA_HINTS = {"temperature": ("temperature",),
-               "pm25": ("pm2p5", "pm25"),
-               "humidity": ("humidity",)}
+CO2_HINTS = ("co2", "carbondioxide", "co2ppm", "carbondioxideppm")
+EXTRA_HINTS = {"temperature": ("temperature", "temperaturec"),
+               "pm25": ("pm2p5", "pm25", "pm25ugm3"),
+               "humidity": ("humidity", "relativehumidity")}
 VALUE_KEYS = ("value", "val", "current", "ppm", "reading")
 
 
@@ -100,6 +100,10 @@ PLUG_SCHEMA = {
 }
 SCHEMAS = {"protect": PROTECT_SCHEMA, "plug": PLUG_SCHEMA, "ui": UI_SCHEMA,
            "control": CONTROL_SCHEMA, "email": EMAIL_SCHEMA}
+
+
+class ConfigurationError(RuntimeError):
+    """The stored configuration cannot be trusted for safe operation."""
 
 
 def _coerce(name, spec, v):
@@ -162,20 +166,28 @@ def normalise(section, data):
 
 def load_cfg():
     cfg = copy.deepcopy(DEFAULTS)
-    if os.path.exists(CFG_PATH):
-        try:
-            disk = json.load(open(CFG_PATH))
-        except (ValueError, OSError):
-            disk = {}
-        # Valid JSON of the wrong shape (a list, a string-valued section)
-        # used to raise AttributeError before normalisation could run.
-        if not isinstance(disk, dict):
-            disk = {}
-        for k, v in disk.items():
-            # Unknown top-level entries are discarded rather than carried
-            # forward, matching the per-section rejection of unknown keys.
-            if k in cfg and isinstance(v, dict):
-                cfg[k].update(v)
+    if not os.path.exists(CFG_PATH):
+        return cfg
+    try:
+        with open(CFG_PATH) as f:
+            disk = json.load(f)
+    except (ValueError, OSError) as e:
+        raise ConfigurationError(
+            "config.json cannot be read safely (%s); refusing to start"
+            % type(e).__name__)
+    if not isinstance(disk, dict):
+        raise ConfigurationError(
+            "config.json must contain a JSON object; refusing to start")
+    for section, values in disk.items():
+        if section not in cfg:
+            raise ConfigurationError(
+                "unknown configuration section %s; refusing to start"
+                % section)
+        if not isinstance(values, dict):
+            raise ConfigurationError(
+                "%s must contain a JSON object; refusing to start"
+                % section)
+        cfg[section].update(values)
     ctl = cfg.get("control")
     ctl = ctl if isinstance(ctl, dict) else {}
     if ctl.get("mode") == "off":
@@ -187,18 +199,20 @@ def load_cfg():
         # simply manual mode. Fold it in and drop the duplicate control.
         if not ctl.pop("enabled") and ctl.get("mode") == "auto":
             ctl["mode"] = "manual"
-    # Disk config is untrusted too: coerce it, and fall back to the default
-    # for any field that will not validate rather than starting poisoned.
+    # Missing fields receive upgrade defaults. Present but invalid fields do
+    # not: silently replacing a damaged control.mode with the Auto default can
+    # start a controller the operator had deliberately left in Manual.
     for section, schema in SCHEMAS.items():
         clean = dict(DEFAULTS[section])
         got = cfg.get(section)
         for k, v in (got if isinstance(got, dict) else {}).items():
             if k not in schema:
-                continue
+                raise ConfigurationError(
+                    "unknown setting %s.%s; refusing to start" % (section, k))
             try:
                 clean[k] = _coerce("%s.%s" % (section, k), schema[k], v)
-            except ValueError:
-                pass
+            except ValueError as e:
+                raise ConfigurationError("%s; refusing to start" % e)
         cfg[section] = clean
     return cfg
 
@@ -340,11 +354,26 @@ def load_fault():
     Held in memory alone, restarting the service - or the host losing
     power - would silently re-arm a fan already judged faulty.
     """
-    try:
-        d = json.load(open(FAULT_PATH))
-        return d if isinstance(d, dict) and d.get("msg") else None
-    except (ValueError, OSError):
+    if not os.path.exists(FAULT_PATH):
         return None
+    try:
+        with open(FAULT_PATH) as f:
+            d = json.load(f)
+    except (ValueError, OSError) as e:
+        why = type(e).__name__
+    else:
+        if isinstance(d, dict) and isinstance(d.get("msg"), str) \
+                and d["msg"].strip():
+            return d
+        why = "invalid structure"
+    # Never interpret an unreadable latch as an acknowledgement. This fault
+    # is deliberately clearable through the ordinary acknowledgement path;
+    # that removes the damaged file only after the operator has seen it.
+    return {"at": time.time(),
+            "msg": ("FC-206 Startup safety fault - persisted fault state "
+                    "could not be read (%s)" % why),
+            "code": "FC-206", "stopped": False,
+            "attempted_at": None, "delivered_at": None}
 
 
 def promise_manual_off():
@@ -907,7 +936,8 @@ def _num(v):
     if isinstance(v, bool):
         return None
     if isinstance(v, (int, float)):
-        return float(v)
+        n = float(v)
+        return n if math.isfinite(n) else None
     if isinstance(v, dict):
         for k in VALUE_KEYS:
             if k in v:
@@ -916,19 +946,22 @@ def _num(v):
 
 
 def find_metric(obj, hints):
-    """Depth-first search for a numeric reading whose key matches a hint.
+    """Depth-first search for a numeric reading with an exact known key.
 
-    Used instead of a fixed path because Ubiquiti has not published the
-    airQuality schema. Returns (value, dotted_path) or None.
+    Paths remain flexible because Ubiquiti has not published the airQuality
+    schema, but keys are exact after punctuation/case normalization. Substring
+    matches used to let metadata such as co2Threshold beat the live reading.
+    Returns (value, dotted_path) or None.
     """
     hits = []
+    known = set(hints)
 
     def walk(node, path):
         if isinstance(node, dict):
             for k, v in node.items():
-                flat = k.lower().replace("_", "").replace("-", "")
+                flat = re.sub(r"[^a-z0-9]", "", str(k).lower())
                 p = path + [k]
-                if any(h in flat for h in hints) and _num(v) is not None:
+                if flat in known and _num(v) is not None:
                     hits.append((_num(v), ".".join(p)))
                 walk(v, p)
         elif isinstance(node, list):
@@ -1114,7 +1147,7 @@ class Protect:
             raise ProtectError("Protect returned HTTP %d for %s"
                                % (r.status_code, path))
         try:
-            return r.json()
+            data = r.json()
         except ValueError:
             # A console part-way through an OS update answers 200 with
             # an HTML holding page. r.json() then raised JSONDecodeError
@@ -1126,9 +1159,20 @@ class Protect:
             # unreachable case it sits between.
             raise ProtectError("Protect replied with something that is not "
                                "JSON. The console may be restarting.")
+        if not isinstance(data, dict):
+            raise ProtectError("Protect returned a JSON value where an "
+                               "object was expected")
+        return data
 
     def sensors(self):
-        return self._get("/proxy/protect/api/bootstrap").get("sensors") or []
+        data = self._get("/proxy/protect/api/bootstrap")
+        sensors = data.get("sensors")
+        if sensors is None:
+            return []
+        if not isinstance(sensors, list) or not all(
+                isinstance(sensor, dict) for sensor in sensors):
+            raise ProtectError("Protect returned an invalid sensors list")
+        return sensors
 
     def sensor(self, sid):
         for s in self.sensors():
@@ -1143,7 +1187,10 @@ class Protect:
         blocks like humiditySettings cannot be mistaken for readings.
         """
         s = self.sensor(sid)
-        src = s.get("airQuality") or s
+        air = s.get("airQuality")
+        if air is not None and not isinstance(air, dict):
+            raise ProtectError("Protect returned invalid airQuality data")
+        src = air or s
         # A missing CO2 field is not fatal here. CO2 can be disabled,
         # leaving temperature or humidity driving the fan, so refusing
         # the whole payload would stop those working too. tick() decides

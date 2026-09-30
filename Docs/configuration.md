@@ -8,6 +8,14 @@ Defaults below come from `controller.py` and are applied when a key is absent.
 `config.example.json` is a safe starting configuration and intentionally
 starts in Manual.
 
+An existing `config.json` is treated as safety-critical input. Invalid JSON,
+an unexpected object shape, an unknown key, or an invalid present value stops
+the service instead of silently substituting a default. This is deliberate:
+replacing a damaged Manual setting with the Auto default could start control
+unexpectedly. Check the service journal for the named field, correct the file,
+and restart. Missing keys in an otherwise valid older configuration still
+receive upgrade defaults.
+
 ## Control
 
 | Key | Default | Valid range or values | Meaning |
@@ -65,8 +73,10 @@ stale, low or high reading starts the fault timer while the relay is on. A
 healthy reading resets the timer.
 
 A draw fault stops the fan, survives restart, and blocks Auto until cleared.
-The stop is retried until confirmed. Force on overrides the fault to permit
-testing after a repair.
+If an existing `fault.json` is malformed or unreadable, startup creates an
+FC-206 safety fault in memory rather than interpreting the damaged file as an
+acknowledgement. The stop is retried until confirmed. Force on overrides the
+fault to permit testing after a repair.
 
 Changing the plug address clears the stored plug password. Re-enter it and test
 the plug after an address change. The Tasmota HTTP command API must be enabled.
@@ -113,7 +123,7 @@ alerts.
 | `FC-203` | Alert delivery failure |
 | `FC-204` | Persistent write failure |
 | `FC-205` | Restart refusal or degraded restart |
-| `FC-206` | Startup or DNS condition |
+| `FC-206` | Startup, DNS, or unreadable persisted-fault condition |
 | `FC-207` | Stale-reading fail-safe failed to ventilate |
 | `FC-208` | Dashboard rendered no data despite server data |
 | `FC-300` | Plug state changed outside this controller |

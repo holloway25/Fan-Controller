@@ -20,9 +20,11 @@ metrics. The controller therefore authenticates a local UniFi user against
 `/api/auth/login` and reads `/proxy/protect/api/bootstrap`.
 
 This private endpoint may change with firmware. Metrics are discovered by
-searching the sensor's `airQuality` subtree for numeric keys matching known
-hints rather than relying on one fixed path. The selected paths are exposed for
-diagnosis.
+searching the sensor's `airQuality` subtree for exact known keys after
+case/punctuation normalization, rather than relying on one fixed path. Exact
+aliases prevent metadata such as a CO2 threshold from being mistaken for a
+live reading. Non-finite values and unexpected bootstrap shapes are rejected
+at this boundary. The selected paths are exposed for diagnosis.
 
 Protect and plug clients are cached and rebuilt when their relevant settings
 change. An expired Protect session is retried after authentication.

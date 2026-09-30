@@ -11,6 +11,20 @@ curl -s http://127.0.0.1:8096/api/state
 The dashboard banner shows the current error. The activity log preserves errors
 that have recovered.
 
+## Service refuses to start
+
+Read the first configuration error in the journal. An existing `config.json`
+must be valid JSON made of known sections and settings; invalid present values
+are not replaced with defaults. Correct the named field rather than deleting
+the live configuration. A missing field in an otherwise valid older file is
+filled from the current defaults.
+
+An FC-206 persisted-fault message means `fault.json` exists but could not be
+read safely. Do not delete it merely to make the service start: inspect its
+ownership, mode and JSON structure, then acknowledge the resulting safety
+fault through the normal operator flow once the underlying condition is
+understood.
+
 ## Protect and sensor problems
 
 ### CO2 or another metric stops resolving
