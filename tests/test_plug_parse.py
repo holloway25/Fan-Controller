@@ -8,8 +8,9 @@ UNDERNEATH them has never been exercised: the POWER/POWER1 key handling
 and the StatusSNS.ENERGY.Power shape. A firmware update that reshaped
 either would leave every one of those modules green.
 
-So these drive the real Tasmota methods and stub only _cmd, the HTTP
-boundary. No device, no credentials, no network.
+Most tests here drive the real Tasmota methods and stub only _cmd, the HTTP
+boundary. The response-shape test keeps _cmd and stubs requests.get instead.
+No device, no credentials, no network.
 
 The limit, stated rather than implied: these pin the parser against
 shapes Tasmota is DOCUMENTED to send. They cannot confirm those are the
@@ -59,6 +60,42 @@ def plug(reply=None, record=None):
 
     p._cmd = _cmd
     return p
+
+
+# ---------------------------------------------------------- HTTP response
+
+def test_a_json_reply_must_be_an_object():
+    """Valid JSON can still be the wrong top-level type.
+
+    _cmd is the boundary that promises every downstream parser a mapping.
+    Letting a scalar through either raises TypeError at the WARNING check or
+    fails later under a less useful, unclassified error.
+    """
+    class Reply:
+        status_code = 200
+        content = b"valid JSON"
+
+        def __init__(self, value):
+            self.value = value
+
+        def json(self):
+            return self.value
+
+    real = C.requests.get
+    try:
+        for value in (None, True, 1, 1.5, "ON", ["POWER"]):
+            C.requests.get = lambda *a, _value=value, **k: Reply(_value)
+            try:
+                C.Tasmota("192.0.2.1")._cmd("Power")
+            except C.PlugError as exc:
+                assert "non-object JSON" in str(exc), (value, exc)
+            except Exception as exc:
+                assert False, "%r escaped as %s" % (value, type(exc).__name__)
+            else:
+                assert False, "%r was accepted" % (value,)
+    finally:
+        C.requests.get = real
+    return "six non-object JSON shapes rejected as plug errors"
 
 
 # ---------------------------------------------------------------- relay

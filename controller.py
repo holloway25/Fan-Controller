@@ -9,7 +9,7 @@ private /proxy/protect/api/bootstrap endpoint. That is undocumented and may
 break on firmware updates; use the Debug view to inspect the live payload.
 """
 import atexit, copy, hashlib, hmac, json, math, os, re, signal, smtplib
-import socket, ssl, sys
+import socket, ssl, sys, tempfile
 import threading, time
 from datetime import date
 import requests, urllib3
@@ -261,18 +261,25 @@ def write_json_durable(path, value, mode=0o600, **dump_args):
 
     Raises OSError if it cannot write. Callers decide what that means.
     """
-    tmp = path + ".tmp"
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+    # Create beside the destination so os.replace remains atomic. mkstemp
+    # creates a new 0600 inode, unaffected by a stale temp file's mode.
+    directory = os.path.dirname(path) or "."
+    fd, tmp = tempfile.mkstemp(prefix=os.path.basename(path) + ".tmp.",
+                               dir=directory)
     try:
+        os.fchmod(fd, mode)
         with os.fdopen(fd, "w") as fh:
+            fd = None
             json.dump(value, fh, **dump_args)
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(tmp, path)
     except BaseException:
-        # Leaving a stale .tmp behind would be harmless - the next write
-        # truncates it - but it looks like a crash to anyone reading the
-        # directory, so tidy up.
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
         try:
             os.unlink(tmp)
         except OSError:
@@ -290,16 +297,14 @@ def write_json_durable(path, value, mode=0o600, **dump_args):
 def save_cfg(cfg):
     """Write config.json atomically. CALLERS MUST HOLD _cfg_lock.
 
-    The temp path is fixed, so two concurrent writers would truncate the
-    same file and one os.replace would then fail on a name the other had
-    already moved. The lock is what makes that impossible; this function
-    does not defend itself.
+    The unique temp file prevents an earlier file's permissions from
+    becoming config.json's permissions. The lock still serialises the
+    configuration transaction: which snapshot reaches disk, becomes active
+    in memory and supplies the clients must remain one coherent order.
     """
-    # 0600 from creation rather than a chmod after the rename: the temp
-    # file holds the UniFi and plug passwords, and chmod afterwards left
-    # a window at the process umask. os.replace keeps the temp file's
-    # mode, so there is nothing to fix up - and a chmod here would be
-    # one more way to fail AFTER the new file is already in place.
+    # The temp file is created 0600 and set to the requested mode before any
+    # credential is written. os.replace keeps that mode, so there is no
+    # post-rename chmod that can fail after the new configuration is live.
     write_json_durable(CFG_PATH, cfg, mode=0o600, indent=2)
 
 
@@ -1195,6 +1200,8 @@ class Tasmota:
             data = r.json()
         except ValueError:
             raise PlugError("Plug returned a non-JSON reply")
+        if not isinstance(data, dict):
+            raise PlugError("Plug returned a non-object JSON reply")
         if "WARNING" in data:
             raise PlugError("Plug rejected the credentials: %s"
                             % data["WARNING"])

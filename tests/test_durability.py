@@ -29,6 +29,33 @@ def need_dir_sync():
         harness.skip("directory fsync needs Linux O_DIRECTORY")
 
 
+# -------------------------------------------- durable temporary permissions
+
+def test_a_permissive_stale_temp_cannot_expose_the_replacement():
+    """A leftover path must not decide the mode of the next durable file.
+
+    os.open(..., O_CREAT, 0600) applies the mode only when it creates a file.
+    Reusing a stale 0644 temp therefore made the replacement 0644 too, which
+    is unsafe for config.json because it contains credentials.
+    """
+    need_dir_sync()
+    C = harness.load()
+    stale = C.CFG_PATH + ".tmp"
+    with open(stale, "w", encoding="utf-8") as fh:
+        fh.write("stale")
+    os.chmod(stale, 0o644)
+
+    C.write_json_durable(C.CFG_PATH, {"test": True},
+                         mode=0o600)
+
+    actual = os.stat(C.CFG_PATH).st_mode & 0o777
+    assert actual == 0o600, "replacement mode is %04o" % actual
+    with open(stale, encoding="utf-8") as fh:
+        stale_content = fh.read()
+    assert stale_content == "stale", "the fixed stale path was reused"
+    return "unique replacement stayed 0600"
+
+
 # ------------------------------------------------- the manual-off promise
 
 def test_the_promise_is_on_disk_before_manual_is_committed():
