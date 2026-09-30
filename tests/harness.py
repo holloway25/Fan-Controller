@@ -69,6 +69,8 @@ def load():
                 os.path.join(tmp, "config.json"))
     os.makedirs(os.path.join(tmp, "templates"), exist_ok=True)
     open(os.path.join(tmp, "templates", "index.html"), "w").close()
+    shutil.copytree(os.path.join(SRC, "static"),
+                    os.path.join(tmp, "static"))
     # Unique module name, not a plain import: a second import in one
     # process returns the module cached from the first call, still
     # pointed at the first directory.

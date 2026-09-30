@@ -3623,7 +3623,9 @@ def check_ui_password(plain, stored):
 # Readable without a password; everything else needs one once set.
 # /api/debug/sensor is deliberately not public: it returns the raw
 # Protect payload, which is diagnostic data, not dashboard data.
-PUBLIC_GET = {"/", "/api/state", "/api/history"}
+PUBLIC_GET = {"/", "/api/state", "/api/history",
+              "/favicon.ico", "/apple-touch-icon.png",
+              "/apple-touch-icon-precomposed.png"}
 PUBLIC_POST = {"/api/clienterror"}
 
 
@@ -3656,6 +3658,17 @@ def _require_auth():
 @app.route("/")
 def index():
     return render_template("index.html")
+
+
+@app.route("/favicon.ico")
+def favicon():
+    return app.send_static_file("favicon-32.png")
+
+
+@app.route("/apple-touch-icon.png")
+@app.route("/apple-touch-icon-precomposed.png")
+def apple_touch_icon():
+    return app.send_static_file("apple-touch-icon.png")
 
 
 @app.route("/api/clienterror", methods=["POST"])

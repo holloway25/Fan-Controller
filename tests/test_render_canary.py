@@ -91,6 +91,29 @@ def test_a_malformed_report_does_not_raise():
     return "junk reports are survivable"
 
 
+def test_conventional_icon_paths_serve_the_dashboard_icons():
+    C = harness.load()
+    cl = C.app.test_client()
+    paths = ("/favicon.ico", "/apple-touch-icon.png",
+             "/apple-touch-icon-precomposed.png")
+    for path in paths:
+        r = cl.get(path)
+        assert r.status_code == 200, (path, r.status_code)
+        assert r.content_type == "image/png", (path, r.content_type)
+        assert r.data.startswith(b"\x89PNG\r\n\x1a\n"), path
+    return "browser icon probes are answered"
+
+
+def test_icon_paths_stay_public_when_authentication_is_enabled():
+    C = harness.load()
+    C.CFG["ui"]["password_hash"] = C.set_ui_password("test-password")
+    cl = C.app.test_client()
+    for path in ("/favicon.ico", "/apple-touch-icon.png",
+                 "/apple-touch-icon-precomposed.png"):
+        assert cl.get(path).status_code == 200, path
+    return "wall-display icons remain public"
+
+
 # -------------------------------------------------------------- the page
 
 def test_the_canary_cannot_break_the_page():

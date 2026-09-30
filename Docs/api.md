@@ -15,6 +15,8 @@ Authentication is optional. When a UI password is configured, endpoints marked
 | GET | `/api/daily` | Open | Daily low/high summaries; `?days=N` limits the result |
 | POST | `/api/clienterror` | Open | Log a browser-side error |
 | GET | `/static/*` | Open | Static dashboard assets |
+| GET | `/favicon.ico` | Open | Conventional browser alias for the dashboard icon |
+| GET | `/apple-touch-icon*.png` | Open | Conventional iOS aliases for the dashboard icon |
 | GET | `/signin` | Protected | Trigger the browser authentication prompt |
 | POST | `/api/config` | Protected | Validate and apply a partial settings update |
 | POST | `/api/fault/clear` | Protected | Acknowledge a draw fault |
