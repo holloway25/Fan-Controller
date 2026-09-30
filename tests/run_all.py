@@ -59,6 +59,7 @@ SLOW = {
     "test_install_sh.py": "builds real virtual environments and runs pip",
     "test_restart_sh.py": "spawns real bash and waits on real sleeps",
 }
+MODULE_TIMEOUT_SECONDS = 180
 
 
 def modules():
@@ -108,7 +109,13 @@ def main(argv):
     for name in chosen:
         print("== %s" % name)
         sys.stdout.flush()
-        if subprocess.call([sys.executable, os.path.join(HERE, name)]) != 0:
+        try:
+            subprocess.run([sys.executable, os.path.join(HERE, name)],
+                           timeout=MODULE_TIMEOUT_SECONDS, check=True)
+        except subprocess.TimeoutExpired:
+            print("TIMEOUT: %s exceeded %ds" % (name, MODULE_TIMEOUT_SECONDS))
+            failed.append(name)
+        except subprocess.CalledProcessError:
             failed.append(name)
         print("")
 

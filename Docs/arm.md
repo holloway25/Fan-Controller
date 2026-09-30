@@ -54,55 +54,15 @@ Operational guidance:
 The service's routine writes are modest. Power-loss corruption is a more
 important concern than write endurance.
 
-## Testing
+## Testing on ARM
 
-The normal development suite is:
-
-```sh
-./venv/bin/python tests/run_all.py          # the fast tier
-./venv/bin/python tests/run_all.py --all    # every module
-```
-
-The default run omits the modules that account for most of the runtime.
-On a 3B+ that is the difference between roughly one minute and roughly
-four. The runner names the omitted modules and why, every time it skips
-them, so this document does not repeat the list. They can be run alone:
-
-```sh
-./venv/bin/python tests/run_all.py --slow
-```
-
-The omitted modules include the installer tests, which build real virtual
-environments and run real package installations on whatever machine
-executes them. Run `--all` where that work is appropriate.
-
-The figures above are the reason to trust a hosted arm64 runner less.
-They are not a reason to test on a board that is in service; see below.
-
-The installer does not run tests. GitHub Actions provides ARM64 architecture
-coverage using an Ubuntu runner, but that runner is not a Raspberry Pi and does
-not validate the Pi's memory, thermals, SD-card behaviour, Raspberry Pi OS
-packaging, or attached hardware.
-
-Deploying an update does not require running tests on the target. Pull,
-confirm the service came back, and confirm the live state.
-
-Where a board is running a fan you depend on, treat testing on it as
-fault-finding rather than routine: run the one test that answers the
-question. The cases that genuinely need the hardware are a failure that will
-not reproduce elsewhere, suspected memory, thermal or SD-card behaviour, and
-an OS or dependency change whose effect is specific to the board.
-
-`--all` is the wrong thing to run on a machine in service: the installer
-tests build real virtual environments and run real package installations
-wherever they execute.
-
-The curated mutation harness is a CI and development task, not part of any
-deployment. Each mutation copies the whole tree:
-
-```sh
-./venv/bin/python tools/mutate.py
-```
+The full suite took roughly four minutes on the measured Pi 3B+, versus about
+one minute for the fast tier. The installer tests create virtual environments
+and install packages on the machine running them. CI's ARM64 runner verifies
+architecture compatibility but has much more memory and a different storage
+system; it does not validate Pi thermals, SD-card behaviour, or attached
+hardware. Run a targeted test on a deployed board when diagnosing a
+hardware-specific fault. See the [README](../README.md#tests) for test commands.
 
 ## Useful measurements
 

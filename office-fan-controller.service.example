@@ -6,6 +6,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
 # Copy this file to office-fan-controller.service and edit the four
 # lines below for your own account and install path. The concrete file
 # is gitignored, the same way config.json is, so your paths stay local.

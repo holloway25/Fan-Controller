@@ -28,9 +28,9 @@ env/
 history.json
 daily.json
 events.json
-# Every persister writes through one of these; naming them individually
-# meant fault.json.tmp was missed when the fault file was added.
-*.json.tmp
+# Durable writers use unique temporary names; interrupted writes may leave
+# one behind. Ignore both the old fixed name and the new suffixed form.
+*.json.tmp*
 *.log
 libs/
 __pycache__/

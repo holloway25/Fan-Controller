@@ -28,7 +28,7 @@ and checkout path.
 
 The installer is safe to re-run and does not overwrite `config.json` or restart
 a running controller. It prints the required privileged commands;
-`./install.sh --unit` runs those commands.
+`./install.sh --unit` installs and enables the service, but does not start it.
 
 To install manually:
 
@@ -41,7 +41,9 @@ cp office-fan-controller.service.example office-fan-controller.service
 # Edit User, Group, WorkingDirectory and ExecStart.
 sudo cp office-fan-controller.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now office-fan-controller
+sudo systemctl enable office-fan-controller
+# Fill in config.json before the first start.
+sudo systemctl start office-fan-controller
 ```
 
 Before nginx is configured, use an SSH tunnel:
@@ -171,35 +173,19 @@ Tests are development and CI tools; the installer does not run them.
 ./venv/bin/python tests/run_all.py --slow   # only the slow three
 ```
 
-The suite is split into two tiers by measured cost. A few modules take
-most of the runtime - starting Node, building real virtual environments,
-waiting on real sleeps - and the default run leaves them out, finishing
-in roughly a fifth of the time. The runner names which ones it omitted
-and why, so the list lives in one place rather than three.
-
-Nothing is deleted by being slow. Run `--all` in CI, and on a development
-machine before deploying - not on the controller being deployed to, since
-the installer tests build real virtual environments there. Run it
-whenever `templates/index.html` changes — jsdom executing the page is
-what makes it safe to have few source assertions about it. CI always
-passes `--all`.
-
-The suite uses temporary state and does not contact Protect or the plug. Some
-tests require Linux, Node/jsdom, or shellcheck and may skip when those tools are
-absent. GitHub Actions runs the full suite on supported x86 Python versions and
-an ARM64 runner, fails on unexpected skips, and runs the curated mutation
-checks on one Python version:
+The runner lists omitted slow modules. Its tests use temporary state and do
+not contact Protect or the plug. Run the affected modules while developing;
+CI runs the full suite on x86 and ARM64, and checks curated mutations. The
+installer tests create real virtual environments wherever they run. Browser
+changes need `tests/test_js.py` because the source checks alone cannot prove
+interactive behaviour. To run the mutation checks locally:
 
 ```sh
 ./venv/bin/python tools/mutate.py
 ```
 
-The mutation checks deliberately break important production behaviour and
-confirm that the named test fails. Browser layout still requires visual testing
-because jsdom has no layout engine.
-
-The `tests/` directory is the list. The tests themselves are the source of
-truth for their coverage.
+Browser layout still requires visual testing because jsdom has no layout
+engine. See [ARM notes](Docs/arm.md) for hardware limits.
 
 ## Runtime files
 

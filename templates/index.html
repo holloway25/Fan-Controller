@@ -182,6 +182,7 @@ font-size:16px}
   <svg class="trace" id="trace2" viewBox="0 0 700 159"></svg>
   <div class="sub" id="sub">Waiting for a reading</div>
   <div class="msg" id="topmsg"></div>
+  <div class="msg" id="drawloopmsg"></div>
   <div class="msg" id="unsavedmsg"></div>
 </div>
 
@@ -198,37 +199,37 @@ font-size:16px}
   <div class="warn" id="norules" style="display:none">No triggers are
     enabled, so Auto will not start the fan. Only the stale-reading
     fail-safe above can still run it.</div>
-  <div class="row"><label>Check every
+  <div class="row"><label for="poll_seconds">Check every
     <span class="hint">Seconds between readings.</span></label>
-    <input type="number" id="poll_seconds" min="5" max="600" step="5"></div>
-  <div class="row"><label>Ventilate if readings stop
+    <input type="number" id="poll_seconds" min="5" max="3600" step="1"></div>
+  <div class="row"><label for="stale_minutes">Ventilate if readings stop
     <span class="hint">Minutes without a valid reading before the fan is turned on as a fail-safe. 0 disables it.</span></label>
     <input type="number" id="stale_minutes" min="0" max="1440" step="5"></div>
-  <div class="row"><label>Run on CO2
+  <div class="row"><label for="co2_enabled">Run on CO2
     <span class="hint">Ventilates when the air gets stale.</span></label>
     <input type="checkbox" id="co2_enabled" style="width:auto"></div>
-  <div class="row"><label>Turn the fan on above
+  <div class="row"><label for="on_at">Turn the fan on above
     <span class="hint">Parts per million.</span></label>
-    <input type="number" id="on_at" min="400" max="5000" step="25"></div>
-  <div class="row"><label>Turn the fan off below
-    <span class="hint">Keep a gap of at least 150 ppm below the on level so the fan does not short-cycle.</span></label>
-    <input type="number" id="off_at" min="400" max="5000" step="25"></div>
-  <div class="row"><label>Run on temperature
+    <input type="number" id="on_at" min="300" max="10000" step="any"></div>
+  <div class="row"><label for="off_at">Turn the fan off below
+    <span class="hint">Keep this below the on level. A wider gap reduces short cycling.</span></label>
+    <input type="number" id="off_at" min="300" max="10000" step="any"></div>
+  <div class="row"><label for="temp_enabled">Run on temperature
     <span class="hint">Sheds heat with the fan before the AC needs to start.</span></label>
     <input type="checkbox" id="temp_enabled" style="width:auto"></div>
-  <div class="row"><label>Turn the fan on above
+  <div class="row"><label for="temp_on">Turn the fan on above
     <span class="hint">Degrees C. Keep this well under your AC setpoint.</span></label>
-    <input type="number" id="temp_on" min="10" max="40" step="0.5"></div>
-  <div class="row"><label>Turn the fan off below
+    <input type="number" id="temp_on" min="-20" max="60" step="any"></div>
+  <div class="row"><label for="temp_off">Turn the fan off below
     <span class="hint">Degrees C.</span></label>
-    <input type="number" id="temp_off" min="10" max="40" step="0.5"></div>
-  <div class="row"><label>Run on humidity
+    <input type="number" id="temp_off" min="-20" max="60" step="any"></div>
+  <div class="row"><label for="humidity_enabled">Run on humidity
     <span class="hint">Clears damp air. Off unless you have set levels that suit the room.</span></label>
     <input type="checkbox" id="humidity_enabled" style="width:auto"></div>
-  <div class="row"><label>Turn the fan on above
+  <div class="row"><label for="humidity_on">Turn the fan on above
     <span class="hint">Percent relative humidity.</span></label>
     <input type="number" id="humidity_on" min="0" max="100" step="1"></div>
-  <div class="row"><label>Turn the fan off below
+  <div class="row"><label for="humidity_off">Turn the fan off below
     <span class="hint">Percent. Keep a gap below the on level so the fan does not short-cycle.</span></label>
     <input type="number" id="humidity_off" min="0" max="100" step="1"></div>
   <div class="actions"><button class="primary" id="save">Save settings</button></div>
@@ -239,17 +240,17 @@ font-size:16px}
 <details class="card" id="c-sensor">
   <summary>Air quality sensor</summary>
   <div class="body">
-  <div class="row"><label>UniFi console</label>
+  <div class="row"><label for="p_host">UniFi console</label>
     <input type="text" id="p_host"></div>
-  <div class="row"><label>Verify certificate
+  <div class="row"><label for="p_verify">Verify certificate
     <span class="hint">Only works when the console address is a hostname the certificate covers, not an IP.</span></label>
     <input type="checkbox" id="p_verify" style="width:auto"></div>
-  <div class="row"><label>Local username
+  <div class="row"><label for="p_user">Local username
     <span class="hint">A local UniFi account without two-factor. Not a UI Cloud login.</span></label>
     <input type="text" id="p_user" autocomplete="off"></div>
-  <div class="row"><label>Password</label>
+  <div class="row"><label for="p_pass">Password</label>
     <input type="password" id="p_pass" autocomplete="new-password"></div>
-  <div class="row"><label>Sensor</label>
+  <div class="row"><label for="p_sensor">Sensor</label>
     <select id="p_sensor"><option value="">Not selected</option></select></div>
   <div class="actions"><button id="find">Find sensors</button>
     <button id="save2">Save</button>
@@ -261,28 +262,28 @@ font-size:16px}
 <details class="card" id="c-plug">
   <summary>Fan plug</summary>
   <div class="body">
-  <div class="row"><label>Plug address
+  <div class="row"><label for="g_host">Plug address
     <span class="hint">Tasmota device running the fan.</span></label>
     <input type="text" id="g_host"></div>
-  <div class="row"><label>Username
+  <div class="row"><label for="g_user">Username
     <span class="hint">Tasmota web user, usually admin.</span></label>
     <input type="text" id="g_user" autocomplete="off"></div>
-  <div class="row"><label>Password
+  <div class="row"><label for="g_pass">Password
     <span class="hint">Blank if no web password is set on the plug.</span></label>
     <input type="password" id="g_pass" autocomplete="new-password"></div>
-  <div class="row"><label>Minimum run time
+  <div class="row"><label for="min_run_minutes">Minimum run time
     <span class="hint">Once started, keep the fan on this long even if readings drop back below the levels that started it. Minutes.</span></label>
-    <input type="number" id="min_run_minutes" min="0" max="120" step="1"></div>
-  <div class="row"><label>Power monitoring
+    <input type="number" id="min_run_minutes" min="0" max="240" step="1"></div>
+  <div class="row"><label for="watts_enabled">Power monitoring
     <span class="hint">Watch the draw while the fan runs. Off means the wattage is shown but never acted on.</span></label>
     <input type="checkbox" id="watts_enabled" style="width:auto"></div>
-  <div class="row"><label>Expected draw, low
+  <div class="row"><label for="watts_min">Expected draw, low
     <span class="hint">Watts. Below this while running is a fault: the relay closed but the fan is not pulling what it should.</span></label>
     <input type="number" id="watts_min" min="1" max="5000" step="0.5"></div>
-  <div class="row"><label>Expected draw, high
+  <div class="row"><label for="watts_max">Expected draw, high
     <span class="hint">Watts. A two-speed fan needs this above its high-speed draw, or normal running reads as a fault.</span></label>
     <input type="number" id="watts_max" min="1" max="5000" step="0.5"></div>
-  <div class="row"><label>Fault after
+  <div class="row"><label for="watts_fault_seconds">Fault after
     <span class="hint">Seconds outside the band before the fan is stopped and a fault raised. Force on overrides a fault.</span></label>
     <input type="number" id="watts_fault_seconds" min="5" max="3600" step="5"></div>
   <div class="actions"><button id="plugtest">Test plug</button>
@@ -295,25 +296,25 @@ font-size:16px}
 <details class="card" id="sec_email">
 <summary>Fault Handling</summary>
 <div class="body">
-  <div class="row"><label>Send alerts
+  <div class="row"><label for="e_enabled">Send alerts
     <span class="hint">Off means nothing is ever sent, whatever else is filled in here.</span></label>
     <input type="checkbox" id="e_enabled" style="width:auto"></div>
-  <div class="row"><label>Mail server
+  <div class="row"><label for="e_host">Mail server
     <span class="hint">Hostname of the relay. Changing it clears the stored password.</span></label>
     <input type="text" id="e_host" autocomplete="off"></div>
-  <div class="row"><label>Port
+  <div class="row"><label for="e_port">Port
     <span class="hint">25 for a local relay.</span></label>
     <input type="number" id="e_port" min="1" max="65535" step="1"></div>
-  <div class="row"><label>Username
+  <div class="row"><label for="e_user">Username
     <span class="hint">Leave blank if the relay needs no login.</span></label>
     <input type="text" id="e_user" autocomplete="off"></div>
-  <div class="row"><label>Password
+  <div class="row"><label for="e_pass">Password
     <span class="hint">Stored on this machine only, never shown again once saved.</span></label>
     <input type="password" id="e_pass" autocomplete="new-password"></div>
-  <div class="row"><label>From address
+  <div class="row"><label for="e_sender">From address
     <span class="hint">Who the alerts appear to come from.</span></label>
     <input type="text" id="e_sender" autocomplete="off"></div>
-  <div class="row"><label>Send to
+  <div class="row"><label for="e_to">Send to
     <span class="hint">One or more addresses, separated by commas.</span></label>
     <input type="text" id="e_to" autocomplete="off"></div>
   <p class="hint">Sent when the fan is stopped by a draw fault, when a
@@ -647,12 +648,16 @@ function render(s){
   // session showed a dead indicator.
   const anyReading=s.co2!=null||s.temperature!=null||s.humidity!=null
     ||s.pm25!=null;
-  $("dot").className="dot "+(s.error?"bad":(anyReading?"live":""));
+  const drawLate=(Date.now()/1000-(s.draw_loop_at||s.process_started_at))>30;
+  $("dot").className="dot "+(s.error||s.draw_loop_error||drawLate
+    ?"bad":(anyReading?"live":""));
   // An unconfirmed stop is the worse case: faulted but possibly still
   // running, and the plug is not answering to say either way.
   const fmsg=s.fault?(s.fault.msg+(s.fault.stopped?"":
     " — stop unconfirmed, retrying")):"";
   say("topmsg",fmsg||s.error||"", "err");
+  say("drawloopmsg",drawLate?"Power monitoring loop is not responding":
+    (s.draw_loop_error?"Power monitoring loop: "+s.draw_loop_error:""),"err");
   // fault_unsaved: the fault is live in memory and the fan is stopped,
   // but it could not be written, so a restart would forget it and
   // resume on a fan already judged faulty. It gets its own line rather
@@ -948,6 +953,8 @@ async function saveAll(msgEl){
 
 document.querySelectorAll("#mode button").forEach(b=>
   b.addEventListener("click",async()=>{
+    if(b.dataset.mode==="on" && !window.confirm(
+      "Force on will run the fan even if a safety fault is active. Continue?"))return;
     try{await post("/api/config",{control:{mode:b.dataset.mode}});
         say("topmsg","","")}
     catch(e){say("topmsg",e.message,"err")}
@@ -981,6 +988,8 @@ $("find").addEventListener("click",async()=>{
 // A fault is the one thing that stops the fan running on its own, so it
 // is surfaced at the top rather than buried in the plug card.
 $("faultclear").addEventListener("click",async()=>{
+  if(!window.confirm("Clear the fault and allow automatic running again? " +
+    "Confirm the fan and power draw are safe first."))return;
   try{await post("/api/fault/clear",{}); say("hmsg","Fault cleared","ok")}
   catch(e){say("hmsg",e.message,"err")}});
 $("plugtest").addEventListener("click",async()=>{

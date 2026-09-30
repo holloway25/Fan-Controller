@@ -38,6 +38,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PY = os.path.join(ROOT, "venv", "bin", "python")
 if not os.path.exists(PY):
     PY = sys.executable
+MODULE_TIMEOUT_SECONDS = 120
 
 
 # name, file, old, new, the module that must fail
@@ -64,6 +65,55 @@ if not os.path.exists(PY):
 # caught by an unrelated crash is not evidence.
 MUTATIONS = [
     # ------------------------------------------------- the safety core
+    ("dangling-fault-forgotten", "controller.py",
+     "    if not os.path.lexists(FAULT_PATH):",
+     "    if not os.path.exists(FAULT_PATH):",
+     "test_safety_boundaries.py", "test_dangling_fault_symlink_fails_closed"),
+    ("startup-skips-range-checks", "controller.py",
+     "        validate_config_relationships(cfg)",
+     "        pass  # ranges not checked at startup",
+     "test_safety_boundaries.py",
+     "test_disk_config_obeys_every_cross_field_safety_rule"),
+    ("sensor-accepts-nan", "controller.py",
+     "        return n if math.isfinite(n) else None",
+     "        return n",
+     "test_safety_boundaries.py", "test_non_finite_reading_never_reaches_history"),
+    ("daily-state-leak", "controller.py",
+     '                           if k not in ("history", "daily")})',
+     '                           if k != "history"})',
+     "test_api_boundaries.py",
+     "test_daily_is_public_and_state_does_not_duplicate_it"),
+    ("draw-loop-hides-check-errors", "controller.py",
+     '            issue = issue or "draw check: %s" % type(e).__name__',
+     '            pass',
+     "test_api_boundaries.py",
+     "test_draw_loop_reports_an_unexpected_check_failure"),
+    ("plug-accepts-scalar-json", "controller.py",
+     '        if not isinstance(data, dict):\n            raise PlugError("Plug returned a non-object JSON reply")',
+     '        if False:\n            raise PlugError("Plug returned a non-object JSON reply")',
+     "test_plug_parse.py", "test_a_json_reply_must_be_an_object"),
+    ("smtp-allows-clear-auth", "controller.py",
+     '                if "CRAM-MD5" not in mechs:',
+     '                if False:',
+     "test_alert_delivery.py",
+     "test_refuses_when_only_clear_mechanisms_are_offered"),
+    ("unsaved-fault-flag-lost", "controller.py",
+     '                STATE["fault_unsaved"] = value is not None',
+     '                STATE["fault_unsaved"] = False',
+     "test_durability.py",
+     "test_a_fault_is_not_reported_saved_if_the_directory_sync_fails"),
+    ("cold-start-code-lost", "controller.py",
+     '           % (FC_COLD_START,',
+     '           % ("FC-999",',
+     "test_restart.py", "test_a_cold_start_says_what_it_did_not_carry"),
+    ("manual-stop-falsely-coded", "controller.py",
+     '        _log("Fan off \\u2014 manual",',
+     '        _log("FC-999 Fan off \\u2014 manual",',
+     "test_fault_codes.py", "test_normal_operation_stays_uncoded"),
+    ("owed-manual-stop-falsely-coded", "controller.py",
+     '    _log("Fan off \\u2014 manual stop owed from before restart")',
+     '    _log("FC-999 Fan off \\u2014 manual stop owed from before restart")',
+     "test_fault_codes.py", "test_normal_operation_stays_uncoded"),
     #
     # The run record behind the "Fan off" line. Four consecutive
     # reviews found the same defect in a different confirmed-stop path,
@@ -356,8 +406,13 @@ def run_one(name, path, old, new, module, expect, verbose=False):
             except SyntaxError as e:
                 return "INVALID", "mutation does not compile: %s" % e
 
-        r = subprocess.run([PY, os.path.join(tree, "tests", module)],
-                           capture_output=True, text=True, cwd=tree)
+        try:
+            r = subprocess.run([PY, os.path.join(tree, "tests", module)],
+                               capture_output=True, text=True, cwd=tree,
+                               timeout=MODULE_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            return "HUNG", "%s exceeded %ds" % (module,
+                                                    MODULE_TIMEOUT_SECONDS)
         return classify(r.returncode, r.stdout + r.stderr, expect)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -374,8 +429,13 @@ def control_run(module):
     tmp = tempfile.mkdtemp(prefix="control-")
     try:
         tree = _copy(os.path.join(tmp, "t"))
-        r = subprocess.run([PY, os.path.join(tree, "tests", module)],
-                           capture_output=True, text=True, cwd=tree)
+        try:
+            r = subprocess.run([PY, os.path.join(tree, "tests", module)],
+                               capture_output=True, text=True, cwd=tree,
+                               timeout=MODULE_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            return False, "%s exceeded %ds" % (module,
+                                                 MODULE_TIMEOUT_SECONDS)
         return r.returncode == 0, (r.stdout + r.stderr).strip()[-200:]
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

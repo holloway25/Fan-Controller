@@ -88,39 +88,22 @@ def test_a_cold_start_is_informational_not_a_failure():
 
 # ------------------------------------------------- draw fault classification
 
-def test_a_silent_plug_is_a_plug_fault_not_a_fan_fault():
-    """No reading cannot be under or over power - nothing was read."""
+def test_draw_fault_classification_and_causes():
+    """Each reading carries the right code and actionable explanation."""
     C = harness.load()
-    assert C._draw_fault_code(None, 15.0, 22.0) == C.FC_PLUG_COMMS
-    return "silence is FC-002"
-
-
-def test_under_and_over_are_judged_against_the_live_band():
-    C = harness.load()
-    assert C._draw_fault_code(0.0, 15.0, 22.0) == C.FC_UNDER_POWER
-    assert C._draw_fault_code(8.2, 15.0, 22.0) == C.FC_UNDER_POWER
-    assert C._draw_fault_code(27.6, 15.0, 22.0) == C.FC_OVER_POWER
-    # A band the dashboard has widened moves the boundary with it.
+    cases = (
+        (None, 15.0, 22.0, C.FC_PLUG_COMMS, "plug"),
+        (0.0, 15.0, 22.0, C.FC_UNDER_POWER, "did not start"),
+        (8.2, 15.0, 22.0, C.FC_UNDER_POWER, "running weakly"),
+        (27.6, 15.0, 22.0, C.FC_OVER_POWER, "more power"),
+    )
+    for reading, lo, hi, code, text in cases:
+        assert C._draw_fault_code(reading, lo, hi) == code, reading
+        cause = C._draw_fault_cause(reading, lo, hi)
+        assert text in cause.lower(), (reading, cause)
+    # A dashboard change to the band must change classification.
     assert C._draw_fault_code(27.6, 15.0, 30.0) == C.FC_UNDER_POWER
-    return "under, over, and the band that moved"
-
-
-def test_the_code_mirrors_the_cause_text():
-    """_draw_fault_code and _draw_fault_cause must not drift apart.
-
-    They are two functions reading the same reading. If one says plug
-    and the other says motor, the email contradicts itself.
-    """
-    C = harness.load()
-    cause = C._draw_fault_cause(None, 15.0, 22.0)
-    assert "plug" in cause.lower(), cause
-    assert C._draw_fault_code(None, 15.0, 22.0) == C.FC_PLUG_COMMS
-    cause = C._draw_fault_cause(27.6, 15.0, 22.0)
-    assert "more power" in cause.lower(), cause
-    assert C._draw_fault_code(27.6, 15.0, 22.0) == C.FC_OVER_POWER
-    return "code and prose agree"
-
-
+    return "draw classification and causes"
 # ------------------------------------------------------ attached to the fault
 
 def test_the_fault_carries_its_code_on_disk():
@@ -729,21 +712,24 @@ def test_an_external_change_carries_fc300():
 
 
 def test_normal_operation_stays_uncoded():
-    """A code has to mean something happened. Manual off and the owed
-    stop are the system doing what it was told."""
+    """Exercise both Manual stop messages; neither is a fault."""
     C = harness.load()
-    src = open(os.path.join(os.path.dirname(os.path.dirname(
-        os.path.abspath(__file__))), "controller.py")).read()
-    for line in ('_log("Fan off \\u2014 manual"',
-                 '"Fan off \\u2014 manual stop owed from before restart"'):
-        assert line in src, "log line moved: %s" % line
-        i = src.index(line)
-        window = src[max(0, i - 200):i]
-        assert "FC_" not in window.split("_log(")[-1], \
-            "normal operation gained a code: %s" % line
+    C.CFG["control"]["mode"] = "manual"
+    with C._state_lock:
+        C.STATE["manual_off_pending"] = True
+    C.promise_manual_off()
+    C._manual_off_locked(_Plug(True))
+    lines = [e["msg"] for e in C.load_events()]
+    assert any("Fan off" in line and "manual" in line for line in lines), lines
+    assert not any(line.startswith("FC-") for line in lines), lines
+
+    C2 = harness.load()
+    C2._announce_owed_manual_stop()
+    lines = [e["msg"] for e in C2.load_events()]
+    assert any("manual stop owed from before restart" in line
+               for line in lines), lines
+    assert not any(line.startswith("FC-") for line in lines), lines
     return "manual paths carry no code"
-
-
 class _Plug(object):
     """A plug that reports a state the controller did not command."""
 

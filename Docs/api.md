@@ -10,7 +10,7 @@ Authentication is optional. When a UI password is configured, endpoints marked
 | Method | Path | Access | Purpose |
 |---|---|---|---|
 | GET | `/` | Open | Dashboard |
-| GET | `/api/state` | Open | Current readings, fan state, latches, events and public configuration |
+| GET | `/api/state` | Open | Current readings, fan state, latches, events, loop health and public configuration |
 | GET | `/api/history` | Open | Full 24-hour history or a revision delta |
 | GET | `/api/daily` | Open | Daily low/high summaries; `?days=N` limits the result |
 | POST | `/api/clienterror` | Open | Log a browser-side error |
@@ -103,3 +103,8 @@ a replacement process answered.
 `daily.json`. Each row includes the date, sample count, and available
 low/high values for CO2, temperature and humidity. Days or metrics without
 readings are omitted rather than represented as zero.
+
+The daily archive is not included in `/api/state`; fetch it separately when
+needed. `/api/state` includes `draw_loop_at`, the last draw-monitor cycle time,
+and `draw_loop_error`, the latest draw-monitor exception category or `null`.
+Clients can detect a stalled monitor by checking the age of `draw_loop_at`.

@@ -288,9 +288,9 @@ class InstalledNotDurable(OSError):
 def write_json_durable(path, value, mode=0o600, **dump_args):
     """Write JSON so it survives a power cut, not merely a crash.
 
-    Used for config.json, fault.json and manual-off.pending. All three
-    are small, written rarely, and losing any of them has consequences a
-    user cannot see: a fault that vanishes lets Auto start a fan already
+    Used for config.json, fault.json, manual-off.pending and daily.json. These
+    are small, written relatively rarely. Losing the first three has
+    consequences a user cannot see: a fault that vanishes lets Auto start a fan already
     judged faulty, a lost config silently reverts thresholds, and a lost
     promise leaves a fan running in Manual.
 
@@ -1395,6 +1395,9 @@ STATE = {
     # True when the fault in memory could not be written to disk, so
     # a restart would lose it. Retried every draw cycle.
     "fault_unsaved": False,
+    # Draw-loop status is independent of the Protect poll error. A broken
+    # draw check must be visible even while the dashboard still responds.
+    "draw_loop_at": None, "draw_loop_error": None,
 }
 # RLock, not Lock: nested acquisition deadlocked the poll thread.
 _state_lock = threading.RLock()
@@ -1427,10 +1430,9 @@ _events_lock = threading.Lock()
 # the disk write. Flask is threaded, so two saves could otherwise each
 # deep-copy CFG, and the later commit would write back the earlier
 # snapshot of every section it did not touch - silently reverting an
-# unrelated change, a UI password among them. They also shared one
-# config.json.tmp. Order is _cfg_lock then _act_lock; nothing takes
-# _cfg_lock while holding _act_lock.
-_cfg_lock = threading.Lock()
+# unrelated change, a UI password among them. Order is _cfg_lock then
+# _act_lock; nothing takes _cfg_lock while holding _act_lock.
+_cfg_lock = threading.RLock()
 
 # Bumped every time CFG is replaced. A cycle captures it alongside its
 # clients and re-checks before actuating: the settings are already
@@ -3435,8 +3437,13 @@ def watts_loop():
     to 30s stale while the UI refreshed every 5s. Errors are swallowed so
     a plug hiccup cannot overwrite the control loop's error.
     """
+    last_issue = None
     while True:
-        _retry_fault_persist()
+        issue = None
+        try:
+            _retry_fault_persist()
+        except Exception as e:
+            issue = "fault retry: %s" % type(e).__name__
         plug = None
         try:
             _, plug, gen = _client_snapshot()
@@ -3455,11 +3462,11 @@ def watts_loop():
             with _state_lock:
                 STATE["watts"] = w
                 STATE["watts_at"] = time.time()
-        except Exception:
+        except Exception as e:
             # Left for the staleness check rather than cleared here: one
             # missed request should not blank a valid reading, but a
             # stale one must never be presented as current.
-            pass
+            issue = issue or "power read: %s" % type(e).__name__
         # Outside the read, so losing the plug still reaches the detector.
         # Inside, a failed power_w() jumped straight to except and the
         # out-of-band timer never started.
@@ -3470,15 +3477,24 @@ def watts_loop():
                 # leave a fan switched off elsewhere stopped for minutes
                 # while the mode says otherwise.
                 _force_on(plug, gen)
-        except Exception:
-            pass
+        except Exception as e:
+            issue = issue or "Force on: %s" % type(e).__name__
         # Called even in Force on, where it stands down and clears the
         # out-of-band timer. Skipping it there would leave a stale start
         # time to resume from and could fault the fan early on the way out.
         try:
             _draw_check(plug, gen)
-        except Exception:
-            pass
+        except Exception as e:
+            issue = issue or "draw check: %s" % type(e).__name__
+        with _state_lock:
+            STATE["draw_loop_at"] = time.time()
+            STATE["draw_loop_error"] = issue
+        if issue != last_issue:
+            if issue:
+                _log("%s Draw loop error - %s" % (FC_POLL_ERROR, issue))
+            elif last_issue:
+                _log("%s Draw loop recovered" % FC_POLL_ERROR)
+            last_issue = issue
         time.sleep(WATTS_SECONDS)
 
 def _wait_for_dns(timeout=30, interval=3):
@@ -3684,11 +3700,12 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 
 
 def _safe_cfg():
-    c = copy.deepcopy(CFG)
-    c["ui"]["password_hash"] = "SET" if CFG["ui"]["password_hash"] else ""
-    c["protect"]["password"] = "SET" if CFG["protect"]["password"] else ""
-    c["plug"]["password"] = "SET" if CFG["plug"]["password"] else ""
-    c["email"]["password"] = "SET" if CFG["email"]["password"] else ""
+    with _cfg_lock:
+        c = copy.deepcopy(CFG)
+    c["ui"]["password_hash"] = "SET" if c["ui"]["password_hash"] else ""
+    c["protect"]["password"] = "SET" if c["protect"]["password"] else ""
+    c["plug"]["password"] = "SET" if c["plug"]["password"] else ""
+    c["email"]["password"] = "SET" if c["email"]["password"] else ""
     return c
 
 
@@ -3722,7 +3739,7 @@ def check_ui_password(plain, stored):
 # Readable without a password; everything else needs one once set.
 # /api/debug/sensor is deliberately not public: it returns the raw
 # Protect payload, which is diagnostic data, not dashboard data.
-PUBLIC_GET = {"/", "/api/state", "/api/history",
+PUBLIC_GET = {"/", "/api/state", "/api/history", "/api/daily",
               "/favicon.ico", "/apple-touch-icon.png",
               "/apple-touch-icon-precomposed.png"}
 PUBLIC_POST = {"/api/clienterror"}
@@ -3928,7 +3945,7 @@ def api_state():
         # refresh, so it moves to /api/history and history_rev says when to
         # refetch.
         s = copy.deepcopy({k: v for k, v in STATE.items()
-                           if k != "history"})
+                           if k not in ("history", "daily")})
     # Trim: 300 events every 5s is needless payload; the rest stay on disk.
     # An unreachable plug must not leave a positive draw on screen: a
     # stale reading is reported as unknown, not as current.
@@ -4464,32 +4481,16 @@ def _apply_resume():
     return True
 
 
+def _announce_owed_manual_stop():
+    """Record the durable Manual-mode stop owed by a cold start."""
+    _log("Fan off \u2014 manual stop owed from before restart")
+
+
 def _announce_start(resumed):
-    """Say so when the process started cold, and what it did not carry.
+    """Log a cold start before threads run; an execv handover logs separately.
 
-    THE PROBLEM THIS SOLVES IS A READING PROBLEM, not a control one.
-    Every cold start drops the rule latch and the minimum-run lease by
-    design - they are memory-only, and only the execv handover carries
-    them. So the log showed a fan stopping at a reading well above
-    off_at, seconds into a lease that should have held it, and nothing
-    above it saying the process was new. That is correct behaviour
-    rendered as a mystery, and it was investigated as a defect on
-    2026-08-18 before anyone thought to ask whether the board had lost
-    power.
-
-    WHAT IT MUST SAY is what was NOT carried, because that is the part
-    that explains the lines underneath: no latch, no lease, and whether
-    a fault was found on disk. The fault is the one piece of state that
-    DOES survive - it is written to fault.json precisely so a restart
-    cannot re-arm a fan already judged unsafe - so a line listing what
-    was dropped is misleading unless it also names what was kept.
-
-    Returns the line, or None after a handover. A handover already logs
-    "Resumed after restart" with the values it carried; two lines
-    saying the same thing differently is how the log got noisy before.
-
-    Called before any thread starts, so it cannot arrive after the
-    first poll's events and it cannot race the first draw cycle.
+    A cold start drops memory-only latches and the minimum-run lease, but
+    a persisted fault remains held. Return the line, or None on handover.
     """
     if resumed:
         return None
@@ -4706,7 +4707,7 @@ if __name__ == "__main__":
             and manual_off_promised():
         with _state_lock:
             STATE["manual_off_pending"] = True
-        _log("Fan off \u2014 manual stop owed from before restart")
+        _announce_owed_manual_stop()
     # A fault that outlived the restart. Said out loud because
     # restarting is not how one gets cleared, and whoever just restarted
     # may well have been trying exactly that. Before the threads, so it

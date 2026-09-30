@@ -14,6 +14,7 @@ on:
 jobs:
   linux:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -28,37 +29,10 @@ jobs:
         # this row is compatibility cover, not a description of the
         # deployed board. Corrected 2026-08-16; it used to claim
         # Bookworm was what the 3B+ runs.
-        # 3.14 is what production runs today.
+        # 3.14 covers the development/x86 environment; the Pi uses 3.13.
         python: ["3.10", "3.11", "3.14"]
     steps:
-      # Node 20 was deprecated on the Actions runners. checkout v5 and
-      # setup-python v6 are the first releases targeting Node 24
-      # natively, which is the whole of what this bump is for. It
-      # changed no behaviour: the green run BEFORE the bump was already
-      # being force-run on Node 24, so the eventual removal of Node 20
-      # takes away a runtime this workflow had already stopped using.
-      #
-      # NO DATES HERE, ON PURPOSE. An earlier version of this comment
-      # pinned two of them and both were wrong within weeks - GitHub
-      # moved the default-switch date and withdrew the removal date
-      # altogether. Read the changelog for the current schedule:
-      # https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
-      #
-      # v5 RATHER THAN v6 IS NOT A SAFETY CHOICE, whatever an earlier
-      # version of this comment claimed. It said v6 alone changed
-      # pull_request_target defaults and alone needed a newer runner.
-      # Both were wrong. The pull_request_target enforcement was
-      # backported to every supported major, and a floating tag like
-      # @v5 picks it up automatically - so this workflow already has
-      # it. The v2.329.0 runner floor is for authenticated git from a
-      # Docker container action, which this does not do. v5 is here
-      # because it works and is green; v6 and v7 exist and would also
-      # work. Do not churn the version without a reason.
-      #
-      # @v5 and @v6 float, so they pick up backports - which is exactly
-      # how the enforcement above arrived without anyone editing this
-      # file. If a CI result ever needs to be reproducible, pin the full
-      # commit SHA with the version in a trailing comment instead.
+      # Current action majors run on supported GitHub runner Node versions.
       - uses: actions/checkout@v5
 
       - uses: actions/setup-python@v6
@@ -197,6 +171,7 @@ jobs:
   # minutes re-proving that Python is Python.
   arm64:
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
 
