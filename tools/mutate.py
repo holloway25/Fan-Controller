@@ -114,6 +114,33 @@ MUTATIONS = [
      '    _log("Fan off \\u2014 manual stop owed from before restart")',
      '    _log("FC-999 Fan off \\u2014 manual stop owed from before restart")',
      "test_fault_codes.py", "test_normal_operation_stays_uncoded"),
+    ("missing-reading-clears-latch", "controller.py",
+     '            pass\n        elif val >= c[r["on"]]:',
+     '            latch[key] = False\n        elif val >= c[r["on"]]:',
+     "test_control.py", "test_a_dropped_reading_holds_every_latch"),
+    ("failed-stale-alert-counts-as-delivered", "controller.py",
+     '        if ok:\n            _stale_delivered = True',
+     '        if True:\n            _stale_delivered = True',
+     "test_alert_delivery.py",
+     "test_no_all_clear_when_the_warning_was_never_delivered"),
+    ("late-callback-stamps-replacement-fault", "controller.py",
+     '''        if not cur or cur.get("at") != expected_at:
+            return                  # acknowledged, or replaced
+        cur["delivered_at"] = time.time()
+        with _state_lock:
+            if not STATE["fault"] or STATE["fault"].get("at") != expected_at:''',
+     '''        if not cur:
+            return                  # acknowledged, or replaced
+        cur["delivered_at"] = time.time()
+        with _state_lock:
+            if not STATE["fault"]:''',
+     "test_alert_delivery.py",
+     "test_a_replacement_fault_is_not_marked_delivered"),
+    ("http-error-leaks-long-trace", "controller.py",
+     '            return phrase',
+     '            return str(e)',
+     "test_failures.py",
+     "test_an_unreachable_console_does_not_paste_the_retry_stack"),
     #
     # The run record behind the "Fan off" line. Four consecutive
     # reviews found the same defect in a different confirmed-stop path,
