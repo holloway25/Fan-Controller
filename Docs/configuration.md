@@ -16,6 +16,12 @@ unexpectedly. Check the service journal for the named field, correct the file,
 and restart. Missing keys in an otherwise valid older configuration still
 receive upgrade defaults.
 
+Startup applies the same relationship checks as a dashboard save: CO2,
+temperature and humidity turn-on values must be above their turn-off values,
+and the expected draw minimum must be below its maximum. These checks also
+apply when the corresponding trigger is disabled, so a later enable cannot
+activate a configuration that was never valid.
+
 ## Control
 
 | Key | Default | Valid range or values | Meaning |
@@ -73,10 +79,10 @@ stale, low or high reading starts the fault timer while the relay is on. A
 healthy reading resets the timer.
 
 A draw fault stops the fan, survives restart, and blocks Auto until cleared.
-If an existing `fault.json` is malformed or unreadable, startup creates an
-FC-206 safety fault in memory rather than interpreting the damaged file as an
-acknowledgement. The stop is retried until confirmed. Force on overrides the
-fault to permit testing after a repair.
+If an existing `fault.json` is malformed, only partly valid, unreadable, or a
+dangling symbolic link, startup creates an FC-206 safety fault in memory rather
+than interpreting the damaged path as an acknowledgement. The stop is retried
+until confirmed. Force on overrides the fault to permit testing after a repair.
 
 Changing the plug address clears the stored plug password. Re-enter it and test
 the plug after an address change. The Tasmota HTTP command API must be enabled.

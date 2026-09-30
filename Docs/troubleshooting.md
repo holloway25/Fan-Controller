@@ -17,11 +17,13 @@ Read the first configuration error in the journal. An existing `config.json`
 must be valid JSON made of known sections and settings; invalid present values
 are not replaced with defaults. Correct the named field rather than deleting
 the live configuration. A missing field in an otherwise valid older file is
-filled from the current defaults.
+filled from the current defaults. Startup also rejects inverted CO2,
+temperature, humidity, or draw ranges just as the dashboard does.
 
-An FC-206 persisted-fault message means `fault.json` exists but could not be
-read safely. Do not delete it merely to make the service start: inspect its
-ownership, mode and JSON structure, then acknowledge the resulting safety
+An FC-206 persisted-fault message means the `fault.json` path exists but its
+complete record could not be read safely. This includes a dangling symbolic
+link. Do not delete it merely to make the service start: inspect its ownership,
+mode, link target and JSON structure, then acknowledge the resulting safety
 fault through the normal operator flow once the underlying condition is
 understood.
 

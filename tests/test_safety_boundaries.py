@@ -58,6 +58,27 @@ def test_mistyped_safety_setting_never_falls_back_to_default():
     return "unknown control key named and rejected"
 
 
+def test_disk_config_obeys_every_cross_field_safety_rule():
+    cases = [
+        ({"control": {"on_at": 700, "off_at": 800}}, "Turn-on"),
+        ({"control": {"temp_enabled": True,
+                      "temp_on": 20, "temp_off": 21}}, "temperature"),
+        ({"control": {"humidity_enabled": True,
+                      "humidity_on": 50, "humidity_off": 60}}, "humidity"),
+        ({"plug": {"watts_min": 30, "watts_max": 20}}, "draw"),
+    ]
+    for body, expected in cases:
+        msg = _configuration_error(json.dumps(body))
+        assert expected.lower() in msg.lower(), (expected, msg)
+        C = harness.load()
+        response = C.app.test_client().post("/api/config", json=body)
+        assert response.status_code == 400, (
+            body, response.status_code, response.get_data(as_text=True))
+        assert expected.lower() in response.get_json()["error"].lower(), (
+            expected, response.get_json())
+    return "startup and UI enforce the same four relationships"
+
+
 def test_unreadable_config_refuses_startup():
     C = harness.load()
     C.CFG_PATH = C.DIR  # opening a directory is a portable OSError
@@ -84,6 +105,39 @@ def test_damaged_fault_file_fails_closed():
         _write(C.FAULT_PATH, text)
         _assert_startup_fault(C)
     return "truncated and wrong-shaped fault state remains latched"
+
+
+def test_partly_damaged_fault_record_fails_closed_and_clears_cleanly():
+    C = harness.load()
+    _write(C.FAULT_PATH, json.dumps({
+        "msg": "old draw fault", "at": "bad", "stopped": True,
+        "attempted_at": None, "delivered_at": "bad"}))
+    fault = C.load_fault()
+    _assert_startup_fault(C)
+    assert fault.get("delivered_at") is None, fault
+    with C._state_lock:
+        C.STATE["fault"] = fault
+
+    response = C.app.test_client().post("/api/fault/clear")
+
+    assert response.status_code == 200, response.get_data(as_text=True)
+    assert response.get_json().get("cleared") is True
+    assert C.STATE["fault"] is None
+    assert not os.path.lexists(C.FAULT_PATH), "damaged file survived clear"
+    return "malformed timestamps become FC-206 and acknowledgement succeeds"
+
+
+def test_dangling_fault_symlink_fails_closed():
+    C = harness.load()
+    target = os.path.join(C.DIR, "missing-fault-target.json")
+    try:
+        os.symlink(target, C.FAULT_PATH)
+    except (AttributeError, NotImplementedError, OSError) as exc:
+        harness.skip("cannot create a symlink here: %s" % exc)
+    assert os.path.lexists(C.FAULT_PATH), "test did not create the link"
+    assert not os.path.exists(C.FAULT_PATH), "test target unexpectedly exists"
+    _assert_startup_fault(C)
+    return "dangling link is a damaged fault, not an absent fault"
 
 
 def test_unreadable_fault_file_fails_closed():

@@ -106,6 +106,28 @@ class ConfigurationError(RuntimeError):
     """The stored configuration cannot be trusted for safe operation."""
 
 
+def validate_config_relationships(cfg):
+    """Validate relationships that per-field schemas cannot express.
+
+    Used for both startup and dashboard writes so a hand-edited file cannot
+    bypass the safety checks applied to the same values in the UI.
+    """
+    c = cfg["control"]
+    if c["on_at"] <= c["off_at"]:
+        raise ValueError("Turn-on level must be higher than turn-off level, "
+                         "or the fan will never stop.")
+    if c.get("temp_enabled") and c["temp_on"] <= c["temp_off"]:
+        raise ValueError("Cool-to temperature must be below the turn-on "
+                         "temperature.")
+    if c.get("humidity_enabled") \
+            and c["humidity_on"] <= c["humidity_off"]:
+        raise ValueError("The humidity turn-off level must be below the "
+                         "turn-on level.")
+    pg = cfg["plug"]
+    if pg["watts_min"] >= pg["watts_max"]:
+        raise ValueError("Expected draw low must be below high.")
+
+
 def _coerce(name, spec, v):
     """Convert and range-check one value, or raise ValueError.
 
@@ -214,6 +236,10 @@ def load_cfg():
             except ValueError as e:
                 raise ConfigurationError("%s; refusing to start" % e)
         cfg[section] = clean
+    try:
+        validate_config_relationships(cfg)
+    except ValueError as e:
+        raise ConfigurationError("%s refusing to start" % e)
     return cfg
 
 
@@ -354,7 +380,7 @@ def load_fault():
     Held in memory alone, restarting the service - or the host losing
     power - would silently re-arm a fan already judged faulty.
     """
-    if not os.path.exists(FAULT_PATH):
+    if not os.path.lexists(FAULT_PATH):
         return None
     try:
         with open(FAULT_PATH) as f:
@@ -362,8 +388,7 @@ def load_fault():
     except (ValueError, OSError) as e:
         why = type(e).__name__
     else:
-        if isinstance(d, dict) and isinstance(d.get("msg"), str) \
-                and d["msg"].strip():
+        if _valid_fault_record(d):
             return d
         why = "invalid structure"
     # Never interpret an unreadable latch as an acknowledgement. This fault
@@ -374,6 +399,33 @@ def load_fault():
                     "could not be read (%s)" % why),
             "code": "FC-206", "stopped": False,
             "attempted_at": None, "delivered_at": None}
+
+
+def _valid_fault_record(value):
+    """Whether a persisted fault is safe for every downstream operation."""
+    if not isinstance(value, dict):
+        return False
+    if set(value) - {"at", "msg", "code", "stopped",
+                     "attempted_at", "delivered_at"}:
+        return False
+    if not isinstance(value.get("msg"), str) or not value["msg"].strip():
+        return False
+    at = value.get("at")
+    if isinstance(at, bool) or not isinstance(at, (int, float)) \
+            or not math.isfinite(float(at)):
+        return False
+    if "stopped" in value and not isinstance(value["stopped"], bool):
+        return False
+    if "code" in value and (not isinstance(value["code"], str)
+                            or not value["code"].strip()):
+        return False
+    for key in ("attempted_at", "delivered_at"):
+        stamp = value.get(key)
+        if stamp is not None and (isinstance(stamp, bool)
+                                  or not isinstance(stamp, (int, float))
+                                  or not math.isfinite(float(stamp))):
+            return False
+    return True
 
 
 def promise_manual_off():
@@ -4134,37 +4186,10 @@ def _api_config_locked():
     notice = _guard_credentials(cand, body)
     cand["protect"]["verify_tls"] = bool(
         cand["protect"].get("verify_tls"))
-    c = cand["control"]
     try:
-        on_at, off_at = float(c["on_at"]), float(c["off_at"])
-    except (TypeError, ValueError):
-        return jsonify(error="Thresholds must be numbers."), 400
-    if on_at <= off_at:
-        return jsonify(error="Turn-on level must be higher than turn-off "
-                             "level, or the fan will never stop."), 400
-    if c.get("temp_enabled"):
-        try:
-            t_on, t_off = float(c["temp_on"]), float(c["temp_off"])
-        except (TypeError, ValueError):
-            return jsonify(error="Temperatures must be numbers."), 400
-        if t_on <= t_off:
-            return jsonify(error="Cool-to temperature must be below the "
-                                 "turn-on temperature."), 400
-    if c.get("humidity_enabled"):
-        try:
-            h_on, h_off = float(c["humidity_on"]), float(c["humidity_off"])
-        except (TypeError, ValueError):
-            return jsonify(error="Humidity levels must be numbers."), 400
-        if h_on <= h_off:
-            return jsonify(error="The humidity turn-off level must be "
-                                 "below the turn-on level."), 400
-    pg = cand["plug"]
-    try:
-        w_lo, w_hi = float(pg["watts_min"]), float(pg["watts_max"])
-    except (TypeError, ValueError):
-        return jsonify(error="Draw limits must be numbers."), 400
-    if w_lo >= w_hi:
-        return jsonify(error="Expected draw low must be below high."), 400
+        validate_config_relationships(cand)
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
     summary = _describe_changes(cand)
     # Before save_cfg, not after. The promise has to reach disk BEFORE
     # the mode that creates it, or a crash in between leaves Manual
