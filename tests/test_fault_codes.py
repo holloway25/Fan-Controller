@@ -225,7 +225,7 @@ def test_the_clear_codes_are_pinned_too():
 
 def _ack(C):
     """Acknowledge through the endpoint, as the dashboard does."""
-    with C.app.test_request_context():
+    with C.app.test_request_context("/api/fault/clear", method="POST", json={}):
         return C.api_fault_clear()
 
 
@@ -547,7 +547,7 @@ def test_a_late_callback_cannot_vouch_for_the_next_fault():
     assert C._unsaved_delivered is not None, "A never recorded delivery"
 
     # A is acknowledged and a NEW fault is raised.
-    with C.app.test_request_context():
+    with C.app.test_request_context("/api/fault/clear", method="POST", json={}):
         C.api_fault_clear()
     E.raise_draw_fault(C, 27.6, lo=15.0, hi=22.0)
 
@@ -599,7 +599,7 @@ def test_the_whole_draw_episode_carries_one_code():
     C = harness.load()
     E.wire(C)
     E.raise_draw_fault(C, 8.2, lo=15.0, hi=22.0)
-    with C.app.test_request_context():
+    with C.app.test_request_context("/api/fault/clear", method="POST", json={}):
         C.api_fault_clear()
     hits = [e["msg"] for e in C.load_events()
             if C.FC_UNDER_POWER in e["msg"]]

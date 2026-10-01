@@ -118,7 +118,7 @@ def test_partly_damaged_fault_record_fails_closed_and_clears_cleanly():
     with C._state_lock:
         C.STATE["fault"] = fault
 
-    response = C.app.test_client().post("/api/fault/clear")
+    response = C.app.test_client().post("/api/fault/clear", json={})
 
     assert response.status_code == 200, response.get_data(as_text=True)
     assert response.get_json().get("cleared") is True

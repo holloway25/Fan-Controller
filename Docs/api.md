@@ -7,6 +7,13 @@ JSON requests are limited to 8 KB. State-changing endpoints require
 Authentication is optional. When a UI password is configured, endpoints marked
 **protected** require HTTP Basic authentication.
 
+API writes also reject browser requests from another origin, regardless of
+whether a password is set. `Origin`, or `Referer` when Origin is absent, must
+match the request's scheme, host and port; cross-site and same-site fetches
+from another origin are rejected. Scripts without browser origin headers
+remain supported. Fault acknowledgement requires a valid JSON object (`{}`
+is sufficient); rejected requests leave the safety latch intact.
+
 | Method | Path | Access | Purpose |
 |---|---|---|---|
 | GET | `/` | Open | Dashboard |
@@ -41,6 +48,9 @@ power-loss durability was not confirmed. Clients must read the response body.
 
 A mode change may wait for an in-progress plug command to finish. This prevents
 a command from the old mode landing after the new mode has been committed.
+
+Once fault acknowledgement has succeeded, an optional notification error
+is logged and does not turn the successful clear into a failed response.
 
 ## Secrets
 

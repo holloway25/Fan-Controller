@@ -174,7 +174,7 @@ def test_failed_clear_endpoint_answers_503():
     C = harness.load()
     C._store_fault(dict(FAULT))
     with failing_os("remove"):
-        r = C.app.test_client().post("/api/fault/clear")
+        r = C.app.test_client().post("/api/fault/clear", json={})
 
     assert r.status_code == 503, r.status_code
     assert C.STATE["fault"] is not None, "fault cleared despite the error"

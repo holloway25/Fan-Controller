@@ -12,6 +12,7 @@ import atexit, copy, hashlib, hmac, json, math, os, re, signal, smtplib
 import socket, ssl, sys, tempfile
 import threading, time
 from datetime import date
+from urllib.parse import urlsplit
 import requests, urllib3
 from flask import Flask, Response, jsonify, request, render_template
 from werkzeug.exceptions import RequestEntityTooLarge
@@ -401,6 +402,23 @@ def load_fault():
             "attempted_at": None, "delivered_at": None}
 
 
+def _valid_fault_timestamp(value):
+    """Accept only timestamps our local date and alert formatters can use."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        stamp = float(value)
+        if not math.isfinite(stamp):
+            return False
+        # date enforces a portable year range (1..9999), and strftime is
+        # the same platform formatting operation used by alert messages.
+        date.fromtimestamp(stamp)
+        time.strftime("%Y-%m-%d %H:%M:%S %Z", time.localtime(stamp))
+    except (OverflowError, OSError, ValueError):
+        return False
+    return True
+
+
 def _valid_fault_record(value):
     """Whether a persisted fault is safe for every downstream operation."""
     if not isinstance(value, dict):
@@ -410,9 +428,7 @@ def _valid_fault_record(value):
         return False
     if not isinstance(value.get("msg"), str) or not value["msg"].strip():
         return False
-    at = value.get("at")
-    if isinstance(at, bool) or not isinstance(at, (int, float)) \
-            or not math.isfinite(float(at)):
+    if not _valid_fault_timestamp(value.get("at")):
         return False
     if "stopped" in value and not isinstance(value["stopped"], bool):
         return False
@@ -421,9 +437,7 @@ def _valid_fault_record(value):
         return False
     for key in ("attempted_at", "delivered_at"):
         stamp = value.get(key)
-        if stamp is not None and (isinstance(stamp, bool)
-                                  or not isinstance(stamp, (int, float))
-                                  or not math.isfinite(float(stamp))):
+        if stamp is not None and not _valid_fault_timestamp(stamp):
             return False
     return True
 
@@ -3745,6 +3759,44 @@ PUBLIC_GET = {"/", "/api/state", "/api/history", "/api/daily",
 PUBLIC_POST = {"/api/clienterror"}
 
 
+def _origin_key(value):
+    """Compare HTTP origins, including their effective port."""
+    try:
+        parsed = urlsplit(value)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname \
+                or parsed.username is not None or parsed.password is not None:
+            return None
+        port = parsed.port
+        if port is None:
+            port = 443 if parsed.scheme == "https" else 80
+        return parsed.scheme, parsed.hostname.lower(), port
+    except ValueError:
+        return None
+
+
+@app.before_request
+def _require_same_origin():
+    """Protect API writes even when optional dashboard auth is disabled.
+
+    Browser origin/fetch headers cannot be forged by page JavaScript.
+    Headerless scripts remain supported; JSON validation blocks HTML forms.
+    """
+    if request.method not in ("POST", "PUT", "PATCH", "DELETE") \
+            or not request.path.startswith("/api/") \
+            or request.path in PUBLIC_POST:
+        return None
+    expected = _origin_key(request.host_url)
+    origin = request.headers.get("Origin")
+    referer = request.headers.get("Referer")
+    source = origin if origin is not None else referer
+    supplied = _origin_key(source) if source is not None else None
+    fetch_site = request.headers.get("Sec-Fetch-Site", "").lower()
+    if (source is not None and (supplied is None or supplied != expected)) \
+            or fetch_site in ("cross-site", "same-site"):
+        return jsonify(error="API changes require a same-origin request."), 403
+    return None
+
+
 @app.before_request
 def _require_auth():
     """Basic auth on anything that changes state or exposes internals.
@@ -3972,6 +4024,29 @@ def api_state():
 
 
 
+def _notify_fault_cleared(had):
+    """Send a closure only for a fault whose warning was delivered."""
+    if not had.get("delivered_at"):
+        return
+    raised = had.get("at") or time.time()
+    titles = {FC_PLUG_COMMS: "Plug Communications Fault",
+              FC_UNDER_POWER: "Hard Fault - Under Power",
+              FC_OVER_POWER: "Hard Fault - Over Power"}
+    _notify("%s Fault cleared - fan available again" % FC_HARD_CLEARED,
+            _alert_body(
+                FC_HARD_CLEARED, "Hard Fault Cleared", time.time(),
+                "Acknowledged in the dashboard. The fan is available "
+                "again and normal control has resumed.",
+                [("Cleared fault", "%s %s"
+                  % (had.get("code") or "unknown",
+                     titles.get(had.get("code"), ""))),
+                 ("Raised at", _stamp(raised)),
+                 ("Fault duration", _duration(time.time() - raised)),
+                 ("Action taken", "Fault cleared, automatic control resumed"),
+                 ("Manual action", "No"),
+                 ("Controller mode", _mode_now())]))
+
+
 @app.route("/api/fault/clear", methods=["POST"])
 def api_fault_clear():
     """Acknowledge a draw fault and allow automatic runs again.
@@ -3981,6 +4056,9 @@ def api_fault_clear():
     stop.
     """
     global _oob_since
+    err = _body_error(_json_body())
+    if err:
+        return err
     # One transaction: clearing memory and deleting the file separately
     # let a concurrent confirmation write the old fault back afterwards.
     had, ok = _clear_fault()
@@ -3995,38 +4073,16 @@ def api_fault_clear():
     if had:
         code = had.get("code") or "a draw fault"
         _log("%s Fault cleared \u2014 %s" % (FC_HARD_CLEARED, code))
-        # GATED ON DELIVERY, exactly as FC-100 is. If the original alert
-        # never reached anyone there is nothing to stand down from, and
-        # a closure notice for an episode nobody was told about reads as
-        # a message that went missing.
-        #
-        # The person who clicked acknowledge learns nothing from this.
-        # It is for the OTHER recipients, who still believe the fan is
-        # stopped, and for the archive: an episode that opens FC-003 and
-        # closes FC-101 can be reconstructed later with a duration.
-        if had.get("delivered_at"):
-            raised = had.get("at") or time.time()
-            titles = {FC_PLUG_COMMS: "Plug Communications Fault",
-                      FC_UNDER_POWER: "Hard Fault - Under Power",
-                      FC_OVER_POWER: "Hard Fault - Over Power"}
-            _notify("%s Fault cleared - fan available again"
-                    % FC_HARD_CLEARED,
-                    _alert_body(
-                        FC_HARD_CLEARED, "Hard Fault Cleared",
-                        time.time(),
-                        "Acknowledged in the dashboard. The fan is "
-                        "available again and normal control has "
-                        "resumed.",
-                        [("Cleared fault", "%s %s"
-                          % (had.get("code") or "unknown",
-                             titles.get(had.get("code"), ""))),
-                         ("Raised at", _stamp(raised)),
-                         ("Fault duration",
-                          _duration(time.time() - raised)),
-                         ("Action taken",
-                          "Fault cleared, automatic control resumed"),
-                         ("Manual action", "No"),
-                         ("Controller mode", _mode_now())]))
+        # Clearing is already committed. Optional notification formatting
+        # or queueing must never turn that success into a failed response.
+        try:
+            _notify_fault_cleared(had)
+        except Exception as exc:
+            try:
+                _log("%s Fault-clear notification could not be prepared: %s"
+                     % (FC_ALERT_FAILED, type(exc).__name__))
+            except Exception:
+                pass
     _wake.set()
     return jsonify(ok=True, cleared=bool(had))
 @app.route("/api/daily")

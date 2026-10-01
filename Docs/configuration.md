@@ -16,11 +16,11 @@ unexpectedly. Check the service journal for the named field, correct the file,
 and restart. Missing keys in an otherwise valid older configuration still
 receive upgrade defaults.
 
-Startup applies the same relationship checks as a dashboard save: CO2,
-temperature and humidity turn-on values must be above their turn-off values,
-and the expected draw minimum must be below its maximum. These checks also
-apply when the corresponding trigger is disabled, so a later enable cannot
-activate a configuration that was never valid.
+Startup applies the same relationship checks as a dashboard save. CO2
+turn-on must be above turn-off, and expected draw minimum must be below
+maximum, even when their respective checks are disabled. Temperature and
+humidity bands are checked when their trigger is enabled; reversed bands
+may be stored while disabled, but must be corrected before enabling.
 
 ## Control
 
