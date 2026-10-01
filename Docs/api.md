@@ -57,6 +57,12 @@ a command from the old mode landing after the new mode has been committed.
 Once fault acknowledgement has succeeded, an optional notification error
 is logged and does not turn the successful clear into a failed response.
 
+`/api/email/test` reports success only when the SMTP relay accepts all
+configured recipients. Partial acceptance returns 400 with an explicit
+partial-delivery error, not `ok` or a complete `sent_to` list. Some recipients
+may already have received the message; repeating the test can send duplicates.
+Relay acceptance is not proof of final inbox delivery.
+
 ## Secrets
 
 `protect.password`, `plug.password`, `email.password` and

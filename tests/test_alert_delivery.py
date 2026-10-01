@@ -337,11 +337,12 @@ def test_password_is_redacted_and_cleared_with_the_host():
 class FakeSMTP(object):
     """Enough of smtplib.SMTP to record what a send actually does."""
 
-    def __init__(self, auth="CRAM-MD5 PLAIN LOGIN", starttls=False):
+    def __init__(self, auth="CRAM-MD5 PLAIN LOGIN", starttls=False, refused=None):
         self.esmtp_features = {"auth": auth} if auth else {}
         self._starttls = starttls
         self.calls = []
         self.sent = None
+        self.refused = refused or {}
         self.user = None
         self.password = None
         # Real code passes s.auth_cram_md5 to s.auth(), so the fake needs
@@ -375,7 +376,7 @@ class FakeSMTP(object):
 
     def sendmail(self, sender, to, msg):
         self.sent = (sender, to, msg)
-        return {}
+        return self.refused
 
     def quit(self):
         self.calls.append("quit")
@@ -388,6 +389,62 @@ def with_fake(C, fake, **cfg):
     C.CFG["email"].update(**cfg)
     C.smtplib.SMTP = lambda *a, **k: fake
     return fake
+
+
+def test_partial_recipient_rejection_is_not_complete_success():
+    C = harness.load()
+    real = C.smtplib.SMTP
+    fake = with_fake(C, FakeSMTP(refused={"b@example.net": (550, b"private reply")}),
+                     recipients="a@example.com, b@example.net")
+    try:
+        why = C._send_mail("s", "b")
+    finally:
+        C.smtplib.SMTP = real
+    assert why and "partial" in why.lower(), why
+    assert "1 of 2" in why and "1 rejected" in why, why
+    assert "private reply" not in why and "b@example.net" not in why, why
+    assert "quit" in fake.calls, fake.calls
+    return "partial acceptance reported without relay response or addresses"
+
+
+def test_email_test_endpoint_reports_partial_recipient_rejection():
+    C = harness.load()
+    real = C.smtplib.SMTP
+    with_fake(C, FakeSMTP(refused={"b@example.net": (550, b"rejected")}),
+              recipients="a@example.com, b@example.net")
+    try:
+        response = C.app.test_client().post("/api/email/test", json={})
+    finally:
+        C.smtplib.SMTP = real
+    result = response.get_json()
+    assert response.status_code == 400, (response.status_code, result)
+    assert "partial" in result["error"].lower(), result
+    assert "sent_to" not in result and not result.get("ok"), result
+    return "test endpoint does not claim all recipients received mail"
+
+
+def test_partial_delivery_does_not_mark_alert_fully_delivered():
+    import threading
+    C = harness.load()
+    real = C.smtplib.SMTP
+    with_fake(C, FakeSMTP(refused={"b@example.net": (550, b"rejected")}),
+              recipients="a@example.com, b@example.net")
+    done = threading.Event()
+    calls = []
+
+    def complete(ok):
+        calls.append(ok)
+        done.set()
+
+    try:
+        C._notify("alarm", "body", on_complete=complete)
+        assert done.wait(5), "notification worker did not finish"
+    finally:
+        C.smtplib.SMTP = real
+    assert calls == [False], calls
+    assert any("FC-203" in e["msg"] and "Partial" in e["msg"]
+               for e in C.STATE["events"]), C.STATE["events"]
+    return "partial delivery is a failed completion, not an all-clear prerequisite"
 
 
 def test_cram_md5_is_used_and_login_is_never_called():

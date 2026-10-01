@@ -141,10 +141,15 @@ alerts.
 
 The code series are stable:
 
-- `0xx`: alarm email delivered
-- `1xx`: all-clear email delivered
-- `2xx`: operational event that was not emailed
+- `0xx`: alarm condition or notification category
+- `1xx`: recovery or all-clear category
+- `2xx`: operational status or failure
 - `3xx`: informational event
+
+Codes classify events, not email delivery. An alarm such as `FC-003` can be
+logged while email is disabled, unconfigured or rejected by the relay. Do not
+treat an activity entry as a delivery receipt; check alert configuration,
+delivery failures (`FC-203`) and the mail system separately.
 
 Alerts are sent once when entering the relevant state. All-clear messages send
 only when the matching original warning was successfully delivered. Normal
@@ -168,9 +173,12 @@ verification before authenticating. Without STARTTLS, authenticated delivery
 uses CRAM-MD5 only. It refuses PLAIN or LOGIN authentication over an
 unencrypted connection.
 
-Alert delivery runs outside the control path. Delivery is recorded only after
-the relay accepts the message; failed alerts can therefore be retried without
-creating false all-clears.
+Alert delivery runs outside the control path. A send is recorded as successful
+only when the relay accepts every configured recipient; this is relay
+acceptance, not proof that the message reached each inbox. Partial recipient
+rejection is reported as partial delivery and does not mark the alert fully
+delivered. Accepted recipients may already have received it, and a retry can
+send them a duplicate. Failed alerts do not create false all-clears.
 
 ## UI authentication
 

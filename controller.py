@@ -2344,7 +2344,15 @@ def _send_mail(subject, body):
                 s.user = e["username"]
                 s.password = e["password"]
                 s.auth("CRAM-MD5", s.auth_cram_md5)
-        s.sendmail(e["sender"], to, msg)
+        refused = s.sendmail(e["sender"], to, msg)
+        if refused:
+            # smtplib returns normally when SOME recipients accepted the
+            # message. Do not mark the whole alert delivered, or expose
+            # recipient addresses and arbitrary relay replies in errors.
+            return ("Partial delivery: relay accepted %d of %d recipients; "
+                    "%d rejected. Accepted recipients may already have "
+                    "received the message."
+                    % (len(to) - len(refused), len(to), len(refused)))
         return None
     except Exception as exc:
         return "%s: %s" % (type(exc).__name__, exc)
@@ -2359,8 +2367,9 @@ def _notify(subject, body, on_complete=None):
     """Queue a notification. Returns immediately; never raises.
 
     on_complete(ok) IS ALWAYS CALLED EXACTLY ONCE, whatever happens:
-    with True from the sending thread if the relay accepted the
-    message, and with False if it did not, if alerts are switched off,
+    with True from the sending thread if the relay accepted the message
+    for every configured recipient, and with False if any were rejected,
+    if alerts are switched off,
     or if the thread could not even be started. Callers rely on that to
     clear an in-flight flag, and a path that returns without calling it
     leaves that flag set for the life of the process - which silences

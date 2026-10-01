@@ -191,6 +191,12 @@ Check **Fault Handling**:
 A test proves SMTP transport but not the transition that produces a real alert.
 Search the activity log for `FC-203` or `Alert email failed`.
 
+A **Partial delivery** error means the relay accepted some recipients and
+rejected others. Accepted recipients may already have the message. Check
+recipient addresses and relay policy before testing again; a retry may send
+duplicates to those already accepted. The controller does not count this as
+a fully delivered alert.
+
 Some messages are intentionally suppressed:
 
 - stale-reading alerts require `stale_minutes > 0` and Auto mode
@@ -249,8 +255,10 @@ Search `events.json` by stable fault code:
 grep FC-003 events.json
 ```
 
-`FC-0xx` opens an emailed alarm, `FC-1xx` closes one, `FC-2xx` records an
-operational failure without email, and `FC-3xx` records useful information.
+`FC-0xx` identifies an alarm category, `FC-1xx` a recovery or all-clear,
+`FC-2xx` an operational status or failure, and `FC-3xx` useful information.
+These codes are not delivery receipts: an alarm can be logged even with email
+disabled or a failed send. Check mail configuration and `FC-203` separately.
 Searching `FC-301` finds cold starts retained in this file, helping separate
 a power or restart event from a control problem. Use the journal for additional
 evidence; absence of an entry is not proof that no restart occurred.

@@ -1004,7 +1004,7 @@ $("plugtest").addEventListener("click",async()=>{
 });
 
 $("save4").addEventListener("click",()=>saveAll("emsg")
-  .then(()=>say("emsg","Saved","ok")).catch(e=>say("emsg",e.message,"err")));
+  .catch(e=>say("emsg",e.message,"err")));
 // Saves first: testing what is on screen rather than what was last
 // saved is the whole point, and the password only reaches the server
 // through a save.
