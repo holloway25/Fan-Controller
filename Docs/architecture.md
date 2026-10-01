@@ -36,6 +36,12 @@ proxies over loopback. `ProxyFix` trusts exactly that one proxy hop. Do not
 expose Flask directly or bind it to all interfaces without revisiting the
 forwarded-header trust model.
 
+Optional HTTP Basic authentication protects settings and diagnostics, not
+read-only dashboard data. Non-public API writes also check browser origin
+headers even when authentication is off. Headerless JSON scripts remain
+supported. See [API access rules](api.md) for the exact boundary; these checks
+do not make an unauthenticated installation safe for an untrusted network.
+
 ## Configuration generations
 
 A polling or draw cycle can spend seconds waiting for a network request while a
@@ -73,7 +79,8 @@ rechecks both mode and configuration generation while holding it.
 Draw evaluation holds `_act_lock` before `_fault_lock` so the configured
 power band, fault decision and stored fault remain coherent.
 
-`_state_lock` is an `RLock` because state helpers may be nested. Event and
+`_cfg_lock` and `_state_lock` are reentrant locks because their helpers may be
+nested. Configuration snapshots are copied under `_cfg_lock`. Event and
 history writes normally remain outside actuation and fault locks so disk I/O
 does not unnecessarily delay a mode change.
 
@@ -85,10 +92,12 @@ asking systemd to start a second process.
 
 The requested-restart handover preserves latch state, the record of which
 rules have latched during the current run, the minimum-run lease, draw-fault
-timing, stale-reading timing and original process start time. A crash
-or systemd restart starts with clean transient state, and logs `FC-301` saying
-so, because a dropped latch and lease otherwise appear in the activity log as a
-fan stopping for no stated reason.
+timing, stale-reading timing and the original `START_TIME` used for grace
+periods. The API's `process_started_at` is a separate, fresh process-generation
+marker used to verify replacement. A crash or systemd restart starts with clean
+transient state and logs `FC-301`; a saved fault and durable pending Manual stop
+are still loaded from disk. Events are bounded and best-effort, so the absence
+of a start event does not prove no restart occurred.
 
 A requested restart is refused while a live fault has not been saved. The fault
 lock is held from the final check through `execv`, preventing the replacement

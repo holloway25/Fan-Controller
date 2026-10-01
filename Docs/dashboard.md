@@ -36,9 +36,24 @@ an event means; CSS decides how that class appears. `FC-0xx` and `FC-2xx`
 are faults, `FC-1xx` is an all-clear, and `FC-300` depends on the mode
 recorded with the event.
 
-`FC-301` is neutral. A cold start is routine on a mains- or PoE-powered board
-and there is nothing to act on, so it does not take a colour that would put it
-in with the entries that need attention.
+`FC-301` is neutral: it reports a cold start, not a fault. An unexpected or
+repeated cold start still warrants checking the service journal and power.
+
+## Safety controls and loop health
+
+Selecting **Force on** asks for confirmation because it overrides a safety
+fault. **Clear fault** also asks for confirmation: acknowledgement allows Auto
+to run again, but does not prove the hardware is repaired.
+
+A fault banner adds **stop unconfirmed, retrying** when the plug has not
+confirmed the stop. A separate warning reports an unsaved fault; requested
+restarts are blocked until it is persisted or safely cleared.
+
+The status dot turns red for a polling error, a draw-loop exception or a
+draw-loop heartbeat more than 30 seconds old. The page reports **Power
+monitoring loop is not responding** for a stale heartbeat. This loop also
+enforces modes and faults, so its health matters even when power monitoring
+is disabled. See [troubleshooting](troubleshooting.md#power-monitoring-loop-warning).
 
 ## Mobile behaviour
 

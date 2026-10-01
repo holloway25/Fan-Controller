@@ -8,6 +8,10 @@ Defaults below come from `controller.py` and are applied when a key is absent.
 `config.example.json` is a safe starting configuration and intentionally
 starts in Manual.
 
+Keep each installation's live settings independent. The example and defaults
+are not a profile to copy over an existing device. Follow
+[first setup](installation.md#configure-and-verify) before enabling control.
+
 An existing `config.json` is treated as safety-critical input. Invalid JSON,
 an unexpected object shape, an unknown key, or an invalid present value stops
 the service instead of silently substituting a default. This is deliberate:
@@ -179,6 +183,9 @@ curl -X POST https://<your-host>/api/ui/password \
   -d '{"password":"your-password"}'
 ```
 
+If authentication is already enabled, include the current Basic credentials
+when using this endpoint; the dashboard can manage the change after sign-in.
+
 An empty password disables authentication. Once enabled, state-changing and
 diagnostic endpoints require HTTP Basic authentication. The dashboard and its
 read-only data remain open for wall displays.
@@ -186,3 +193,6 @@ read-only data remain open for wall displays.
 nginx receives Basic credentials over TLS and forwards them to loopback-only
 Flask. Treat this as access control for a trusted local network, not as an
 internet-facing security boundary.
+
+Non-public API writes additionally reject cross-origin browser requests even
+without a password. See [API access rules](api.md) for JSON and origin checks.

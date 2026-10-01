@@ -7,8 +7,8 @@ JSON requests are limited to 8 KB. State-changing endpoints require
 Authentication is optional. When a UI password is configured, endpoints marked
 **protected** require HTTP Basic authentication.
 
-API writes also reject browser requests from another origin, regardless of
-whether a password is set. `Origin`, or `Referer` when Origin is absent, must
+Non-public API writes also reject browser requests from another origin,
+regardless of whether a password is set. `Origin`, or `Referer` when Origin is absent, must
 match the request's scheme, host and port; cross-site and same-site fetches
 from another origin are rejected. Scripts without browser origin headers
 remain supported. Fault acknowledgement requires a valid JSON object (`{}`
@@ -34,6 +34,11 @@ is sufficient); rejected requests leave the safety latch intact.
 | GET | `/api/debug/sensor` | Protected | Return the selected sensor's raw Protect payload |
 
 Framework-generated errors may be HTML or plain text rather than JSON.
+
+Common rejection statuses are 400 for invalid JSON objects or settings, 401
+when Basic credentials are required, 403 for a rejected browser origin, and
+415 for a missing or incorrect JSON content type. A rejected fault clear does
+not acknowledge the fault. See [request troubleshooting](troubleshooting.md#settings-or-fault-clear-request-is-rejected).
 
 ## Validation and persistence
 
@@ -115,6 +120,13 @@ low/high values for CO2, temperature and humidity. Days or metrics without
 readings are omitted rather than represented as zero.
 
 The daily archive is not included in `/api/state`; fetch it separately when
-needed. `/api/state` includes `draw_loop_at`, the last draw-monitor cycle time,
+needed.
+
+## Loop health
+
+`/api/state` includes `draw_loop_at`, the last draw-monitor cycle time,
 and `draw_loop_error`, the latest draw-monitor exception category or `null`.
 Clients can detect a stalled monitor by checking the age of `draw_loop_at`.
+The dashboard warns after 30 seconds, using `process_started_at` until the
+first heartbeat arrives. These fields describe loop execution, not proof that
+the fan or plug is healthy; check fault, power and error fields as well.

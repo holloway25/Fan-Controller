@@ -8,8 +8,9 @@ journalctl -u office-fan-controller -n 100
 curl -s http://127.0.0.1:8096/api/state
 ```
 
-The dashboard banner shows the current error. The activity log preserves errors
-that have recovered.
+The dashboard banner shows the current error. The activity log can show earlier
+errors that have recovered, within its retained 1000 entries. It is not a
+complete audit trail; use the service journal too.
 
 ## Service refuses to start
 
@@ -17,12 +18,16 @@ Read the first configuration error in the journal. An existing `config.json`
 must be valid JSON made of known sections and settings; invalid present values
 are not replaced with defaults. Correct the named field rather than deleting
 the live configuration. A missing field in an otherwise valid older file is
-filled from the current defaults. Startup also rejects inverted CO2,
-temperature, humidity, or draw ranges just as the dashboard does.
+filled from the current defaults. CO2 and draw relationships are always
+validated; temperature and humidity bands are checked when enabled. See
+[configuration](configuration.md) for the exact rules.
+
+## Damaged persisted fault
 
 An FC-206 persisted-fault message means the `fault.json` path exists but its
 complete record could not be read safely. This includes a dangling symbolic
-link. Do not delete it merely to make the service start: inspect its ownership,
+link or unrepresentable timestamps. The service treats it as a safety fault,
+not as a cleared fault. Do not delete it to suppress the warning: inspect its ownership,
 mode, link target and JSON structure, then acknowledge the resulting safety
 fault through the normal operator flow once the underlying condition is
 understood.
@@ -87,18 +92,14 @@ Check the current mode, latch values and minimum-run lease in `/api/state`.
 
 ### Fan stopped for no apparent reason
 
-A stop that breaks the latch and lease rules - the fan going off at a reading
-well above `off_at`, seconds into a minimum-run lease - is usually a restart
-that did not come through `./restart.sh`. Latches and the minimum-run lease
-live in memory and are carried only by the requested-restart handover, so a
-systemd restart, a crash or a loss of power correctly begins with neither.
+Check mode changes, draw faults and external plug changes first. A cold restart
+can also explain a stop above the off threshold or during a minimum-run lease:
+it drops transient latches and the lease. Look for `FC-301` or, for a requested
+restart, "Resumed after restart". See [restart behaviour](architecture.md#restart-model).
 
-Look for `FC-301` immediately below the stop in the activity log. It names the
-cold start and says what was not carried. A requested restart logs "Resumed
-after restart" instead, and carries both.
-
-If neither line is present the process did not restart, and the mode, latches
-and lease in `/api/state` are the next thing to read.
+Missing activity entries do not rule out a restart: events can be pruned or
+fail to persist. Check the journal, `process_started_at`, mode, latches and
+lease in `/api/state` before drawing a conclusion.
 
 ### Fan is on but reports no power
 
@@ -123,6 +124,30 @@ the relay state and will retry. Check plug connectivity immediately.
 
 ## Dashboard problems
 
+### Power monitoring loop warning
+
+**Power monitoring loop is not responding** means its last heartbeat is more
+than 30 seconds old. **Power monitoring loop: ...** reports the latest exception
+category. Inspect the journal and `/api/state` fields `draw_loop_at` and
+`draw_loop_error`; check plug connectivity and service health.
+
+Do not assume disabling power monitoring makes this warning harmless: the
+same loop helps enforce faults and Force on. Confirm the actual fan state and
+resolve the cause. A normal heartbeat is not proof of healthy power draw.
+
+### Settings or fault-clear request is rejected
+
+- **401:** sign in with the configured dashboard password.
+- **403:** use the dashboard's own origin (scheme, host and port), not a form
+  or page on another site. Check nginx forwarded-host and scheme settings
+  against the [reference config](../deploy/nginx.conf.example).
+- **415:** API writes require `Content-Type: application/json`.
+- **400:** send a valid JSON object and correct the named validation error.
+  Fault acknowledgement can use `{}`; arrays, scalars and empty bodies fail.
+
+Do not disable origin protection to make another site's requests work. See
+[API access rules](api.md). A rejected acknowledgement leaves the fault latched.
+
 ### Page loads but does not update
 
 The browser should request `/api/state` every five seconds. If only `GET /`
@@ -134,7 +159,7 @@ tunnel; port 8096 is not intended to be reachable from the LAN.
 
 ### Chart is empty or stops updating
 
-Charts use `/api/history`, not the history embedded in state. Check the
+Charts use `/api/history`; history is not embedded in `/api/state`. Check the
 browser's network requests and confirm `history_rev` advances with successful
 polls. A hard refresh forces an initial full-history request.
 
@@ -189,7 +214,6 @@ the filesystem:
 ```sh
 df -h .
 dmesg | tail -20
-touch testfile && rm testfile
 ```
 
 This differs from a 500 response saying nothing changed. It also differs from
@@ -227,8 +251,9 @@ grep FC-003 events.json
 
 `FC-0xx` opens an emailed alarm, `FC-1xx` closes one, `FC-2xx` records an
 operational failure without email, and `FC-3xx` records useful information.
-Searching `FC-301` lists every cold start, which is the quickest way to
-separate a power or restart event from a control problem.
+Searching `FC-301` finds cold starts retained in this file, helping separate
+a power or restart event from a control problem. Use the journal for additional
+evidence; absence of an entry is not proof that no restart occurred.
 Recovery of a `2xx` problem uses the same code, such as
 `FC-201 Poll recovered`.
 

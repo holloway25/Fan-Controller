@@ -12,11 +12,8 @@ Install the venv package supplied by the distribution:
 sudo apt install -y python3-venv
 ```
 
-Then use the normal installer from the repository root:
-
-```sh
-./install.sh
-```
+Then follow [installation and first setup](installation.md). Use
+[operations and upgrades](operations.md) for existing installations.
 
 Use a 64-bit image. The 3B and 3B+ CPUs support ARMv8, and the pinned
 dependencies have substantially better wheel coverage on `aarch64` than on a
@@ -33,7 +30,9 @@ PIP_CONFIG_FILE=/dev/null ./venv/bin/pip install \
   --index-url https://pypi.org/simple -r requirements.txt
 ```
 
-This is a diagnostic check, not required for a normal installation.
+This installs packages; it is not a read-only check or required for a normal
+installation. Use it on development when investigating package availability,
+not routinely on a live production board.
 
 ## Resource expectations
 
@@ -62,7 +61,7 @@ and install packages on the machine running them. CI's ARM64 runner verifies
 architecture compatibility but has much more memory and a different storage
 system; it does not validate Pi thermals, SD-card behaviour, or attached
 hardware. Run a targeted test on a deployed board when diagnosing a
-hardware-specific fault. See the [README](../README.md#tests) for test commands.
+hardware-specific fault. See [development checks](testing.md) for commands.
 
 ## Useful measurements
 

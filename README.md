@@ -1,215 +1,94 @@
 # Office Fan Controller
 
-Controls a ventilation fan from a UniFi Protect UP-AirQuality sensor and a
+Controls a ventilation fan using a UniFi Protect UP-AirQuality sensor and a
 Tasmota smart plug. CO2, temperature and humidity can trigger the fan
-independently, with hysteresis and a minimum run time. The plug's power meter
-can also detect a fan that is not drawing the expected current.
+independently, with hysteresis and a minimum run time. Optional power monitoring
+stops the fan and latches a fault when its draw remains outside the expected band.
 
-Supported targets:
+Supported targets are x86-64 Debian/Ubuntu and Raspberry Pi 3B+ with a 64-bit
+Debian-based image. Python 3.10 or newer is required. Flask listens only on
+`127.0.0.1:8096`; use an SSH tunnel or nginx on the same host for access.
 
-- Debian or Ubuntu on x86-64
-- Raspberry Pi 3B+ using a 64-bit Debian-based image
+## Get started
 
-Flask listens only on `127.0.0.1:8096`. Use nginx on the same host for HTTPS
-and network access.
-
-## Install
+Run as the ordinary account that will operate the service, not as root:
 
 ```sh
 git clone https://github.com/holloway25/Fan-Controller.git
 cd Fan-Controller
-./install.sh
-```
-
-Run the installer as the ordinary user that will run the service, not as root.
-It creates the virtual environment, installs pinned dependencies, creates
-`config.json` with mode 0600, and generates a systemd unit for the current user
-and checkout path.
-
-The installer is safe to re-run and does not overwrite `config.json` or restart
-a running controller. It prints the required privileged commands;
-`./install.sh --unit` installs and enables the service, but does not start it.
-
-To install manually:
-
-```sh
-python3 -m venv venv
-./venv/bin/pip install -r requirements.txt
-cp config.example.json config.json
-chmod 600 config.json
-cp office-fan-controller.service.example office-fan-controller.service
-# Edit User, Group, WorkingDirectory and ExecStart.
-sudo cp office-fan-controller.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable office-fan-controller
-# Fill in config.json before the first start.
+./install.sh --unit
 sudo systemctl start office-fan-controller
 ```
 
-Before nginx is configured, use an SSH tunnel:
+The installer creates a private `config.json` from the example, installs pinned
+dependencies, and generates and installs the systemd unit. It does not start
+or restart the service. The example starts in **Manual**, with power monitoring
+off. Existing settings are preserved when the installer is re-run.
+
+Before configuring nginx, open an SSH tunnel from your computer:
 
 ```sh
 ssh -L 8096:127.0.0.1:8096 <user>@<server>
 ```
 
-Then open `http://127.0.0.1:8096` locally.
+Open `http://127.0.0.1:8096`, configure Protect and the plug, and test both before
+selecting Auto. Follow the [installation guide](Docs/installation.md) for setup,
+HTTPS and manual installation.
 
-## Setup
+## Operating modes and safety
 
-1. Create a local UniFi user without two-factor authentication. Cloud SSO does
-   not work with the private Protect endpoint.
-2. Open the dashboard, enter the Protect details, and select **Find sensors**.
-3. Enter the Tasmota plug address and web password, then select **Test plug**.
-   The Tasmota HTTP command API must be enabled.
-4. Configure thresholds and select **Auto**.
-5. If alerts are required, configure and test them in **Fault Handling**.
+| Mode | Behaviour |
+|---|---|
+| Auto | Enabled sensor rules control the fan |
+| Manual | Switch off once, then leave the plug under external control |
+| Force on | Keep the fan on, including when a safety fault is active |
 
-## Control behaviour
+Manual is **not** a continuous force-off mode. Force on overrides draw faults:
+use it only when deliberately testing hardware that is safe to run. Clear a
+fault only after checking the fan and its measured draw.
 
-- **Auto** applies the enabled CO2, temperature and humidity rules.
-- **Manual** switches the fan off once, then leaves the plug alone.
-- **Force on** keeps the fan on even if Protect is unavailable.
+Missing readings do not release an existing sensor latch. A configurable
+stale-reading fail-safe can ventilate in Auto; a latched draw fault blocks it.
+See [control logic](Docs/control-logic.md) for the complete behaviour.
 
-Each enabled rule latches above its on threshold and releases at or below its
-off threshold. The fan runs while any rule is latched. A missing reading does
-not release an existing latch. The minimum run time prevents short-cycling.
-
-When the fan stops, the activity log names every rule that latched during that
-run, including any that released earlier while another kept the fan going.
-
-Power monitoring is off by default. When enabled, a continuous draw outside
-the configured band stops the fan and latches a fault. Force on can be used to
-test a repaired fan; clear the fault only after confirming the draw is healthy.
-
-See [Docs/control-logic.md](Docs/control-logic.md) for the complete behaviour.
-
-## Service operation
+## Updates and routine operation
 
 ```sh
 systemctl status office-fan-controller
 journalctl -u office-fan-controller -f
-./restart.sh
 ```
 
-`restart.sh` asks the running controller to replace itself and confirms that a
-new process is answering. It preserves transient latch and timing state. It
-refuses to restart while a live fault has not been saved to disk.
-
-Use `sudo systemctl restart office-fan-controller` only as a fallback. A
-systemd restart does not preserve transient latch or lease state, although a
-saved draw fault remains persistent.
-
-`./run.sh` is available where systemd is unavailable. Do not run it alongside
-the systemd service because two controllers could drive the same plug.
-
-## Upgrading
+For a reviewed code update with unchanged dependencies and systemd unit:
 
 ```sh
 git pull --ff-only
-./install.sh
 ./restart.sh
 ```
 
-The installed systemd unit is a copy. If
-`office-fan-controller.service.example` changes, update the local
-`office-fan-controller.service`, reinstall it, and reload systemd:
+Documentation-only changes do not need a restart. Dependency and unit changes
+need additional steps: see [operations and upgrades](Docs/operations.md).
+`restart.sh` preserves transient control state; a systemd restart does not.
 
-```sh
-sudo cp office-fan-controller.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl restart office-fan-controller
-```
-
-Verify the result with `systemctl is-active office-fan-controller` and the
-service journal.
-
-## HTTPS and authentication
-
-[deploy/nginx.conf.example](deploy/nginx.conf.example) is the reference nginx
-site. Replace its example hostname and certificate paths, enable the site, and
-reload nginx after `nginx -t` succeeds.
-
-UI authentication is off by default. Set a password with:
-
-```sh
-curl -X POST https://<your-host>/api/ui/password \
-  -H 'Content-Type: application/json' \
-  -d '{"password":"your-password"}'
-```
-
-An empty password disables authentication. Read-only dashboard endpoints stay
-open so a wall display does not need credentials. State-changing and diagnostic
-endpoints require authentication once a password is set.
-
-## Private Protect API
-
-Air-quality readings are obtained from Protect's private
-`/proxy/protect/api/bootstrap` endpoint because the documented sensor API does
-not provide them. This endpoint can change with Protect firmware. If metrics
-stop resolving, see [Docs/troubleshooting.md](Docs/troubleshooting.md).
-
-## Alerts and fault codes
-
-Alerts are disabled until configured. Each operational event uses a stable
-fault-code series:
-
-| Series | Meaning |
-|---|---|
-| `FC-0xx` | Alarm email delivered |
-| `FC-1xx` | All-clear email delivered |
-| `FC-2xx` | Operational failure; no email delivered |
-| `FC-3xx` | Informational event; no failure |
-
-The complete table and delivery rules are in
-[Docs/configuration.md](Docs/configuration.md).
-
-## Tests
-
-Tests are development and CI tools; the installer does not run them.
-
-```sh
-./venv/bin/python tests/run_all.py          # the fast tier
-./venv/bin/python tests/run_all.py --all    # every module
-./venv/bin/python tests/run_all.py --slow   # only the slow three
-```
-
-The runner lists omitted slow modules. Its tests use temporary state and do
-not contact Protect or the plug. Run the affected modules while developing;
-CI runs the full suite on x86 and ARM64, and checks curated mutations. The
-installer tests create real virtual environments wherever they run. Browser
-changes need `tests/test_js.py` because the source checks alone cannot prove
-interactive behaviour. To run the mutation checks locally:
-
-```sh
-./venv/bin/python tools/mutate.py
-```
-
-Browser layout still requires visual testing because jsdom has no layout
-engine. See [ARM notes](Docs/arm.md) for hardware limits.
-
-## Runtime files
-
-The following local files are excluded from Git:
-
-- `config.json` — settings and credentials
-- `history.json` — rolling 24-hour readings
-- `daily.json` — daily low/high summaries
-- `events.json` — activity history
-- `fault.json` — persistent draw fault
-- `manual-off.pending` — a promised Manual stop not yet confirmed
-
-Do not commit live configuration, credentials, private hostnames, addresses, or
-runtime state.
+Keep each installation's configuration local. Never copy production settings
+onto a development instance that can reach the same plug, or run two active
+controllers against one fan. Live settings, credentials and runtime files must
+not be committed.
 
 ## Documentation
 
-- [Architecture](Docs/architecture.md)
-- [Control logic](Docs/control-logic.md)
+- [Installation and first setup](Docs/installation.md)
+- [Operations and upgrades](Docs/operations.md)
 - [Configuration and alerts](Docs/configuration.md)
+- [Control logic and safety](Docs/control-logic.md)
 - [Dashboard](Docs/dashboard.md)
-- [HTTP API](Docs/api.md)
 - [Troubleshooting](Docs/troubleshooting.md)
+- [HTTP API](Docs/api.md)
+- [Architecture and persistence](Docs/architecture.md)
+- [Development checks](Docs/testing.md)
 - [Raspberry Pi and ARM](Docs/arm.md)
+
+Protect air-quality data comes from a private bootstrap endpoint that may change
+with firmware. Tests do not replace checks of the real sensor, plug and fan.
 
 ## License
 

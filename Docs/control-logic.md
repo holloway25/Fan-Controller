@@ -23,8 +23,10 @@ The three rules latch independently:
 | Temperature | `temp_enabled` | `temp_on` | `temp_off` |
 | Humidity | `humidity_enabled` | `humidity_on` | `humidity_off` |
 
-The fan runs while any enabled rule is latched. Every on threshold must be
-higher than its corresponding off threshold.
+The fan runs while any enabled rule is latched. Each enabled rule needs an on
+threshold higher than its off threshold. CO2 relationships are validated even
+when disabled; temperature and humidity relationships are checked when enabled.
+See [configuration](configuration.md#control) for ranges and startup validation.
 
 A missing metric does not release its latch because absence does not prove the
 condition cleared. Disabling a rule releases it immediately. If all metrics
@@ -42,40 +44,15 @@ Rules that were never latched are not named. A CO2-only run reports
 `Fan off - 672 ppm`, not the temperature and humidity readings that had no
 bearing on it.
 
-The record is per-run and is tied to what the relay confirmed, not to what was
-decided. It is committed only once a switch has been accepted, so a switch-on
-that failed records nothing and a switch-off that failed keeps the run intact
-for the retry that eventually stops the fan.
+The record follows confirmed relay actions, not attempted commands. A failed
+switch-off retains it for retry; an unreadable plug is unknown, not off.
+A confirmed Manual stop or a plug read as off ends the run too. For a draw
+fault, the plug must confirm off and the updated fault record must reach disk
+before the run record is cleared. Force on starts a new, non-rule-driven run
+if the plug is first observed off.
 
-It is cleared wherever a stop is confirmed, and there are five such places:
-
-| Path | Confirmed by |
-|---|---|
-| Automatic stop | the plug accepting the switch-off |
-| Plug read as off | the plug reporting off, with nothing commanded |
-| Manual | the plug taking the one-time manual stop |
-| Draw fault | the fault record reaching disk |
-| Force on | the plug reporting off before it is forced back on |
-
-The distinction throughout is CONFIRMED, not intended. A stop that was
-attempted and failed leaves the record intact, because the fan may still be
-running and the retry needs it. A plug that cannot be read is unknown rather
-than off, and clears nothing.
-
-Three of these end a run with no rule releasing, so the control decision never
-sees them. Manual returns before the decision is made at all; a plug read as
-off leaves automatic control looking at a fan already in the state it wants, so
-it issues nothing; and Force on ends the physical run even though the fan is
-about to start again, because what follows is a new run and is not driven by
-the rules.
-
-The plug-read case also covers the first poll after a restart, where the
-handover has restored a run record but not the cached fan state. That is why it
-is expressed as a confirmed OFF rather than as a change of state - at that
-point there is nothing to have changed from.
-
-A requested restart carries it; a cold start does not, and `FC-301` announces
-that so a shorter line afterwards is not read as the whole story.
+`./restart.sh` carries the record. A cold start does not; `FC-301` records that
+loss of transient state. See [restart model](architecture.md#restart-model).
 
 ## Latch storage
 
