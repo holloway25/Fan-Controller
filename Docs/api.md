@@ -42,6 +42,16 @@ not acknowledge the fault. See [request troubleshooting](troubleshooting.md#sett
 
 ## Validation and persistence
 
+Setting `control.mode` to `on` checks the live fault under the actuation and
+fault locks. Without a fault it succeeds normally. With an active fault it
+returns 409 with `fault_override_required: true` and a `fault_override_token`,
+without saving any settings. After the operator explicitly confirms that
+override, repeat the request with `X-Fault-Override` set to that token. A token
+from another fault episode or process is rejected with a new 409 challenge.
+The check remains locked through settings persistence and mode commit.
+Confirmation permits Force on; it does not acknowledge or clear the fault.
+The token is not authentication and does not replace Basic/origin checks.
+
 Configuration fields are type-checked and range-checked. Unknown keys are
 rejected. Validation is all-or-nothing: one invalid field rejects the complete
 request.

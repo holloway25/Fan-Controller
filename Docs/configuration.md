@@ -127,8 +127,8 @@ alerts.
 | `FC-005` | A fault could not be saved |
 | `FC-006` | A saved fault remained after restart |
 | `FC-100` | Readings returned after a delivered stale-reading alert |
-| `FC-101` | A previously delivered draw-fault alert was cleared |
-| `FC-102` | A previously delivered unsaved-fault alert is now persisted |
+| `FC-101` | A draw fault was acknowledged |
+| `FC-102` | A previously unsaved fault was successfully persisted |
 | `FC-200` | Unclassified polling failure |
 | `FC-201` | Protect communication failure or recovery |
 | `FC-202` | Plug communication or command failure |

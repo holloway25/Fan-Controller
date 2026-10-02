@@ -65,6 +65,15 @@ MODULE_TIMEOUT_SECONDS = 120
 # caught by an unrelated crash is not evidence.
 MUTATIONS = [
     # ------------------------------------------------- the safety core
+    ("force-confirmation-server-check-skipped", "controller.py",
+     '                if fault:\n                    token = _fault_override_token(fault)',
+     '                if False:\n                    token = _fault_override_token(fault)',
+     "test_force_on_confirmation.py",
+     "test_live_fault_requires_confirmation_before_any_save"),
+    ("force-confirmation-token-check-skipped", "controller.py",
+     '                    if request.headers.get("X-Fault-Override") != token:',
+     '                    if False:', "test_force_on_confirmation.py",
+     "test_confirmation_is_bound_to_current_fault_episode"),
     ("review-restart-config-not-frozen", "controller.py",
      '                (_cfg_lock, "settings are being changed"),\n',
      '', "test_restart.py",

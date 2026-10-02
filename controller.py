@@ -12,6 +12,7 @@ import atexit, copy, hashlib, hmac, json, math, os, re, signal, smtplib
 import socket, ssl, sys, tempfile
 import threading, time
 from datetime import date
+from contextlib import nullcontext
 from urllib.parse import urlsplit
 import requests, urllib3
 from flask import Flask, Response, jsonify, request, render_template
@@ -4238,10 +4239,39 @@ def _guard_credentials(cand, body):
 def api_config():
     """Serialise the whole save: snapshot, validate, commit, persist."""
     with _cfg_lock:
+        body = _json_body()
+        bad = _body_error(body)
+        if bad:
+            return bad
+        control = body.get("control")
+        if isinstance(control, dict) and control.get("mode") == "on":
+            # Hold both locks from the live-fault check through persistence
+            # and commit: a newly raised fault cannot enter that gap.
+            with _act_lock, _fault_lock:
+                with _state_lock:
+                    fault = copy.deepcopy(STATE["fault"])
+                if fault:
+                    token = _fault_override_token(fault)
+                    if request.headers.get("X-Fault-Override") != token:
+                        return jsonify(
+                            error="A safety fault is active. Confirm Force on to override it.",
+                            fault_override_required=True,
+                            fault_override_token=token), 409
+                return _api_config_locked(act_locked=True)
         return _api_config_locked()
 
 
-def _api_config_locked():
+def _fault_override_token(fault):
+    """Identify this fault episode and process, not mutable delivery state.
+
+    The token is explicit override acknowledgement, not authentication.
+    Normal auth and origin checks still apply before this endpoint runs.
+    """
+    identity = [_PROC_START, fault.get("at"), fault.get("code"), fault.get("msg")]
+    return hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+
+
+def _api_config_locked(act_locked=False):
     """The body of api_config, with _cfg_lock already held.
 
     Validates against a copy so a rejected save cannot alter live
@@ -4321,7 +4351,7 @@ def _api_config_locked():
     # Waits for an in-flight switch, so a save can block for as long as
     # the plug takes to answer. Order is _act_lock then _state_lock
     # everywhere, which is why this cannot deadlock.
-    with _act_lock:
+    with nullcontext() if act_locked else _act_lock:
         was = CFG["control"].get("mode")
         for section in cand:
             CFG[section] = cand[section]
