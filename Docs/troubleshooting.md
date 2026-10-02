@@ -227,10 +227,15 @@ This differs from a 500 response saying nothing changed. It also differs from
 
 ### `restart.sh` is refused
 
-A live draw fault has not been persisted. Clear the fault only if it is safe, or
-repair the storage problem and allow the fault retry to succeed. Do not bypass
-the refusal with systemd unless you understand that the replacement may not
-know about the unsaved fault.
+Read the refusal reason reported by the helper:
+
+- **Temporarily busy:** settings are being changed, a plug action is in progress,
+  or a fault is being written. Retry later; this does not imply an unsaved fault
+  or a storage failure, and does not require fault acknowledgement.
+- **Active fault not saved to disk:** clear the fault only if it is safe, or
+  repair the storage problem and allow the fault retry to succeed. Do not bypass
+  this refusal with systemd unless you understand that the replacement may not
+  know about the unsaved fault.
 
 ### Service will not remain active
 

@@ -1803,8 +1803,9 @@ def _end_run_locked():
     each time because the record was cleared where a stop was
     convenient to notice rather than everywhere one is confirmed:
 
-      1. tick(), when the plug is READ as off - someone switched it by
-         hand, from the vendor app, or from a second controller. No
+      1. _adopt_relay_locked(), when either loop reads the plug as off -
+         someone switched it by hand, from the vendor app, or from a
+         second controller. No
          command is issued, so nothing else on that path can end the
          run. This also covers the first poll after a restart, where
          the handover has restored a record but not the cached fan
@@ -1835,6 +1836,37 @@ def _end_run_locked():
     the record to name.
     """
     STATE["ran_with"].clear()
+
+
+def _adopt_relay_locked(actual, now):
+    """Record confirmed relay state under _act_lock and _state_lock.
+
+    Shared by sensor polling and independent draw monitoring. A first
+    observation does not invent a new minimum-run lease or spin-up grace.
+    Unknown is never interpreted as off or as the end of a run.
+    """
+    prev = STATE["fan"]
+    if actual is False:
+        _end_run_locked()
+    if actual is not None and actual != prev:
+        STATE["fan"] = actual
+        if prev is not None:
+            STATE["changed_at"] = now
+            return "%s Fan %s — changed outside (%s)" % (
+                FC_EXTERNAL_CHANGE, "on" if actual else "off", _mode_now())
+    return None
+
+
+def _refresh_relay(plug, gen=None):
+    """Observe this fan independently of Protect, without switching it."""
+    with _act_lock:
+        if _stale_client(gen):
+            return
+        actual = plug.state()
+        with _state_lock:
+            message = _adopt_relay_locked(actual, time.time())
+    if message:
+        _log(message)
 
 
 def _manual_off(plug, gen=None):
@@ -2040,34 +2072,7 @@ def tick():
                               vals.get('humidity'))
             STATE["history_rev"] += 1
             hsnap = list(STATE["history"])
-            prev = STATE["fan"]
-            if actual is False:
-                # A CONFIRMED OFF ENDS THE RUN, however we got here and
-                # whatever we believed a moment ago. Deliberately not
-                # inside the "changed" branch below: after a requested
-                # restart STATE["fan"] is None, so an off plug is not a
-                # CHANGE and that branch is skipped - while the
-                # handover has just restored a run record from before
-                # the restart. Deliberately not guarded on the previous
-                # value either, for the same reason.
-                #
-                # Harmless when the fan was already off and the record
-                # already empty, which is the common case.
-                _end_run_locked()
-            if actual is not None and actual != prev:
-                # Someone switched it outside this service. Trust the
-                # bridge, and restart the minimum-run clock from now.
-                STATE["fan"] = actual
-                if prev is not None:
-                    # Only a genuine external switch restarts the
-                    # minimum-run clock; the first reading after startup
-                    # must not grant a fresh lease to a fan that was
-                    # already running.
-                    STATE["changed_at"] = now
-                    ext_msg = ("%s Fan %s \u2014 changed outside (%s)"
-                               % (FC_EXTERNAL_CHANGE,
-                                  "on" if actual else "off",
-                                  _mode_now()))
+            ext_msg = _adopt_relay_locked(actual, now)
             fan_on = STATE["fan"]
             changed = STATE["changed_at"]
     # Recovery is an edge too, and only announced if the stale alert
@@ -3471,6 +3476,8 @@ def watts_loop():
     is the expensive call: tying watts to poll_seconds left the reading up
     to 30s stale while the UI refreshed every 5s. Errors are swallowed so
     a plug hiccup cannot overwrite the control loop's error.
+    Relay state is refreshed independently of both sensor acquisition and
+    meter success, so a sensor outage cannot hide an already-running fan.
     """
     last_issue = None
     while True:
@@ -3480,8 +3487,15 @@ def watts_loop():
         except Exception as e:
             issue = "fault retry: %s" % type(e).__name__
         plug = None
+        gen = None
         try:
             _, plug, gen = _client_snapshot()
+            _refresh_relay(plug, gen)
+        except Exception as e:
+            issue = issue or "relay read: %s" % type(e).__name__
+        try:
+            if plug is None:
+                raise PlugError("No plug client available")
             w = plug.power_w()
             # A reading from a plug that is no longer configured is not
             # this fan's draw. Discarding it here covers the stored value
@@ -3492,11 +3506,12 @@ def watts_loop():
             # the next iteration takes a fresh snapshot and will match,
             # so it costs one early retry rather than spinning, and the
             # new plug gets read at once instead of 5s late.
-            if gen != _cfg_generation:
-                continue
-            with _state_lock:
-                STATE["watts"] = w
-                STATE["watts_at"] = time.time()
+            with _act_lock:
+                if _stale_client(gen):
+                    continue
+                with _state_lock:
+                    STATE["watts"] = w
+                    STATE["watts_at"] = time.time()
         except Exception as e:
             # Left for the staleness check rather than cleared here: one
             # missed request should not blank a valid reading, but a
@@ -4419,6 +4434,7 @@ def api_sensors():
             hit = find_metric(s, CO2_HINTS)
             out.append({"id": s.get("id"), "name": s.get("name"),
                         "state": s.get("state"),
+                        "isConnected": s.get("isConnected"),
                         "co2": hit[0] if hit else None})
         return jsonify(sensors=out)
     except ProtectError as e:

@@ -65,6 +65,22 @@ MODULE_TIMEOUT_SECONDS = 120
 # caught by an unrelated crash is not evidence.
 MUTATIONS = [
     # ------------------------------------------------- the safety core
+    ("relay-monitor-stale-meter-committed", "controller.py",
+     '                if _stale_client(gen):\n                    continue',
+     '                if False:\n                    continue',
+     "test_relay_monitoring.py", "test_reconfigured_meter_read_is_discarded_before_state_commit"),
+    ("relay-monitor-refresh-skipped", "controller.py",
+     '            _refresh_relay(plug, gen)\n',
+     '', "test_relay_monitoring.py",
+     "test_running_fan_is_protected_during_disconnected_sensor_startup"),
+    ("relay-monitor-generation-guard-skipped", "controller.py",
+     '        if _stale_client(gen):\n            return\n        actual = plug.state()',
+     '        if False:\n            return\n        actual = plug.state()',
+     "test_relay_monitoring.py", "test_relay_refresh_rejects_stale_clients_before_reading"),
+    ("discovery-connectivity-lost", "controller.py",
+     '                        "isConnected": s.get("isConnected"),',
+     '                        "isConnected": None,',
+     "test_sensor_discovery.py", "test_discovery_preserves_connection_metadata_and_retained_co2"),
     ("sensor-health-plug-error-misclassified", "controller.py",
      '        if code == FC_SENSOR_DOWN:\n            STATE["sensor_error"] = msg',
      '        if True:\n            STATE["sensor_error"] = msg',
@@ -316,13 +332,10 @@ MUTATIONS = [
      "test_fault_codes.py",
      "test_a_silent_plug_raises_fc002_end_to_end"),
     ("external-change-drops-mode", "controller.py",
-     '''                    ext_msg = ("%s Fan %s \\u2014 changed outside (%s)"
-                               % (FC_EXTERNAL_CHANGE,
-                                  "on" if actual else "off",
-                                  _mode_now()))''',
-     '''                    ext_msg = ("%s Fan %s \\u2014 changed outside"
-                               % (FC_EXTERNAL_CHANGE,
-                                  "on" if actual else "off"))''',
+     '''            return "%s Fan %s — changed outside (%s)" % (
+                FC_EXTERNAL_CHANGE, "on" if actual else "off", _mode_now())''',
+     '''            return "%s Fan %s — changed outside" % (
+                FC_EXTERNAL_CHANGE, "on" if actual else "off")''',
      "test_fault_codes.py",
      "test_an_external_change_records_the_mode"),
 

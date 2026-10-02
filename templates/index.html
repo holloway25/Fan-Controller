@@ -989,13 +989,16 @@ async function loadSensors(msgEl,notice=""){
   j.sensors.forEach(s=>{
     const o=document.createElement("option");
     o.value=s.id;
-    o.textContent=s.name+(s.co2!=null
-      ? "  \u2014 "+Math.round(s.co2)+" ppm" : "  \u2014 no CO2 field");
+    o.textContent=s.name+(s.isConnected===false
+      ? "  — disconnected"+(s.co2!=null?" (retained "+Math.round(s.co2)+" ppm)":"")
+      : (s.co2!=null?"  — "+Math.round(s.co2)+" ppm":"  — no CO2 field"));
     if(s.id===cur)o.selected=true;
     sel.appendChild(o)});
   if(msgEl){
-    const n=j.sensors.filter(s=>s.co2!=null).length;
+    const n=j.sensors.filter(s=>s.co2!=null&&s.isConnected!==false).length;
+    const disconnected=j.sensors.filter(s=>s.isConnected===false).length;
     say(msgEl,(notice?notice+"\n":"")+j.sensors.length+" sensor(s) found, "+n+" reporting CO2."+
+      (disconnected?" "+disconnected+" disconnected; retained readings are not live.":"")+
       (n?" Pick one and save.":" Open the debug view to see the payload."),
       n&&!notice?"ok":"err")}
 }

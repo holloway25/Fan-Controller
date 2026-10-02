@@ -153,5 +153,11 @@ the relay state for confirmation. Power is read on a separate short cadence so
 the controller can distinguish a closed relay from a fan that is actually
 drawing current.
 
+The draw loop independently refreshes relay state even when Protect fails.
+This lets power protection judge a fan already running at startup during a
+sensor outage. Relay adoption is serialized with settings and actuation,
+rejects stale client generations, and shares the polling loop's external-switch
+and run-record handling. Startup observation does not invent a new run lease.
+
 Tasmota sends web credentials in the `/cm` query string. Request URLs and
 exception text that could contain them must never be logged.

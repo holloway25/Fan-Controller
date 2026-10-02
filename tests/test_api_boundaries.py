@@ -27,6 +27,8 @@ def test_daily_is_public_and_state_does_not_duplicate_it():
 def test_draw_loop_reports_an_unexpected_check_failure():
     C = harness.load()
     class Plug:
+        def state(self):
+            return False
         def power_w(self):
             return 18.0
     C._client_snapshot = lambda: (None, Plug(), C._cfg_generation)
