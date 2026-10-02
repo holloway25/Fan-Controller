@@ -10,6 +10,7 @@ Timeouts are shortened through RESTART_TAKE_TIMEOUT and
 RESTART_BACK_TIMEOUT, or each failure case would take a minute.
 """
 import os
+import json
 import shutil
 import subprocess
 import sys
@@ -174,6 +175,36 @@ def test_a_refusal_is_reported_as_a_refusal():
     assert "REFUSED" in r.stderr, "the refusal was not reported as one"
     assert "Do not force it" in r.stderr, "no warning against forcing it"
     return "exit 1, reported as a refusal"
+
+
+def test_busy_refusals_report_the_actual_reason_not_an_unsaved_fault():
+    for reason in ("settings are being changed", "a plug action is in progress",
+                   "a fault is being written right now"):
+        refusal = json.dumps([{"at": 2, "msg": "FC-205 Restart refused - " + reason +
+                              "; try again in a moment"}])
+        box = sandbox(action="printf '%s' '" + refusal + "' > events.json")
+        try:
+            r = run(box)
+        finally:
+            shutil.rmtree(box, ignore_errors=True)
+        assert r.returncode == 1
+        assert reason in r.stderr, r.stderr
+        assert "Try again" in r.stderr, r.stderr
+        assert "fault.json" not in r.stderr, r.stderr
+        assert "Clear the fault" not in r.stderr, r.stderr
+
+
+def test_an_old_refusal_is_not_attributed_to_the_current_request():
+    box = sandbox(action="printf '%s' '[{\"at\":3,\"msg\":\"Unrelated event\"}," +
+                  REFUSAL[1:] + "' > events.json")
+    with open(os.path.join(box, "events.json"), "w") as stream:
+        stream.write(REFUSAL)
+    try:
+        r = run(box)
+    finally:
+        shutil.rmtree(box, ignore_errors=True)
+    assert "REFUSED" not in r.stderr, r.stderr
+    assert "ORIGINAL process" in r.stderr, r.stderr
 
 
 def test_a_trigger_nobody_takes_is_exit_2():

@@ -26,6 +26,10 @@ record, the minimum-run lease and safety timers. It refuses while a live fault
 has not been saved to disk; repair storage or safely resolve the fault rather
 than bypassing this protection.
 
+A restart can also be temporarily refused while settings, a plug action or a
+fault write are in progress. The helper reports the logged reason; retry later
+for a busy refusal rather than clearing a fault that may not exist.
+
 `sudo systemctl restart office-fan-controller` is a fallback or a required step
 when changing systemd settings. It drops transient latches and timing state;
 a saved draw fault remains persistent. Schedule it with awareness of the fan's

@@ -6,6 +6,8 @@
 # while a fault is live but unsaved, because the replacement would load
 # fault.json, find nothing, and let Auto start a fan that was stopped
 # for drawing wrong.
+# Busy settings, plug actions or fault writes can also temporarily refuse
+# a restart. Those cases need a later retry, not fault acknowledgement.
 #
 # Exit 0  restarted, and proved
 # Exit 1  refused, or it never came back
@@ -44,9 +46,35 @@ if [ -z "$before" ]; then
   exit 2
 fi
 
-# Recorded before the trigger so a refusal from an earlier attempt is
-# not mistaken for this one.
-events_before=$(wc -c < "$EVENTS" 2>/dev/null || echo 0)
+# Identify refusal records, not byte counts or a fragment of the log:
+# unrelated events and bounded-log replacement can both change its size.
+refusals() {
+  python3 -c 'import hashlib,json,re,sys
+try:
+    with open(sys.argv[1]) as stream:
+        events = json.load(stream)
+    rows = []
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        msg = event.get("msg")
+        if not isinstance(msg, str) or not re.match(r"^(?:FC-\d{3} )?Restart refused\b",msg):
+            continue
+        key = hashlib.sha256(json.dumps([event.get("at"),msg]).encode()).hexdigest()
+        rows.append((key,msg))
+    if sys.argv[2] == "snapshot":
+        print("\n".join(key for key,msg in rows))
+    else:
+        previous = set(sys.argv[3].splitlines())
+        for key,msg in rows:
+            if key not in previous:
+                print(msg)
+                break
+except (OSError,ValueError,TypeError):
+    pass' "$EVENTS" "$1" "${2:-}"
+}
+# Recorded before the trigger so an old refusal is not blamed on this request.
+refusals_before=$(refusals snapshot)
 
 : > "$REQ"
 echo "Requested a restart; waiting for it to be taken..."
@@ -85,11 +113,18 @@ done
 # because they need different fixes. The refusal check is last and is
 # only a hint: if the disk is unwritable the refusal may not have been
 # logged either.
-if [ "$(wc -c < "$EVENTS" 2>/dev/null || echo 0)" -ne "$events_before" ] \
-   && head -c 400 "$EVENTS" 2>/dev/null | grep -q "Restart refused"; then
-  echo "REFUSED: a fault is live and not saved to disk." >&2
-  echo "Clear the fault, or fix whatever is stopping fault.json being" >&2
-  echo "written, then try again. Do not force it with systemctl." >&2
+refusal=$(refusals reason "$refusals_before")
+if [ -n "$refusal" ]; then
+  printf 'REFUSED: %s\n' "$refusal" >&2
+  case "$refusal" in
+    *"not saved to disk"*)
+      echo "Clear the fault, or fix whatever is stopping fault.json being" >&2
+      echo "written, then try again. Do not force it with systemctl." >&2 ;;
+    *"try again in a moment"*)
+      echo "The controller is busy. Try again later; nothing was restarted." >&2 ;;
+    *)
+      echo "Check the refusal reason above before trying again." >&2 ;;
+  esac
   exit 1
 fi
 

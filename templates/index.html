@@ -182,6 +182,7 @@ font-size:16px}
   <svg class="trace" id="trace2" viewBox="0 0 700 159"></svg>
   <div class="sub" id="sub">Waiting for a reading</div>
   <div class="msg" id="topmsg"></div>
+  <div class="msg" id="modemsg" role="status"></div>
   <div class="msg" id="drawloopmsg"></div>
   <div class="msg" id="unsavedmsg"></div>
 </div>
@@ -649,9 +650,13 @@ function render(s){
   // session showed a dead indicator.
   const anyReading=s.co2!=null||s.temperature!=null||s.humidity!=null
     ||s.pm25!=null;
+  // UI freshness is independent of whether the operator enabled the fail-safe.
+  // Allow two poll intervals, but never call a failed poll's retained values live.
+  const liveReading=!s.error&&Number.isFinite(s.reading_at)&&s.reading_at>0
+    &&(Date.now()/1000-s.reading_at)<=Math.max(30,2*(Number(c.poll_seconds)||30));
   const drawLate=(Date.now()/1000-(s.draw_loop_at||s.process_started_at))>30;
   $("dot").className="dot "+(s.error||s.draw_loop_error||drawLate
-    ?"bad":(anyReading?"live":""));
+    ||(anyReading&&!liveReading)?"bad":(anyReading?"live":""));
   // An unconfirmed stop is the worse case: faulted but possibly still
   // running, and the plug is not answering to say either way.
   const fmsg=s.fault?(s.fault.msg+(s.fault.stopped?"":
@@ -732,7 +737,7 @@ function render(s){
   // Green means monitored and behaving, so it needs both: Auto actually
   // in control, and a live reading. The guard used to cover only the
   // amber branch, so a stale sensor or Manual still showed green.
-  const auto=c.mode==="auto";
+  const auto=c.mode==="auto"&&liveReading;
   $("ppm").className="pill"+
     (auto&&c.co2_enabled!==false&&s.co2!=null
       ?(s.latch.co2?" trig":" on"):"");
@@ -743,6 +748,9 @@ function render(s){
   $("rh").className="pill"+
     (auto&&c.humidity_enabled&&s.humidity!=null
       ?(s.latch.humidity?" trig":" on"):"");
+  for(const [id,value] of [["ppm",s.co2],["tc",s.temperature],["rh",s.humidity]]){
+    if(value!=null&&!liveReading)$(id).textContent+=" (stale)";
+  }
   $("w").textContent=s.watts==null?"-- W":fmtW(s.watts)+" W";
   // Draw is only meaningful while the fan is meant to be running, and only
   // once settled: a motor spinning up would otherwise flash red every start.
@@ -957,7 +965,8 @@ document.querySelectorAll("#mode button").forEach(b=>
   b.addEventListener("click",async()=>{
     const body={control:{mode:b.dataset.mode}};
     try{
-      try{await post("/api/config",body)}
+      let j;
+      try{j=await post("/api/config",body)}
       catch(e){
         const token=e.details&&e.details.fault_override_token;
         if(b.dataset.mode!=="on"||e.status!==409||
@@ -966,13 +975,13 @@ document.querySelectorAll("#mode button").forEach(b=>
                            "despite it. Continue?"))return;
         // The server rechecks this episode atomically. A replacement fault
         // rejects this retry; another click requires fresh confirmation.
-        await post("/api/config",body,{"X-Fault-Override":token});
+        j=await post("/api/config",body,{"X-Fault-Override":token});
       }
-      say("topmsg","","")}
-    catch(e){say("topmsg",e.message,"err")}
+      say("modemsg",j.notice||"",j.notice?"err":"")}
+    catch(e){say("modemsg",e.message,"err")}
     tickUI()}));
 
-async function loadSensors(msgEl){
+async function loadSensors(msgEl,notice=""){
   const j=await post("/api/protect/sensors");
   const sel=$("p_sensor"), cur=CFG?CFG.protect.sensor_id:"";
   sel.innerHTML='<option value="">Not selected</option>';
@@ -985,15 +994,16 @@ async function loadSensors(msgEl){
     sel.appendChild(o)});
   if(msgEl){
     const n=j.sensors.filter(s=>s.co2!=null).length;
-    say(msgEl,j.sensors.length+" sensor(s) found, "+n+" reporting CO2."+
+    say(msgEl,(notice?notice+"\n":"")+j.sensors.length+" sensor(s) found, "+n+" reporting CO2."+
       (n?" Pick one and save.":" Open the debug view to see the payload."),
-      n?"ok":"err")}
+      n&&!notice?"ok":"err")}
 }
 
 $("find").addEventListener("click",async()=>{
   say("pmsg","Connecting...","ok");
-  try{await saveAll("pmsg"); await loadSensors("pmsg")}
-  catch(e){say("pmsg",e.message,"err")}
+  let notice="";
+  try{notice=await saveAll("pmsg"); await loadSensors("pmsg",notice)}
+  catch(e){say("pmsg",(notice?notice+"\n":"")+e.message,"err")}
 });
 
 
@@ -1006,13 +1016,14 @@ $("faultclear").addEventListener("click",async()=>{
   catch(e){say("hmsg",e.message,"err")}});
 $("plugtest").addEventListener("click",async()=>{
   say("hmsg","Testing...","ok");
+  let notice="";
   try{
-    await saveAll("hmsg");
+    notice=await saveAll("hmsg");
     const j=await post("/api/plug/test");
     const w=(j.watts==null)?"no reading":(j.watts.toFixed(1)+" W");
-    say("hmsg","Plug responded. Relay is "+(j.on?"ON":"off")+
-        ", drawing "+w+".","ok");
-  }catch(e){say("hmsg",e.message,"err")}
+    say("hmsg",(notice?notice+"\n":"")+"Plug responded. Relay is "+(j.on?"ON":"off")+
+        ", drawing "+w+".",notice?"err":"ok");
+  }catch(e){say("hmsg",(notice?notice+"\n":"")+e.message,"err")}
 });
 
 $("save4").addEventListener("click",()=>saveAll("emsg")

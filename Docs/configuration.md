@@ -194,7 +194,10 @@ curl -X POST https://<your-host>/api/ui/password \
 ```
 
 If authentication is already enabled, include the current Basic credentials
-when using this endpoint; the dashboard can manage the change after sign-in.
+when using this endpoint (for example, add `-u '<username>'` to curl and enter
+the current password at its prompt). The username is ignored by the controller.
+The dashboard has no password-setting control; use this API endpoint to change
+or clear the password.
 
 An empty password disables authentication. Once enabled, state-changing and
 diagnostic endpoints require HTTP Basic authentication. The dashboard and its
