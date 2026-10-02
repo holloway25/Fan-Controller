@@ -4353,10 +4353,22 @@ def _api_config_locked(act_locked=False):
     # everywhere, which is why this cannot deadlock.
     with nullcontext() if act_locked else _act_lock:
         was = CFG["control"].get("mode")
+        draw_changed = (cand["plug"] != CFG["plug"] or
+                        (was == "on") !=
+                        (cand["control"].get("mode") == "on"))
+        global _cfg_generation, _oob_generation, _oob_since
+        old_generation = _cfg_generation
         for section in cand:
             CFG[section] = cand[section]
-        global _cfg_generation
         _cfg_generation += 1
+        if draw_changed:
+            _oob_since = None
+            _oob_generation = _cfg_generation
+        elif _oob_generation == old_generation:
+            # Still reject every stale client, but do not give an unhealthy
+            # fan a fresh grace period for an email, UI or no-op save.
+            # Carry only a timer known to belong to the previous settings.
+            _oob_generation = _cfg_generation
         now_mode = CFG["control"].get("mode")
         if now_mode == "manual" and was != "manual":
             # Entering manual switches the fan off once, then hands to the

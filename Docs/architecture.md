@@ -57,6 +57,11 @@ from being applied through a client connected to an old physical plug.
 Manual's pending stop is retained when a stale generation is detected so the
 next valid cycle still owes the stop.
 
+Unrelated and no-op saves carry the current draw-fault timer into the new
+generation without accepting stale clients. Plug or power-monitoring changes
+reset that timer, as do transitions into or out of Force on. Email, dashboard,
+sensor and automatic-trigger changes cannot continually postpone a draw fault.
+
 ## Locks
 
 The important lock order is:

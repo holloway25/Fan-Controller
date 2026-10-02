@@ -65,6 +65,15 @@ MODULE_TIMEOUT_SECONDS = 120
 # caught by an unrelated crash is not evidence.
 MUTATIONS = [
     # ------------------------------------------------- the safety core
+    ("draw-timer-unrelated-save-reset", "controller.py",
+     '            _oob_generation = _cfg_generation\n        now_mode',
+     '            _oob_since = None\n            _oob_generation = _cfg_generation\n        now_mode',
+     "test_draw_timer_saves.py",
+     "test_repeated_email_and_noop_saves_cannot_postpone_fault"),
+    ("draw-timer-relevant-save-not-reset", "controller.py",
+     '        if draw_changed:\n            _oob_since = None',
+     '        if draw_changed:\n            pass',
+     "test_draw_timer_saves.py", "test_each_relevant_plug_setting_resets_timer"),
     ("force-confirmation-server-check-skipped", "controller.py",
      '                if fault:\n                    token = _fault_override_token(fault)',
      '                if False:\n                    token = _fault_override_token(fault)',
