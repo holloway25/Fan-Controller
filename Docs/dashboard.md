@@ -41,8 +41,9 @@ repeated cold start still warrants checking the service journal and power.
 
 ## Safety controls and loop health
 
-Selecting **Force on** asks for confirmation because it overrides a safety
-fault. **Clear fault** also asks for confirmation: acknowledgement allows Auto
+Selecting **Force on** asks for confirmation only when the dashboard reports
+an active safety fault, because it overrides that fault. With no fault it
+switches mode without a prompt. **Clear fault** always asks for confirmation: acknowledgement allows Auto
 to run again, but does not prove the hardware is repaired.
 
 **Test email** saves the displayed settings first. Any save warning remains

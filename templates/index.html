@@ -346,7 +346,7 @@ window.addEventListener("error",e=>_report(
 window.addEventListener("unhandledrejection",e=>_report(
   "unhandled promise: "+(e.reason&&e.reason.message||e.reason),"",0));
 const $=id=>document.getElementById(id);
-let CFG=null, touched=false;
+let CFG=null, touched=false, ACTIVE_FAULT=false;
 const dirty=()=>{touched=true};
 
 function say(el,text,kind){const n=$(el);n.textContent=text||"";
@@ -625,6 +625,7 @@ function drawMini(hist,c){
 }
 
 function render(s){
+  ACTIVE_FAULT=!!s.fault;
   const c=s.config.control;
   $("ppm").textContent=(s.co2==null?"--":Math.round(s.co2))+" ppm";
   const f=$("fan");
@@ -954,7 +955,7 @@ async function saveAll(msgEl){
 
 document.querySelectorAll("#mode button").forEach(b=>
   b.addEventListener("click",async()=>{
-    if(b.dataset.mode==="on" && !window.confirm(
+    if(b.dataset.mode==="on" && ACTIVE_FAULT && !window.confirm(
       "Force on will run the fan even if a safety fault is active. Continue?"))return;
     try{await post("/api/config",{control:{mode:b.dataset.mode}});
         say("topmsg","","")}

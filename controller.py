@@ -1386,8 +1386,9 @@ class Tasmota:
         running rather than trusting that the relay closed."""
         d = self._cmd("Status 8")
         try:
-            return float(d["StatusSNS"]["ENERGY"]["Power"])
-        except (KeyError, TypeError, ValueError):
+            watts = float(d["StatusSNS"]["ENERGY"]["Power"])
+            return watts if math.isfinite(watts) else None
+        except (KeyError, TypeError, ValueError, OverflowError):
             return None
 
 
@@ -2273,7 +2274,7 @@ def _email_ready():
                 and _recipients())
 
 
-def _send_mail(subject, body):
+def _send_mail(subject, body, email_cfg=None):
     """Send one message. Returns None on success or a reason string.
 
     Runs on a throwaway thread, never on the control path. AUTH is chosen
@@ -2299,7 +2300,7 @@ def _send_mail(subject, body):
     # recipients through the old relay, or authenticate with a password
     # that had just been cleared by a host change.
     with _cfg_lock:
-        e = copy.deepcopy(CFG["email"])
+        e = copy.deepcopy(CFG["email"] if email_cfg is None else email_cfg)
     to = _split_recipients(e.get("recipients"))
     if not to:
         return "no recipients configured"
@@ -4391,10 +4392,13 @@ def api_email_test():
     a button whose whole purpose is to show the error. An untested mail
     path is the kind that fails exactly when it is needed.
     """
-    if not CFG["email"].get("enabled"):
+    with _cfg_lock:
+        e = copy.deepcopy(CFG["email"])
+    recipients = _split_recipients(e.get("recipients"))
+    if not e.get("enabled"):
         return jsonify(error="Email alerts are switched off."), 400
-    missing = [k for k in ("host", "sender") if not CFG["email"].get(k)]
-    if not _recipients():
+    missing = [k for k in ("host", "sender") if not e.get(k)]
+    if not recipients:
         missing.append("recipients")
     if missing:
         return jsonify(
@@ -4404,10 +4408,10 @@ def api_email_test():
         "This is a test from the fan controller.\n\nIf you are reading "
         "it, alerts will reach you: a stopped fan, a fault that could not "
         "be saved, readings drying up, and the all-clear when they "
-        "return.")
+        "return.", email_cfg=e)
     if why:
         return jsonify(error="Send failed - %s" % why), 400
-    return jsonify(ok=True, sent_to=_recipients())
+    return jsonify(ok=True, sent_to=recipients)
 
 
 @app.route("/api/debug/sensor")
@@ -4454,9 +4458,9 @@ def _resume_payload():
     and not yet made. Manual switches the fan off once and then hands
     over; a restart in the gap between selecting Manual and the stop
     landing would otherwise drop the promise, leaving the fan running in
-    the one mode whose purpose is to stop touching it. Note this covers
-    a REQUESTED restart only - a crash in the same window still loses
-    it, which is recorded as open in the handoff notes.
+    the one mode whose purpose is to stop touching it. Startup also
+    reconciles the durable Manual-stop marker, including after a handover,
+    so carried state cannot cancel a committed promise.
     """
     with _state_lock:
         return {
@@ -4547,8 +4551,23 @@ def _apply_resume():
 
 
 def _announce_owed_manual_stop():
-    """Record the durable Manual-mode stop owed by a cold start."""
+    """Record a durable Manual-mode stop restored during startup."""
     _log("Fan off \u2014 manual stop owed from before restart")
+
+
+def _restore_manual_stop_promise():
+    """Reconcile the durable stop marker even after a successful handover.
+
+    Disk records a committed promise; a carried False cannot cancel it.
+    A marker left behind after leaving Manual is not a current stop request.
+    Called before threads start, when no configuration update can race it.
+    """
+    if CFG["control"].get("mode") == "manual" and manual_off_promised():
+        with _state_lock:
+            owed = STATE["manual_off_pending"]
+            STATE["manual_off_pending"] = True
+        if not owed:
+            _announce_owed_manual_stop()
 
 
 def _announce_start(resumed):
@@ -4690,19 +4709,29 @@ def _restart_now():
     # Bounded, like _persist_fault_on_exit. If a fault transaction is
     # already in flight, refusing and being asked again is better than
     # queueing behind a disk that may be failing.
-    if not _fault_lock.acquire(timeout=2):
-        _log("%s Restart refused - a fault is being written right "
-             "now; try again in a moment" % FC_RESTART_PROBLEM)
-        return False
-
+    # Freeze settings and plug actions before taking the fault lock.
+    # This matches configuration/actuation lock ordering and closes the
+    # gap between handover capture and exec where Manual could be saved
+    # with a stop promise that was absent from the captured handover.
+    acquired = []
     unsaved = True
     try:
+        for lock, reason in (
+                (_cfg_lock, "settings are being changed"),
+                (_act_lock, "a plug action is in progress"),
+                (_fault_lock, "a fault is being written right now")):
+            if not lock.acquire(timeout=2):
+                _log("%s Restart refused - %s; try again in a moment"
+                     % (FC_RESTART_PROBLEM, reason))
+                return False
+            acquired.append(lock)
         with _state_lock:
             unsaved = STATE["fault_unsaved"]
         if not unsaved:
             _restart_from_here()
     finally:
-        _fault_lock.release()
+        for lock in reversed(acquired):
+            lock.release()
 
     # Only reachable when the restart was refused. A failed exec raises
     # instead, and restart_loop logs it.
@@ -4712,7 +4741,7 @@ def _restart_now():
 
 
 def _restart_from_here():
-    """The exec itself. CALLERS MUST HOLD _fault_lock. Does not return."""
+    """The exec itself; hold _cfg_lock, _act_lock and _fault_lock in order."""
     _log("Restarting on request")
     if not flush_hist():
         # Worth saying, not worth refusing over: the graph loses at
@@ -4763,16 +4792,9 @@ if __name__ == "__main__":
     # Immediately after, and before anything else can log: this line is
     # what explains every line that appears below it.
     _announce_start(resumed)
-    # A promise that outlived the process that made it. Only honoured
-    # while the stored mode is still Manual - a marker left by a mode
-    # that has since moved on is stale, not owed. Skipped after a
-    # handover, which carried the live value across and is more current
-    # than anything on disk.
-    if not resumed and CFG["control"].get("mode") == "manual" \
-            and manual_off_promised():
-        with _state_lock:
-            STATE["manual_off_pending"] = True
-        _announce_owed_manual_stop()
+    # A durable promise must also be honoured after handover. The carried
+    # state supplements disk; it must not cancel an outstanding stop.
+    _restore_manual_stop_promise()
     # A fault that outlived the restart. Said out loud because
     # restarting is not how one gets cleared, and whoever just restarted
     # may well have been trying exactly that. Before the threads, so it

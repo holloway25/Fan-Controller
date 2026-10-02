@@ -447,6 +447,29 @@ def test_partial_delivery_does_not_mark_alert_fully_delivered():
     return "partial delivery is a failed completion, not an all-clear prerequisite"
 
 
+def test_email_test_recipient_report_uses_send_snapshot():
+    C = harness.load()
+    real = C.smtplib.SMTP
+    fake = FakeSMTP()
+    send = fake.sendmail
+
+    def change_during_send(sender, to, msg):
+        with C._cfg_lock:
+            C.CFG["email"]["recipients"] = "new@example.net"
+        return send(sender, to, msg)
+
+    fake.sendmail = change_during_send
+    with_fake(C, fake, recipients="old@example.com")
+    try:
+        response = C.app.test_client().post("/api/email/test", json={})
+    finally:
+        C.smtplib.SMTP = real
+    assert response.status_code == 200, response.get_json()
+    assert fake.sent[1] == ["old@example.com"]
+    assert response.get_json()["sent_to"] == fake.sent[1], response.get_json()
+    return "reported recipients are the ones passed to SMTP, not the later config"
+
+
 def test_cram_md5_is_used_and_login_is_never_called():
     """login() would fall back to PLAIN. It must not be used."""
     C = harness.load()

@@ -81,6 +81,8 @@ Power monitoring is off by default. The dashboard still shows power and its
 relationship to the configured band. When monitoring is enabled, a missing,
 stale, low or high reading starts the fault timer while the relay is on. A
 healthy reading resets the timer.
+Non-finite plug values such as NaN or infinity are treated as missing readings,
+not stored as wattage or exposed as invalid JSON to the dashboard.
 
 A draw fault stops the fan, survives restart, and blocks Auto until cleared.
 If an existing `fault.json` is malformed, only partly valid, unreadable, or a

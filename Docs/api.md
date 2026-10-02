@@ -62,6 +62,8 @@ configured recipients. Partial acceptance returns 400 with an explicit
 partial-delivery error, not `ok` or a complete `sent_to` list. Some recipients
 may already have received the message; repeating the test can send duplicates.
 Relay acceptance is not proof of final inbox delivery.
+Validation, sending and the `sent_to` response use one email-settings snapshot,
+so changing recipients during the send cannot change the reported destination.
 
 ## Secrets
 

@@ -1,9 +1,8 @@
 """The restart trigger: taken once, never twice, never a loop.
 
-_restart_now is never called here. It ends in execv, which would
-replace the test process itself - so what is tested is the decision to
-restart, not the exec. The exec path is four lines and is exercised for
-real every time the trigger is used.
+Restart tests replace execv before exercising the handover path, so they do
+not replace the test process or touch the running controller. Device clients
+and configuration live only in the shared harness's disposable directory.
 """
 import json
 import os
@@ -879,6 +878,73 @@ def test_a_genuinely_new_generation_still_resets_the_timer():
         "one")
     assert C.STATE["fault"] is None, "faulted on the old config's timer"
     return "new config, new timer"
+
+
+def test_restart_handover_blocks_configuration_and_actuation():
+    C = harness.load()
+    real_exec = C.os.execv
+    real_mark = C._mark_fds_close_on_exec
+    seen = {}
+
+    def check_locks():
+        def probe():
+            for name in ("_cfg_lock", "_act_lock", "_fault_lock"):
+                lock = getattr(C, name)
+                free = lock.acquire(blocking=False)
+                seen[name] = free
+                if free:
+                    lock.release()
+        worker = threading.Thread(target=probe)
+        worker.start()
+        worker.join(2)
+        assert not worker.is_alive()
+
+    C._mark_fds_close_on_exec = check_locks
+    _stub_exec(C)
+    try:
+        try:
+            C._restart_now()
+        except ExecCalled:
+            pass
+    finally:
+        C.os.execv = real_exec
+        C._mark_fds_close_on_exec = real_mark
+        C.os.environ.pop(C.RESUME_ENV, None)
+    assert seen == {"_cfg_lock": False, "_act_lock": False, "_fault_lock": False}, seen
+    # A failed exec must release every lock, not strand the service.
+    check_locks()
+    assert all(seen.values()), seen
+    return "config, actuation and fault locks span handover and release on failure"
+
+
+def test_resumed_manual_reconciles_durable_stop_promise():
+    C = harness.load()
+    C.CFG["control"]["mode"] = "manual"
+    C.promise_manual_off()
+    C.os.environ[C.RESUME_ENV] = json.dumps({"v": 1, "manual_off_pending": False})
+    # Execute the actual startup prefix, stopping before notification or
+    # threads. This catches removing the reconciliation call from main,
+    # not just errors inside a helper the application might never call.
+    import ast
+    with open(C.__file__, encoding="utf-8") as source:
+        tree = ast.parse(source.read())
+    main = tree.body[-1]
+    assert isinstance(main, ast.If)
+    prefix = []
+    for statement in main.body:
+        if isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Call) \
+                and isinstance(statement.value.func, ast.Name) \
+                and statement.value.func.id == "_notify_restart_fault":
+            break
+        prefix.append(statement)
+    exec(compile(ast.Module(body=prefix, type_ignores=[]), C.__file__, "exec"), C.__dict__)
+    assert C.resumed is True
+    assert C.STATE["manual_off_pending"] is True
+    C.CFG["control"]["mode"] = "auto"
+    C.STATE["manual_off_pending"] = False
+    C._restore_manual_stop_promise()
+    assert C.STATE["manual_off_pending"] is False
+    return "durable promise is honoured after handover, only in Manual"
 
 
 if __name__ == "__main__":

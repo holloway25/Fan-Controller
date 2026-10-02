@@ -347,5 +347,19 @@ def test_the_capture_uses_shapes_the_table_above_models():
     return "relay key %s, draw as %s" % (keys[0], type(raw).__name__)
 
 
+def test_nonfinite_power_is_missing_not_invalid_json():
+    import json
+    for value in ("NaN", "Infinity", "-Infinity", "1e999", float("nan"), float("inf"), 10 ** 400):
+        p = plug({"StatusSNS": {"ENERGY": {"Power": value}}})
+        watts = p.power_w()
+        assert watts is None, repr(value)
+        C = harness.load()
+        C.STATE.update(watts=watts, watts_at=C.time.time())
+        response = C.app.test_client().get("/api/state")
+        data = json.loads(response.data, parse_constant=lambda s: (_ for _ in ()).throw(ValueError(s)))
+        assert data["watts"] is None
+    return "non-finite and overflowing draw stays missing; state is valid JSON"
+
+
 if __name__ == "__main__":
     sys.exit(harness.run(dict(globals())))

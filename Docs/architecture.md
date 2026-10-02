@@ -99,9 +99,13 @@ transient state and logs `FC-301`; a saved fault and durable pending Manual stop
 are still loaded from disk. Events are bounded and best-effort, so the absence
 of a start event does not prove no restart occurred.
 
-A requested restart is refused while a live fault has not been saved. The fault
-lock is held from the final check through `execv`, preventing the replacement
-from landing midway through a fault transaction.
+A requested restart is refused while a live fault has not been saved. It takes
+`_cfg_lock`, then `_act_lock`, then `_fault_lock`, retaining all three through
+handover capture and `execv`. This prevents settings, plug actions or fault
+transactions from changing the promised state between capture and replacement.
+Lock waits are bounded and refusal leaves the running process in place.
+Startup reconciles a durable pending Manual stop even after handover; a carried
+false flag cannot erase a committed stop promise.
 
 Before `execv`, inherited file descriptors above standard input/output/error
 are closed so the replacement can bind port 8096. A SIGTERM/systemd restart

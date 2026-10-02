@@ -65,6 +65,22 @@ MODULE_TIMEOUT_SECONDS = 120
 # caught by an unrelated crash is not evidence.
 MUTATIONS = [
     # ------------------------------------------------- the safety core
+    ("review-restart-config-not-frozen", "controller.py",
+     '                (_cfg_lock, "settings are being changed"),\n',
+     '', "test_restart.py",
+     "test_restart_handover_blocks_configuration_and_actuation"),
+    ("review-resumed-manual-promise-skipped", "controller.py",
+     '    _restore_manual_stop_promise()\n    # A fault that outlived the restart.',
+     '    # A fault that outlived the restart.', "test_restart.py",
+     "test_resumed_manual_reconciles_durable_stop_promise"),
+    ("review-plug-nonfinite-accepted", "controller.py",
+     '            return watts if math.isfinite(watts) else None',
+     '            return watts', "test_plug_parse.py",
+     "test_nonfinite_power_is_missing_not_invalid_json"),
+    ("review-email-recipient-snapshot-lost", "controller.py",
+     '    return jsonify(ok=True, sent_to=recipients)',
+     '    return jsonify(ok=True, sent_to=_recipients())', "test_alert_delivery.py",
+     "test_email_test_recipient_report_uses_send_snapshot"),
     ("ack-origin-check-skipped", "controller.py",
      '    expected = _origin_key(request.host_url)',
      '    return None\n    expected = _origin_key(request.host_url)',
