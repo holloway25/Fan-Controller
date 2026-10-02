@@ -1,8 +1,9 @@
 # Dashboard
 
 The dashboard reads live data from `/api/state` and history from
-`/api/history`. Its controls change mode, settings, authentication and fault
-state.
+`/api/history`. Its controls change mode, settings and fault state. Password
+changes use the [UI authentication API](configuration.md#ui-authentication),
+not a dashboard control.
 
 ## Layout
 
@@ -26,6 +27,12 @@ it does not drive the fan.
 A metric is green only when Auto is active, its trigger is enabled, and its
 reading is live. A latched trigger is amber. Disabled triggers and readings in
 Manual or Force on are neutral.
+
+Retained readings are labelled stale after a sensor-read failure or when their
+timestamp is older than two polling intervals (minimum 30 seconds). Plug/control
+errors keep the overall error indicator red without marking fresh sensor
+measurements stale. `/api/state` exposes sensor acquisition errors separately
+as `sensor_error`.
 
 The power pill is neutral while the fan is off. While it is running and settled,
 power is green inside the configured band and red outside it, even when

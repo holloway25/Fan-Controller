@@ -97,7 +97,43 @@ def test_poll_loop_records_disconnection_and_runs_failsafe():
         pass
     assert C.STATE["reading_at"] == before
     assert "disconnected" in C.STATE["error"]
+    assert "disconnected" in C.STATE["sensor_error"]
     assert plug.commands == [True]
+
+
+def test_fresh_reading_remains_healthy_when_plug_command_fails():
+    C, protect, plug, sensor = setup(True)
+    sensor["airQuality"]["co2"] = 1500
+    C.CFG["control"].update(on_at=1000, off_at=740, min_run_minutes=0)
+    # A recovered sensor must clear its own error even if actuation fails later.
+    C.STATE["sensor_error"] = "Previous sensor outage"
+    before = C.STATE["reading_at"]
+    def fail(_):
+        raise C.PlugError("Plug rejected switching")
+    plug.set = fail
+    class Finished(Exception):
+        pass
+    class Wake:
+        def wait(self, _):
+            raise Finished()
+        def clear(self):
+            pass
+        def set(self):
+            pass
+    C._wait_for_dns = lambda: True
+    C._wake = Wake()
+    try:
+        C.loop()
+    except Finished:
+        pass
+    assert C.STATE["reading_at"] > before
+    assert C.STATE["co2"] == 1500
+    assert C.STATE["history"][-1]["v"] == 1500
+    assert "Plug rejected" in C.STATE["error"]
+    assert C.STATE["sensor_error"] is None
+    body = C.app.test_client().get("/api/state").get_json()
+    assert body["sensor_error"] is None
+    assert "Plug rejected" in body["error"]
 
 
 if __name__ == "__main__":

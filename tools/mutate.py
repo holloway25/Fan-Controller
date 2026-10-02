@@ -65,6 +65,16 @@ MODULE_TIMEOUT_SECONDS = 120
 # caught by an unrelated crash is not evidence.
 MUTATIONS = [
     # ------------------------------------------------- the safety core
+    ("sensor-health-plug-error-misclassified", "controller.py",
+     '        if code == FC_SENSOR_DOWN:\n            STATE["sensor_error"] = msg',
+     '        if True:\n            STATE["sensor_error"] = msg',
+     "test_sensor_connectivity.py",
+     "test_fresh_reading_remains_healthy_when_plug_command_fails"),
+    ("sensor-health-recovery-not-cleared", "controller.py",
+     '                         error=None, sensor_error=None,',
+     '                         error=None,',
+     "test_sensor_connectivity.py",
+     "test_fresh_reading_remains_healthy_when_plug_command_fails"),
     ("sensor-disconnected-readings-accepted", "controller.py",
      '        if s.get("isConnected") is False:\n            # Protect can retain',
      '        if False:\n            # Protect can retain',

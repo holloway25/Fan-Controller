@@ -65,9 +65,9 @@ module.exports = {
     }
   },
   async test_stale_or_failed_sensor_values_are_not_healthy() {
-    for (const over of [{reading_at:H.now()-600,error:"Selected sensor is disconnected"},
+    for (const over of [{reading_at:H.now()-600,error:"Selected sensor is disconnected",sensor_error:"disconnected"},
                        {reading_at:H.now()-600,error:null},
-                       {reading_at:H.now(),error:"Selected sensor is disconnected"}]) {
+                       {reading_at:H.now(),error:"Selected sensor is disconnected",sensor_error:"disconnected"}]) {
       const state = H.baseState(over);
       state.config.control.temp_enabled = true;
       state.config.control.humidity_enabled = true;
@@ -81,16 +81,30 @@ module.exports = {
     }
   },
   async test_fresh_sensor_values_remain_healthy_after_recovery() {
-    const state = H.baseState({reading_at:H.now()-600,error:"disconnected"});
+    const state = H.baseState({reading_at:H.now()-600,error:"disconnected",sensor_error:"disconnected"});
     state.config.control.temp_enabled = true;
     state.config.control.humidity_enabled = true;
     const page = await H.open({state});
-    state.reading_at = H.now(); state.error = null;
+    state.reading_at = H.now(); state.error = null; state.sensor_error = null;
     await H.poll(page.window);
     for (const id of ["ppm","tc","rh"]) {
       const el = page.document.getElementById(id);
       assert(el.classList.contains("on"),id);
       assert(!el.textContent.includes("stale"),id);
     }
+  },
+  async test_plug_failure_does_not_mark_fresh_sensor_values_stale() {
+    const state = H.baseState({co2:1500,reading_at:H.now(),
+      error:"Plug rejected switching",sensor_error:null});
+    state.config.control.temp_enabled = true;
+    state.config.control.humidity_enabled = true;
+    const {document} = await H.open({state});
+    for (const id of ["ppm","tc","rh"]) {
+      const el = document.getElementById(id);
+      assert(!el.textContent.includes("stale"),id+" mislabelled stale");
+      assert(el.classList.contains("on")||el.classList.contains("trig"),id+" lost live colour");
+    }
+    assert(document.getElementById("dot").classList.contains("bad"));
+    assert(document.getElementById("topmsg").textContent.includes("Plug rejected"));
   },
 };

@@ -1403,6 +1403,9 @@ class Tasmota:
 STATE = {
     "co2": None, "co2_path": None, "fan": None, "reading_at": None,
     "changed_at": None, "error": None, "sensor_name": None,
+    # Sensor acquisition health is separate from plug/control failures that
+    # may occur after a valid reading has already been recorded.
+    "sensor_error": None,
     "temperature": None, "humidity": None, "pm25": None,
     "watts": None, "watts_at": None,
     "latch": {"co2": False, "temp": False, "humidity": False},
@@ -2024,7 +2027,7 @@ def tick():
         _daily_pending = None
         with _state_lock:
             STATE.update(co2=co2, co2_path=path, reading_at=now,
-                         error=None,
+                         error=None, sensor_error=None,
                          temperature=vals.get('temperature'),
                          humidity=vals.get('humidity'),
                          pm25=vals.get('pm25'))
@@ -3612,6 +3615,8 @@ def _fail(msg, last, code=None):
     """
     with _state_lock:
         STATE["error"] = msg
+        if code == FC_SENSOR_DOWN:
+            STATE["sensor_error"] = msg
     if msg != last:            # outside the lock: _log takes it itself
         _log("%s %s" % (code, msg) if code else msg)
     return msg

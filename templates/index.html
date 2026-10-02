@@ -651,8 +651,9 @@ function render(s){
   const anyReading=s.co2!=null||s.temperature!=null||s.humidity!=null
     ||s.pm25!=null;
   // UI freshness is independent of whether the operator enabled the fail-safe.
-  // Allow two poll intervals, but never call a failed poll's retained values live.
-  const liveReading=!s.error&&Number.isFinite(s.reading_at)&&s.reading_at>0
+  // A plug/control error may follow a valid sensor sample. Only a sensor
+  // acquisition failure or an old timestamp makes these values stale.
+  const liveReading=!s.sensor_error&&Number.isFinite(s.reading_at)&&s.reading_at>0
     &&(Date.now()/1000-s.reading_at)<=Math.max(30,2*(Number(c.poll_seconds)||30));
   const drawLate=(Date.now()/1000-(s.draw_loop_at||s.process_started_at))>30;
   $("dot").className="dot "+(s.error||s.draw_loop_error||drawLate
