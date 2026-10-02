@@ -33,9 +33,12 @@ current demand and minimum-run lease. See [restart model](architecture.md#restar
 
 ## Apply a reviewed update
 
-Before updating production, review and test the change on development. Keep
-development in Manual with power monitoring off if it can reach the production
-plug; never deliberately test actuation against that shared plug.
+Before updating production, review and test the change on development using
+mocked devices or an isolated test plug. Prevent development from reaching the
+production plug, for example through blocked network access, before starting
+the controller or exercising controls. Manual is not isolation: selecting it
+still commands a one-time stop, even with power monitoring disabled. Never
+use a shared production plug as a development test device.
 
 Check that the checkout is clean and record the old revision. Back up live
 configuration and local unit files outside the repo in an owner-only directory.

@@ -4,6 +4,11 @@ Tests are development and CI tools, not routine work for a live production fan.
 Run the affected checks for a change; documentation-only edits need link,
 formatting and privacy checks, not a controller or browser suite.
 
+For interactive development, use mocked devices or an isolated test plug,
+and block access to production devices before running a controller or changing
+its mode. Manual still issues a one-time stop; disabling power monitoring
+does not prevent that command. Neither setting is a substitute for isolation.
+
 ## Controller suite
 
 From the repository root:

@@ -22,7 +22,63 @@ async function saveResult(result, ok = true) {
   return page.document.getElementById("emsg");
 }
 
+async function testEmailResult(notice, mailOk = true, saveOk = true) {
+  const requests = [];
+  const page = await H.open({
+    beforeParse(w) {
+      const original = w.fetch;
+      w.fetch = (url, opts) => {
+        if (opts && (url === "/api/config" || url === "/api/email/test")) {
+          requests.push(url);
+          const saving = url === "/api/config";
+          const ok = saving ? saveOk : mailOk;
+          const result = saving
+            ? (ok ? { ok: true, notice } : { error: "Settings save failed." })
+            : (ok ? { ok: true, sent_to: ["a@example.com"] }
+              : { error: "Email send failed." });
+          return Promise.resolve({ ok, status: ok ? 200 : 400,
+            json: () => Promise.resolve(result) });
+        }
+        return original(url, opts);
+      };
+    },
+  });
+  page.document.getElementById("emailtest").click();
+  await H.settle(page.window);
+  return { message: page.document.getElementById("emsg"), requests };
+}
+
 module.exports = {
+  async test_email_test_keeps_save_warnings_with_success() {
+    for (const notice of [
+      "Saved and in use, but the disk did not confirm the write will survive a power cut.",
+      "Mail server changed, so the SMTP password was cleared.",
+    ]) {
+      const { message, requests } = await testEmailResult(notice);
+      assert(message.textContent.includes(notice), "save warning was lost");
+      assert(message.textContent.includes("Sent to a@example.com."), "email result was lost");
+      assert(message.classList.contains("err"), "warning styled as success");
+      assert.deepStrictEqual(requests, ["/api/config", "/api/email/test"]);
+    }
+  },
+  async test_email_test_keeps_save_warning_when_email_fails() {
+    const notice = "Settings may not survive a power cut.";
+    const { message } = await testEmailResult(notice, false);
+    assert(message.textContent.includes(notice), "save warning was lost on email failure");
+    assert(message.textContent.includes("Email send failed."));
+    assert(message.classList.contains("err"));
+  },
+  async test_email_test_without_warning_reports_success() {
+    const { message } = await testEmailResult(null);
+    assert.equal(message.textContent, "Sent to a@example.com.");
+    assert(message.classList.contains("ok"));
+  },
+  async test_email_test_does_not_send_after_save_failure() {
+    const { message, requests } = await testEmailResult(null, true, false);
+    assert.equal(message.textContent, "Settings save failed.");
+    assert(message.classList.contains("err"));
+    assert.deepStrictEqual(requests, ["/api/config"]);
+  },
   async test_email_save_preserves_cleared_password_warning() {
     const notice = "Mail server changed, so the SMTP password was cleared.";
     const message = await saveResult({ ok: true, notice });

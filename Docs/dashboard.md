@@ -45,6 +45,10 @@ Selecting **Force on** asks for confirmation because it overrides a safety
 fault. **Clear fault** also asks for confirmation: acknowledgement allows Auto
 to run again, but does not prove the hardware is repaired.
 
+**Test email** saves the displayed settings first. Any save warning remains
+visible alongside the email result, whether the send succeeds or fails. A
+successful test does not resolve a disk-durability or cleared-password warning.
+
 A fault banner adds **stop unconfirmed, retrying** when the plug has not
 confirmed the stop. A separate warning reports an unsaved fault; requested
 restarts are blocked until it is persisted or safely cleared.

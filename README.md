@@ -74,6 +74,10 @@ onto a development instance that can reach the same plug, or run two active
 controllers against one fan. Live settings, credentials and runtime files must
 not be committed.
 
+Use mocked devices, an isolated test plug or blocked access to production for
+development. Manual and disabled power monitoring do not provide isolation;
+Manual still commands a one-time stop.
+
 ## Documentation
 
 - [Installation and first setup](Docs/installation.md)

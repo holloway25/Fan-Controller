@@ -945,6 +945,7 @@ async function saveAll(msgEl){
   touched=false;
   // A cleared secret is reported so the change is never silent.
   say(msgEl, j.notice || "Saved.", j.notice ? "err" : "ok");
+  return j.notice || "";
 }
 
 [["save","savemsg"],["save2","pmsg"],["save3","hmsg"]].forEach(([b,m])=>
@@ -1010,11 +1011,13 @@ $("save4").addEventListener("click",()=>saveAll("emsg")
 // through a save.
 $("emailtest").addEventListener("click",async()=>{
   say("emsg","Sending...","ok");
+  let notice="";
   try{
-    await saveAll("emsg");
+    notice=await saveAll("emsg");
     const j=await post("/api/email/test");
-    say("emsg","Sent to "+j.sent_to.join(", ")+".","ok");
-  }catch(e){say("emsg",e.message,"err")}
+    say("emsg",(notice?notice+"\n":"")+
+        "Sent to "+j.sent_to.join(", ")+".",notice?"err":"ok");
+  }catch(e){say("emsg",(notice?notice+"\n":"")+e.message,"err")}
 });
 
 let HIST=[], HIST_REV=null, HIST_BUSY=false, HIST_GEN=null;
