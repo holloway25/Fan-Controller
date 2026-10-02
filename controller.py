@@ -1254,6 +1254,10 @@ class Protect:
         blocks like humiditySettings cannot be mistaken for readings.
         """
         s = self.sensor(sid)
+        if s.get("isConnected") is False:
+            # Protect can retain measurements in a disconnected device's
+            # payload. They must not refresh the stale-reading safety timer.
+            raise ProtectError("Selected sensor is disconnected")
         air = s.get("airQuality")
         if air is not None and not isinstance(air, dict):
             raise ProtectError("Protect returned invalid airQuality data")
@@ -1272,7 +1276,10 @@ class Protect:
 
     def co2(self, sid):
         """Current CO2 in ppm plus the payload path it came from."""
-        hit = find_metric(self.sensor(sid), CO2_HINTS)
+        s = self.sensor(sid)
+        if s.get("isConnected") is False:
+            raise ProtectError("Selected sensor is disconnected")
+        hit = find_metric(s, CO2_HINTS)
         if hit is None:
             raise ProtectError("No CO2 field in this sensor's payload. Open "
                                "Debug to see what Protect is returning.")

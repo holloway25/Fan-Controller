@@ -65,6 +65,16 @@ MODULE_TIMEOUT_SECONDS = 120
 # caught by an unrelated crash is not evidence.
 MUTATIONS = [
     # ------------------------------------------------- the safety core
+    ("sensor-disconnected-readings-accepted", "controller.py",
+     '        if s.get("isConnected") is False:\n            # Protect can retain',
+     '        if False:\n            # Protect can retain',
+     "test_sensor_connectivity.py",
+     "test_disconnected_retained_measurements_do_not_refresh_poll_state"),
+    ("sensor-disconnected-co2-accepted", "controller.py",
+     '        if s.get("isConnected") is False:\n            raise ProtectError("Selected sensor is disconnected")',
+     '        if False:\n            raise ProtectError("Selected sensor is disconnected")',
+     "test_sensor_connectivity.py",
+     "test_disconnected_co2_helper_rejects_retained_measurement"),
     ("draw-timer-unrelated-save-reset", "controller.py",
      '            _oob_generation = _cfg_generation\n        now_mode',
      '            _oob_since = None\n            _oob_generation = _cfg_generation\n        now_mode',

@@ -26,6 +26,11 @@ aliases prevent metadata such as a CO2 threshold from being mistaken for a
 live reading. Non-finite values and unexpected bootstrap shapes are rejected
 at this boundary. The selected paths are exposed for diagnosis.
 
+An explicit `isConnected: false` rejects retained sensor measurements before
+they can refresh `reading_at`, so the configured stale-reading fail-safe still
+operates. Payloads without connectivity metadata remain supported. Raw sensor
+diagnostics remain available even while the sensor is disconnected.
+
 Protect and plug clients are cached and rebuilt when their relevant settings
 change. An expired Protect session is retried after authentication.
 
