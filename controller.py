@@ -2073,8 +2073,6 @@ def tick():
             STATE["history_rev"] += 1
             hsnap = list(STATE["history"])
             ext_msg = _adopt_relay_locked(actual, now)
-            fan_on = STATE["fan"]
-            changed = STATE["changed_at"]
     # Recovery is an edge too, and only announced if the stale alert
     # actually went out - so a blip that never alerted stays silent both
     # ways. Dispatched OUTSIDE the locks, and only once this cycle has
@@ -2125,7 +2123,6 @@ def tick():
         save_daily()
     if ext_msg:
         _log(ext_msg)
-    ran_for = (now - changed) if changed else None
     if c["mode"] == "manual":
         return
     # Decided under the lock, not merely actuated under it. A settings
@@ -2153,11 +2150,18 @@ def tick():
         # so the eventual stop line named the wrong run, or no run.
         # Nothing here changes the relay; it changes whether the
         # activity log tells the truth about it.
-        ran_snapshot = dict(STATE["ran_with"])
-        want, why = decide(co2, vals.get('temperature'), fan_on, cur,
-                           ran_for, STATE["latch"], STATE["fault"],
-                           humidity=vals.get('humidity'),
-                           ran_with=ran_snapshot)
+        # The independent relay loop may have observed an off/on cycle
+        # while history was being saved. Decide from the CURRENT run's
+        # state and lease, not values captured before that observation.
+        with _state_lock:
+            fan_on = STATE["fan"]
+            changed = STATE["changed_at"]
+            ran_for = (time.time() - changed) if changed is not None else None
+            ran_snapshot = dict(STATE["ran_with"])
+            want, why = decide(co2, vals.get('temperature'), fan_on, cur,
+                               ran_for, STATE["latch"], STATE["fault"],
+                               humidity=vals.get('humidity'),
+                               ran_with=ran_snapshot)
         if want is None or want == fan_on:
             # No command needed, so the fan is already in the state the
             # record describes. This is the path most cycles take, and
@@ -2168,7 +2172,7 @@ def tick():
         h.set(want)
         with _state_lock:
             STATE["fan"] = want
-            STATE["changed_at"] = now
+            STATE["changed_at"] = time.time()
             # Committed here and not before: if h.set raised we never
             # reach this line, the live record is untouched, and the
             # retry on the next cycle still has the run to name.

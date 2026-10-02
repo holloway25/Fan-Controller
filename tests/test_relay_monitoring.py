@@ -123,7 +123,9 @@ def test_power_failure_still_refreshes_relay_and_reaches_fault_detector():
     C._oob_since = C.time.time() - 100
     C._oob_generation = C._cfg_generation
     real_sleep = C.time.sleep
-    C.time.sleep = lambda _: (_ for _ in ()).throw(StopIteration())
+    def stop_loop(_):
+        raise StopIteration()
+    C.time.sleep = stop_loop
     try:
         C.watts_loop()
     except StopIteration:
@@ -145,7 +147,9 @@ def test_reconfigured_meter_read_is_discarded_before_state_commit():
     C._client_snapshot = lambda: (None, old if C._cfg_generation == 0 else fresh,
                                   C._cfg_generation)
     real_sleep = C.time.sleep
-    C.time.sleep = lambda _: (_ for _ in ()).throw(StopIteration())
+    def stop_loop(_):
+        raise StopIteration()
+    C.time.sleep = stop_loop
     try:
         C.watts_loop()
     except StopIteration:
@@ -156,6 +160,61 @@ def test_reconfigured_meter_read_is_discarded_before_state_commit():
     assert C.STATE["fan"] is False
     assert C.STATE["fault"] is None
     assert not old.commands and not fresh.commands
+
+
+def _auto_during_relay_change(change):
+    C = setup()
+    clock = [10000.0]
+    real_time = C.time.time
+    C.time.time = lambda: clock[0]
+    C.CFG["control"].update(co2_enabled=True, temp_enabled=False,
+                             humidity_enabled=False,
+                             min_run_minutes=0 if change == "off" else 10,
+                             on_at=1000, off_at=740)
+    C.CFG["protect"]["sensor_id"] = "selected"
+    C.STATE.update(fan=True, changed_at=clock[0]-3600)
+    class Sensor:
+        def readings(self, sid):
+            return {"co2": 500}, "airQuality.co2"
+    plug = Plug()
+    C._client_snapshot = lambda: (Sensor(), plug, C._cfg_generation)
+    def interleave(_):
+        # tick has released its first actuation hold and is doing history I/O.
+        if change:
+            clock[0] += 5
+            plug.on = False
+            C._refresh_relay(plug, C._cfg_generation)
+            if change == "off-on":
+                clock[0] += 5
+                plug.on = True
+                C._refresh_relay(plug, C._cfg_generation)
+        return False
+    C.maybe_save_hist = interleave
+    try:
+        C.tick()
+    finally:
+        C.time.time = real_time
+    return C, plug, clock[0]
+
+
+def test_auto_honours_new_external_off_on_minimum_run_lease():
+    C, plug, now = _auto_during_relay_change("off-on")
+    assert C.STATE["changed_at"] == now, "fresh lease timestamp was overwritten"
+    assert C.STATE["fan"] is True, "Auto stopped a fresh external run"
+    assert not plug.commands, "Auto used the previous run's expired lease"
+
+
+def test_auto_uses_current_off_state_without_a_redundant_stop():
+    C, plug, now = _auto_during_relay_change("off")
+    assert C.STATE["fan"] is False
+    assert C.STATE["changed_at"] == now, "external stop timestamp was overwritten"
+    assert not plug.commands, "Auto acted on stale cached fan state"
+
+
+def test_auto_still_stops_when_the_current_lease_really_expired():
+    C, plug, now = _auto_during_relay_change(None)
+    assert C.STATE["fan"] is False
+    assert plug.commands == [False]
 
 
 if __name__ == "__main__":

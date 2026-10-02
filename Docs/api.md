@@ -71,15 +71,15 @@ is logged and does not turn the successful clear into a failed response.
 configured recipients. Partial acceptance returns 400 with an explicit
 partial-delivery error, not `ok` or a complete `sent_to` list. Some recipients
 may already have received the message; repeating the test can send duplicates.
+Relay acceptance is not proof of final inbox delivery.
+Validation, sending and the `sent_to` response use one email-settings snapshot,
+so changing recipients during the send cannot change the reported destination.
 
 `/api/protect/sensors` includes `isConnected` (`true`, `false`, or `null` when
 the payload omits it). CO2 values may be retained for disconnected sensors;
 they are diagnostic values, not live readings. Discovery labels disconnected
 devices separately and excludes them from its reporting-CO2 count. Missing
 connectivity metadata remains compatible with older payloads.
-Relay acceptance is not proof of final inbox delivery.
-Validation, sending and the `sent_to` response use one email-settings snapshot,
-so changing recipients during the send cannot change the reported destination.
 
 ## Secrets
 

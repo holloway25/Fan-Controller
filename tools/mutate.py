@@ -65,6 +65,14 @@ MODULE_TIMEOUT_SECONDS = 120
 # caught by an unrelated crash is not evidence.
 MUTATIONS = [
     # ------------------------------------------------- the safety core
+    ("auto-current-run-lease-ignored", "controller.py",
+     '            ran_for = (time.time() - changed) if changed is not None else None',
+     '            ran_for = 3600', "test_relay_monitoring.py",
+     "test_auto_honours_new_external_off_on_minimum_run_lease"),
+    ("auto-current-fan-state-ignored", "controller.py",
+     '            fan_on = STATE["fan"]\n            changed = STATE["changed_at"]',
+     '            fan_on = True\n            changed = STATE["changed_at"]',
+     "test_relay_monitoring.py", "test_auto_uses_current_off_state_without_a_redundant_stop"),
     ("relay-monitor-stale-meter-committed", "controller.py",
      '                if _stale_client(gen):\n                    continue',
      '                if False:\n                    continue',
