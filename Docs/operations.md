@@ -97,11 +97,18 @@ remove the marker and restart, only after checking the configured target,
 mode, faults and any outstanding Manual stop promise. The marker is ignored
 by Git and must not be copied to a production installation.
 
-Normal meter polling is every five seconds. Independent relay polling occurs
-immediately at startup or after a configuration-generation change, then every
-30 seconds regardless of sensor health. Successful sensor polls also read
-the relay before making control decisions. These are separate from the
-configurable sensor polling interval.
+Normal meter polling is every five seconds. Auto, Manual and Force on share
+one background relay check every 30 seconds, independently of sensor health.
+Sensor and meter loops reuse the same relay result (or failed attempt), rather
+than each making another request. The first check at startup or after a
+configuration-generation change is immediate; confirmed switch replies also
+refresh the shared result. These are separate from the configurable sensor
+polling interval. Mode changes and safety stops still act immediately; fault
+confirmation uses a fresh read rather than the background cache. Force on may
+take up to 30 seconds to detect and undo an external stop.
+If a Force on relay read fails, an ON command is still attempted as a precaution.
+The activity entry reports the failed read and reassertion, not a proven new
+start; an already-known run keeps its minimum-run timer.
 Before latching a new draw fault, the controller checks the relay again. A
 confirmed external stop is adopted without faulting; an unreadable relay is
 not assumed off and does not suppress protection.

@@ -1815,7 +1815,42 @@ def decide(co2, temp, fan_on, c, ran_for, latch, fault=None,
     return False, ", ".join(parts) if parts else "no reading"
 
 
-def _fan_status(plug):
+_relay_cache = None
+
+
+def _remember_relay(plug, actual, error=None):
+    """Cache a reply/failed attempt under the actuation lock."""
+    global _relay_cache
+    _relay_cache = (plug, _cfg_generation, time.time(), actual, error)
+
+
+def _read_relay(plug, gen=None, poll=False):
+    """Share one background relay attempt per 30s across both loops.
+
+    Caller holds the actuation lock. Explicit actuation and fault
+    confirmation still request fresh reads.
+    Failed attempts are cached too, so a second loop cannot immediately
+    retry a timeout. Confirmed switch replies update the same cache.
+    """
+    if _stale_client(gen):
+        return None
+    cached = _relay_cache
+    if (poll and cached is not None and cached[0] is plug
+            and cached[1] == _cfg_generation
+            and 0 <= time.time()-cached[2] < RELAY_SECONDS):
+        if cached[4] is not None:
+            raise cached[4]
+        return cached[3]
+    try:
+        actual = plug.state()
+    except PlugError as error:
+        _remember_relay(plug, None, error)
+        raise
+    _remember_relay(plug, actual)
+    return actual
+
+
+def _fan_status(plug, poll=False):
     """What the plug says it is doing, or None if unreadable.
 
     Single relay, so there is no multi-output split to reconcile as there
@@ -1824,7 +1859,7 @@ def _fan_status(plug):
     if PLUG_ACCESS_DISABLED:
         return None
     try:
-        return plug.state()
+        return _read_relay(plug, poll=poll)
     except PlugError:
         return None
 
@@ -1891,12 +1926,12 @@ def _adopt_relay_locked(actual, now):
     return None
 
 
-def _refresh_relay(plug, gen=None):
+def _refresh_relay(plug, gen=None, poll=False):
     """Observe this fan independently of Protect, without switching it."""
     with _act_lock:
         if _stale_client(gen):
             return
-        actual = plug.state()
+        actual = _read_relay(plug, gen, poll=poll)
         with _state_lock:
             message = _adopt_relay_locked(actual, time.time())
     if message:
@@ -1936,6 +1971,7 @@ def _manual_off_locked(plug):
         already_off = False          # unknown: switch anyway
     if not already_off:
         plug.set(False)              # raises: flag stays set, retried
+    _remember_relay(plug, False)
     with _state_lock:
         STATE["manual_off_pending"] = False
         STATE["fan"] = False
@@ -1950,7 +1986,7 @@ def _manual_off_locked(plug):
              absorb="Mode: %s" % MODE_LABELS.get("manual", "manual"),
              merged="Mode: Manual \u2014 fan off")
 
-def _force_on(plug, gen=None):
+def _force_on(plug, gen=None, poll=False):
     """Hold the fan on without consulting Protect.
 
     Force on is reached for precisely when the sensor cannot be trusted -
@@ -1979,7 +2015,11 @@ def _force_on(plug, gen=None):
             # flag, switching on here would leave the fan going with
             # nothing left to correct it.
             return
-        actual = _fan_status(plug)   # None when the plug cannot be read
+        read_error = None
+        try:
+            actual = _read_relay(plug, gen, poll=poll)
+        except PlugError as error:
+            actual, read_error = None, error
         if actual is True:
             with _state_lock:
                 STATE["fan"] = True  # no change, so no lease and no event
@@ -2009,16 +2049,22 @@ def _force_on(plug, gen=None):
             _log("%s Fan off \u2014 changed outside (%s)"
                  % (FC_EXTERNAL_CHANGE, _mode_now()))
         plug.set(True)               # raises: retried on the next cycle
+        _remember_relay(plug, True)
         now = time.time()
         with _state_lock:
             STATE["fan"] = True
-            STATE["changed_at"] = now
+            if actual is not None or not was_on:
+                STATE["changed_at"] = now
         # Folds into "Mode: Force on" when that is still the newest
         # line: same click, same second, and the mode alone already
         # says the fan is being held on.
-        _log("Fan on \u2014 forced on",
-             absorb="Mode: %s" % MODE_LABELS.get("on", "on"),
-             merged="Mode: Force on \u2014 fan on")
+        if read_error is not None:
+            _log("%s Force on reasserted — relay read: %s"
+                 % (FC_POLL_ERROR, _plug_issue(read_error)))
+        else:
+            _log("Fan on \u2014 forced on",
+                 absorb="Mode: %s" % MODE_LABELS.get("on", "on"),
+                 merged="Mode: Force on \u2014 fan on")
 
 
 def tick():
@@ -2031,7 +2077,7 @@ def tick():
     if not PLUG_ACCESS_DISABLED and c["mode"] == "manual":
         _manual_off(h, gen)
     elif not PLUG_ACCESS_DISABLED and c["mode"] == "on":
-        _force_on(h, gen)
+        _force_on(h, gen, poll=True)
     sid = CFG["protect"]["sensor_id"]
     if not sid:
         raise ProtectError("No air-quality sensor selected yet")
@@ -2089,7 +2135,7 @@ def tick():
         if gen != _cfg_generation:
             _wake.set()
             return
-        actual = _fan_status(h)
+        actual = _fan_status(h, poll=True)
         _daily_pending = None
         with _state_lock:
             STATE.update(co2=co2, co2_path=path, reading_at=now,
@@ -2216,6 +2262,7 @@ def tick():
                         activity = "Fan on \u2014 " + " and ".join(joined)
         else:
             h.set(want)
+            _remember_relay(h, want)
             with _state_lock:
                 STATE["fan"] = want
                 STATE["changed_at"] = time.time()
@@ -2284,6 +2331,7 @@ def _failsafe():
             pass                 # unreadable: assert ON anyway
         if not already_on:
             h.set(True)
+        _remember_relay(h, True)
         # Recorded either way. When the plug was ALREADY on this used to
         # return without touching STATE, so the relay could be on while
         # /api/state and the dashboard both said off - and the draw
@@ -3285,6 +3333,7 @@ def _enforce_stop(plug, gen=None):
         try:
             if plug.state() is not False:
                 plug.set(False)
+            _remember_relay(plug, False)
         except PlugError:
             return False            # unconfirmed: retried next cycle
         with _state_lock:
@@ -3565,7 +3614,6 @@ def watts_loop():
     meter success, so a sensor outage cannot hide an already-running fan.
     """
     last_issue = None
-    last_relay_at, last_relay_gen = None, None
     relay_issue = None
     while True:
         if PLUG_ACCESS_DISABLED:
@@ -3584,12 +3632,8 @@ def watts_loop():
         gen = None
         try:
             _, plug, gen = _client_snapshot()
-            now = time.time()
-            if (last_relay_at is None or gen != last_relay_gen
-                    or now < last_relay_at or now-last_relay_at >= RELAY_SECONDS):
-                last_relay_at, last_relay_gen = now, gen
-                relay_issue = None
-                _refresh_relay(plug, gen)
+            relay_issue = None
+            _refresh_relay(plug, gen, poll=True)
         except Exception as e:
             relay_issue = "relay read: %s" % _plug_issue(e)
         # A power-only success cannot announce recovery of a relay failure.
@@ -3627,7 +3671,7 @@ def watts_loop():
                 # 300s while Protect is unreachable, so tick() alone could
                 # leave a fan switched off elsewhere stopped for minutes
                 # while the mode says otherwise.
-                _force_on(plug, gen)
+                _force_on(plug, gen, poll=True)
         except Exception as e:
             issue = issue or "Force on: %s" % _plug_issue(e)
         # Called even in Force on, where it stands down and clears the

@@ -46,6 +46,145 @@ def test_meter_five_seconds_relay_thirty_seconds_and_immediate_start():
     assert p.powers == list(range(1000,1065,5))
 
 
+def test_all_modes_share_relay_reads_between_sensor_and_meter_loops():
+    for mode in ('auto', 'manual', 'on'):
+        C = harness.load()
+        C.CFG['control']['mode'] = mode
+        C.CFG['protect']['sensor_id'] = 'sensor'
+        class Sensor:
+            def readings(self, sid):
+                return {'co2': 1200, 'temperature': 20, 'humidity': 50}, 'co2'
+        class Running(Meter):
+            def state(self):
+                self.relays.append(self.C.time.time())
+                return True
+            def power_w(self):
+                self.powers.append(self.C.time.time())
+                return 23
+            def set(self, on):
+                raise AssertionError('Stable running fan was commanded')
+        p = Running(C)
+        C.STATE.update(fan=True, changed_at=990, manual_off_pending=False)
+        C._client_snapshot = lambda: (Sensor(), p, C._cfg_generation)
+        def sensor_poll(now):
+            if now in (1010,1040):
+                C.tick()
+        run_loop(C, advance=sensor_poll)
+        assert p.relays == [1000,1030,1060], (mode,p.relays)
+        assert len(p.powers) == 13, (mode,p.powers)
+
+
+def test_force_on_command_reply_prevents_duplicate_poll_and_start():
+    C = harness.load()
+    C.CFG['control']['mode'] = 'on'
+    class Switching(Meter):
+        on = False
+        commands = 0
+        def state(self):
+            self.relays.append(self.C.time.time())
+            return self.on
+        def set(self,on):
+            self.commands += 1
+            self.on = on
+    p = Switching(C)
+    C._client_snapshot = lambda: (None,p,C._cfg_generation)
+    run_loop(C, seconds=20)
+    assert p.relays == [1000]
+    assert p.commands == 1
+    assert C.STATE['changed_at'] == 1000
+
+
+def test_cached_failed_attempt_does_not_retry_from_second_loop():
+    C = harness.load()
+    p = Meter(C, fail_first=True)
+    old = C.time.time
+    C.time.time = lambda: 1000
+    try:
+        with C._act_lock:
+            for _ in range(2):
+                assert C._fan_status(p, poll=True) is None
+    finally:
+        C.time.time = old
+    assert p.relays == [1000]
+
+
+def test_force_on_failed_read_is_visible_without_inventing_new_run():
+    C = harness.load()
+    C.CFG['control']['mode'] = 'on'
+    C.STATE.update(fan=True, changed_at=900)
+    class Failing(Meter):
+        commands = 0
+        def set(self, on):
+            assert on is True
+            self.commands += 1
+    p = Failing(C,fail_first=True)
+    C._force_on(p, C._cfg_generation, poll=True)
+    C._force_on(p, C._cfg_generation, poll=True)
+    assert len(p.relays) == p.commands == 1
+    assert C.STATE['changed_at'] == 900
+    msgs = [e['msg'] for e in C.STATE['events']]
+    assert any('Force on reasserted' in m and 'ReadTimeout' in m for m in msgs)
+    assert not any('Fan on — forced on' in m for m in msgs)
+
+
+def test_explicit_confirmation_bypasses_background_relay_cache():
+    C = harness.load()
+    p = Meter(C)
+    old = C.time.time
+    C.time.time = lambda: 1000
+    try:
+        with C._act_lock:
+            assert C._fan_status(p,poll=True) is False
+            assert C._fan_status(p) is False
+    finally:
+        C.time.time = old
+    assert p.relays == [1000,1000]
+
+
+def test_fault_stop_confirmation_replaces_cached_running_relay():
+    C = harness.load()
+    C.CFG['control']['mode'] = 'auto'
+    C.STATE['fault'] = {'at':1, 'msg':'fault', 'stopped':False}
+    C._confirm_fault_stopped = lambda: True
+    class Switch(Meter):
+        on = True
+        def state(self):
+            self.relays.append(self.C.time.time())
+            return self.on
+        def set(self,on):
+            self.on = on
+    p = Switch(C)
+    with C._act_lock:
+        assert C._fan_status(p,poll=True) is True
+    assert C._enforce_stop(p,C._cfg_generation) is True
+    with C._act_lock:
+        assert C._fan_status(p,poll=True) is False
+    assert len(p.relays) == 2
+
+
+def test_background_cache_is_not_shared_with_another_plug():
+    C = harness.load()
+    p,q = Meter(C),Meter(C)
+    with C._act_lock:
+        assert C._fan_status(p,poll=True) is False
+        assert C._fan_status(q,poll=True) is False
+    assert len(p.relays) == len(q.relays) == 1
+
+
+def test_meter_checks_cache_expiry_not_a_second_independent_schedule():
+    C = harness.load()
+    p = Meter(C)
+    C._client_snapshot = lambda: (None,p,C._cfg_generation)
+    old = C.time.time
+    C.time.time = lambda: 990
+    try:
+        C._refresh_relay(p,C._cfg_generation,poll=True)
+    finally:
+        C.time.time = old
+    run_loop(C,seconds=65)
+    assert p.relays == [990,1020,1050], p.relays
+
+
 def test_changed_generation_refreshes_relay_immediately():
     C = harness.load()
     p = Meter(C)
