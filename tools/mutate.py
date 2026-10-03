@@ -64,6 +64,14 @@ MODULE_TIMEOUT_SECONDS = 120
 # by hand for the right FAILURE, not merely a failure: a mutation
 # caught by an unrelated crash is not evidence.
 MUTATIONS = [
+    ("midrun-trigger-activity-missing", "controller.py",
+     '                    if joined:\n', '                    if False:\n',
+     "test_trigger_activity.py",
+     "test_humidity_joining_is_logged_once_without_command_or_lease_reset"),
+    ("midrun-trigger-activity-repeated-every-poll", "controller.py",
+     '                              and not before_latch.get(r["key"])',
+     '                              and True', "test_trigger_activity.py",
+     "test_humidity_joining_is_logged_once_without_command_or_lease_reset"),
     ("draw-fault-confirmation-skipped", "controller.py",
      '            actual = _fan_status(plug) if plug is not None else None',
      '            actual = None', "test_plug_polling.py",

@@ -2153,6 +2153,7 @@ def tick():
         _log(ext_msg)
     if PLUG_ACCESS_DISABLED or c["mode"] == "manual":
         return
+    activity = None
     # Decided under the lock, not merely actuated under it. A settings
     # save replaces CFG["control"] wholesale, and decide() latches in
     # place: deciding on thresholds a save has already replaced sets a
@@ -2186,6 +2187,7 @@ def tick():
             changed = STATE["changed_at"]
             ran_for = (time.time() - changed) if changed is not None else None
             ran_snapshot = dict(STATE["ran_with"])
+            before_latch = dict(STATE["latch"])
             want, why = decide(co2, vals.get('temperature'), fan_on, cur,
                                ran_for, STATE["latch"], STATE["fault"],
                                humidity=vals.get('humidity'),
@@ -2196,16 +2198,29 @@ def tick():
             # the one that accumulates a rule latching mid-run.
             with _state_lock:
                 STATE["ran_with"] = ran_snapshot
-            return
-        h.set(want)
-        with _state_lock:
-            STATE["fan"] = want
-            STATE["changed_at"] = time.time()
-            # Committed here and not before: if h.set raised we never
-            # reach this line, the live record is untouched, and the
-            # retry on the next cycle still has the run to name.
-            STATE["ran_with"] = ran_snapshot
-    _log("Fan %s \u2014 %s" % ("on" if want else "off", why))
+                if fan_on is True and want is True:
+                    readings = {"co2": co2, "temp": vals.get('temperature'),
+                                "humidity": vals.get('humidity')}
+                    joined = ["%s triggered (%s)" %
+                              (r["label"], r["fmt"](readings[r["key"]]))
+                              for r in RULES
+                              if STATE["latch"].get(r["key"])
+                              and not before_latch.get(r["key"])
+                              and readings.get(r["key"]) is not None]
+                    if joined:
+                        activity = "Fan staying on \u2014 " + ", ".join(joined)
+        else:
+            h.set(want)
+            with _state_lock:
+                STATE["fan"] = want
+                STATE["changed_at"] = time.time()
+                # Only after confirmed actuation: failures keep the run.
+                STATE["ran_with"] = ran_snapshot
+            activity = "Fan %s \u2014 %s" % ("on" if want else "off", why)
+    # Events describe transitions, not every poll; logging stays outside
+    # the actuation/state locks and never refreshes the minimum-run lease.
+    if activity:
+        _log(activity)
 
 
 
