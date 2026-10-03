@@ -93,7 +93,7 @@ Latch colours are Auto-only because values retained from an earlier Auto run do
 not explain a fan currently held by Force on or controlled manually.
 
 When another trigger activates during an existing Auto run, the activity log
-records it once, for example `Fan staying on — humidity triggered (70% RH)`.
+records it once, for example `Fan on — humidity 70% RH`.
 The entry includes the reading and explains continued running; it is not
 another switch-on command and does not restart the minimum-run countdown.
 A trigger that releases and activates again gets a new entry. Unchanged

@@ -2201,14 +2201,14 @@ def tick():
                 if fan_on is True and want is True:
                     readings = {"co2": co2, "temp": vals.get('temperature'),
                                 "humidity": vals.get('humidity')}
-                    joined = ["%s triggered (%s)" %
+                    joined = ["%s %s" %
                               (r["label"], r["fmt"](readings[r["key"]]))
                               for r in RULES
                               if STATE["latch"].get(r["key"])
                               and not before_latch.get(r["key"])
                               and readings.get(r["key"]) is not None]
                     if joined:
-                        activity = "Fan staying on \u2014 " + ", ".join(joined)
+                        activity = "Fan on \u2014 " + ", ".join(joined)
         else:
             h.set(want)
             with _state_lock:

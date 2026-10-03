@@ -33,7 +33,8 @@ def setup():
 
 
 def notes(C):
-    return [e['msg'] for e in reversed(C.STATE['events']) if 'Fan staying on' in e['msg']]
+    prefixes = ('Fan on — humidity ', 'Fan on — temperature ', 'Fan on — CO2 ')
+    return [e['msg'] for e in reversed(C.STATE['events']) if e['msg'].startswith(prefixes)]
 
 
 def test_humidity_joining_is_logged_once_without_command_or_lease_reset():
@@ -42,7 +43,7 @@ def test_humidity_joining_is_logged_once_without_command_or_lease_reset():
     assert not notes(C)
     s.values['humidity'] = 70.05
     C.tick()
-    assert notes(C) == ['Fan staying on — humidity triggered (70% RH)']
+    assert notes(C) == ['Fan on — humidity 70% RH']
     s.values['humidity'] = 74
     C.tick()
     assert len(notes(C)) == 1
@@ -56,8 +57,8 @@ def test_reactivated_trigger_is_logged_again_not_lost_in_run_accumulator():
     for rh in (70,60,71):
         s.values['humidity'] = rh
         C.tick()
-    assert notes(C) == ['Fan staying on — humidity triggered (70% RH)',
-                        'Fan staying on — humidity triggered (71% RH)']
+    assert notes(C) == ['Fan on — humidity 70% RH',
+                        'Fan on — humidity 71% RH']
     assert not p.commands and C.STATE['changed_at'] == lease
 
 
@@ -65,7 +66,7 @@ def test_simultaneous_new_triggers_share_one_activity_entry():
     C,s,p,lease = setup()
     s.values.update(temperature=27.2,humidity=71)
     C.tick()
-    assert notes(C) == ['Fan staying on — temperature triggered (27.2 C), humidity triggered (71% RH)']
+    assert notes(C) == ['Fan on — temperature 27.2 C, humidity 71% RH']
     assert not p.commands
 
 
