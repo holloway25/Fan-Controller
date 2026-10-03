@@ -651,8 +651,12 @@ def load_events():
         return []
     if not isinstance(e, list):
         return []
-    return [x for x in e
-            if isinstance(x, dict) and "at" in x and "msg" in x][:EVENTS_MAX]
+    # Disk/restored data is not trusted: one Infinity anywhere in an event
+    # would make /api/state invalid JSON in browsers. Message types must also
+    # be safe for classification, and only the supported fields are retained.
+    return [{"at": x["at"], "msg": x["msg"]} for x in e
+            if isinstance(x, dict) and _valid_fault_timestamp(x.get("at"))
+            and isinstance(x.get("msg"), str)][:EVENTS_MAX]
 
 
 def save_events(events):

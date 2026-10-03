@@ -64,6 +64,14 @@ MODULE_TIMEOUT_SECONDS = 120
 # by hand for the right FAILURE, not merely a failure: a mutation
 # caught by an unrelated crash is not evidence.
 MUTATIONS = [
+    ("events-loading-invalid-timestamp-retained", "controller.py",
+     'if isinstance(x, dict) and _valid_fault_timestamp(x.get("at"))',
+     'if isinstance(x, dict) and "at" in x', "test_events_loading.py",
+     "test_invalid_event_timestamps_and_messages_are_discarded"),
+    ("events-loading-unknown-fields-retained", "controller.py",
+     'return [{"at": x["at"], "msg": x["msg"]} for x in e',
+     'return [x for x in e', "test_events_loading.py",
+     "test_only_supported_event_fields_survive_and_json_remains_valid"),
     ("plug-requests-overlap", "controller.py",
      '        with _plug_request_lock:\n            return self._cmd_locked(cmnd)',
      '        return self._cmd_locked(cmnd)', "test_plug_requests.py",
