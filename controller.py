@@ -23,6 +23,9 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 DIR = os.path.dirname(os.path.abspath(__file__))
 CFG_PATH = os.path.join(DIR, "config.json")
+# Local testing interlock, sampled at startup. No request (including a
+# dashboard plug test or actuation) may reach hardware while this is set.
+PLUG_ACCESS_DISABLED = os.path.lexists(os.path.join(DIR, "plug-access.disabled"))
 
 DEFAULTS = {
     "protect": {"host": "192.0.2.1", "username": "", "password": "",
@@ -1120,7 +1123,18 @@ class ProtectError(Exception):
 
 
 class PlugError(Exception):
-    pass
+    def __init__(self, message, reason=None, elapsed=None):
+        super().__init__(message)
+        self.reason, self.elapsed = reason, elapsed
+
+
+def _plug_issue(error):
+    """Only locally classified metadata; never device text or request URLs."""
+    if isinstance(error, PlugError) and error.reason:
+        timing = (", %.2fs" % error.elapsed
+                  if error.elapsed is not None else "")
+        return "PlugError (%s%s)" % (error.reason, timing)
+    return type(error).__name__
 
 
 class Protect:
@@ -1300,10 +1314,14 @@ class Tasmota:
         self.password = password or ""
 
     def _cmd(self, cmnd):
+        if PLUG_ACCESS_DISABLED:
+            raise PlugError("Plug access is disabled for this installation",
+                            reason="local interlock")
         params = {"cmnd": cmnd}
         if self.password:
             params["user"] = self.user
             params["password"] = self.password
+        started = time.monotonic()
         try:
             r = requests.get("http://%s/cm" % self.host, params=params,
                              timeout=12)
@@ -1311,21 +1329,28 @@ class Tasmota:
             # Only the exception type: requests puts the full URL in the
             # message, and the credentials are query parameters.
             raise PlugError("Cannot reach the plug at %s (%s)"
-                            % (self.host, type(e).__name__))
+                            % (self.host, type(e).__name__),
+                            reason=type(e).__name__,
+                            elapsed=time.monotonic()-started)
+        elapsed = time.monotonic()-started
         if r.status_code >= 400:
-            raise PlugError("Plug returned HTTP %d" % r.status_code)
+            raise PlugError("Plug returned HTTP %d" % r.status_code,
+                            reason="HTTP %d" % r.status_code, elapsed=elapsed)
         if not r.content:
             raise PlugError("Plug returned an empty reply. Check that the "
-                            "HTTP command API is enabled on the device.")
+                            "HTTP command API is enabled on the device.",
+                            reason="empty reply", elapsed=elapsed)
         try:
             data = r.json()
         except ValueError:
-            raise PlugError("Plug returned a non-JSON reply")
+            raise PlugError("Plug returned a non-JSON reply",
+                            reason="non-JSON reply", elapsed=elapsed)
         if not isinstance(data, dict):
-            raise PlugError("Plug returned a non-object JSON reply")
+            raise PlugError("Plug returned a non-object JSON reply",
+                            reason="non-object JSON reply", elapsed=elapsed)
         if "WARNING" in data:
-            raise PlugError("Plug rejected the credentials: %s"
-                            % data["WARNING"])
+            raise PlugError("Plug rejected the credentials",
+                            reason="credentials rejected", elapsed=elapsed)
         return data
 
     @staticmethod
@@ -1374,7 +1399,7 @@ class Tasmota:
         unknown state is never mistaken for off."""
         v = self._power(self._cmd("Power"))
         if v is None:
-            raise PlugError("Plug reported no power state")
+            raise PlugError("Plug reported no power state", reason="missing relay state")
         return v
 
     def set(self, on):
@@ -1401,6 +1426,7 @@ class Tasmota:
 
 
 STATE = {
+    "plug_polling_enabled": not PLUG_ACCESS_DISABLED,
     "co2": None, "co2_path": None, "fan": None, "reading_at": None,
     "changed_at": None, "error": None, "sensor_name": None,
     # Sensor acquisition health is separate from plug/control failures that
@@ -1789,6 +1815,8 @@ def _fan_status(plug):
     Single relay, so there is no multi-output split to reconcile as there
     was with the previous multi-output client.
     """
+    if PLUG_ACCESS_DISABLED:
+        return None
     try:
         return plug.state()
     except PlugError:
@@ -3018,6 +3046,7 @@ def _draw_fault_cause(watts, lo, hi):
 
 
 WATTS_SECONDS = 5
+RELAY_SECONDS = 30
 WATTS_STALE = 15   # a reading older than this is reported as unknown
 SETTLE_SECONDS = 20  # spin-up grace before draw is judged
 
@@ -3484,7 +3513,16 @@ def watts_loop():
     meter success, so a sensor outage cannot hide an already-running fan.
     """
     last_issue = None
+    last_relay_at, last_relay_gen = None, None
+    relay_issue = None
     while True:
+        if PLUG_ACCESS_DISABLED:
+            # Keep the service heartbeat, not fictional meter/relay readings.
+            with _state_lock:
+                STATE["draw_loop_at"] = time.time()
+                STATE["draw_loop_error"] = None
+            time.sleep(WATTS_SECONDS)
+            continue
         issue = None
         try:
             _retry_fault_persist()
@@ -3494,9 +3532,16 @@ def watts_loop():
         gen = None
         try:
             _, plug, gen = _client_snapshot()
-            _refresh_relay(plug, gen)
+            now = time.time()
+            if (last_relay_at is None or gen != last_relay_gen
+                    or now < last_relay_at or now-last_relay_at >= RELAY_SECONDS):
+                last_relay_at, last_relay_gen = now, gen
+                relay_issue = None
+                _refresh_relay(plug, gen)
         except Exception as e:
-            issue = issue or "relay read: %s" % type(e).__name__
+            relay_issue = "relay read: %s" % _plug_issue(e)
+        # A power-only success cannot announce recovery of a relay failure.
+        issue = issue or relay_issue
         try:
             if plug is None:
                 raise PlugError("No plug client available")
@@ -3520,7 +3565,7 @@ def watts_loop():
             # Left for the staleness check rather than cleared here: one
             # missed request should not blank a valid reading, but a
             # stale one must never be presented as current.
-            issue = issue or "power read: %s" % type(e).__name__
+            issue = issue or "power read: %s" % _plug_issue(e)
         # Outside the read, so losing the plug still reaches the detector.
         # Inside, a failed power_w() jumped straight to except and the
         # out-of-band timer never started.
@@ -3532,14 +3577,14 @@ def watts_loop():
                 # while the mode says otherwise.
                 _force_on(plug, gen)
         except Exception as e:
-            issue = issue or "Force on: %s" % type(e).__name__
+            issue = issue or "Force on: %s" % _plug_issue(e)
         # Called even in Force on, where it stands down and clears the
         # out-of-band timer. Skipping it there would leave a stale start
         # time to resume from and could fault the fan early on the way out.
         try:
             _draw_check(plug, gen)
         except Exception as e:
-            issue = issue or "draw check: %s" % type(e).__name__
+            issue = issue or "draw check: %s" % _plug_issue(e)
         with _state_lock:
             STATE["draw_loop_at"] = time.time()
             STATE["draw_loop_error"] = issue
@@ -4866,6 +4911,8 @@ if __name__ == "__main__":
     # Immediately after, and before anything else can log: this line is
     # what explains every line that appears below it.
     _announce_start(resumed)
+    if PLUG_ACCESS_DISABLED:
+        _log("Plug access disabled by local interlock - no plug requests")
     # A durable promise must also be honoured after handover. The carried
     # state supplements disk; it must not cancel an outstanding stop.
     _restore_manual_stop_promise()

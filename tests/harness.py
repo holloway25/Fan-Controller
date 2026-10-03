@@ -59,7 +59,7 @@ def skip(reason):
 SRC = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def load():
+def load(plug_access_disabled=False):
     """Import controller.py against a disposable data directory."""
     tmp = tempfile.mkdtemp(prefix="fanctl-test-")
     _TMPDIRS.append(tmp)
@@ -67,6 +67,8 @@ def load():
                 os.path.join(tmp, "controller.py"))
     shutil.copy(os.path.join(SRC, "config.example.json"),
                 os.path.join(tmp, "config.json"))
+    if plug_access_disabled:
+        open(os.path.join(tmp, "plug-access.disabled"), "x").close()
     os.makedirs(os.path.join(tmp, "templates"), exist_ok=True)
     open(os.path.join(tmp, "templates", "index.html"), "w").close()
     shutil.copytree(os.path.join(SRC, "static"),

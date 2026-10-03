@@ -38,6 +38,7 @@ __pycache__/
 fault.json
 restart.request
 manual-off.pending
+plug-access.disabled
 
 # Node, for the jsdom tests only. Never a runtime dependency: the
 # controller needs Python and nothing else, and the Pi has no Node at

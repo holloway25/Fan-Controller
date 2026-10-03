@@ -78,6 +78,29 @@ production board unless the change actually requires it.
 
 ## Local data
 
+### Development plug interlock
+
+For a running development dashboard that must not contact a real plug, create
+an empty `plug-access.disabled` file beside `controller.py`, then use
+`./restart.sh`. This startup-only interlock disables automatic relay/meter
+polling and blocks all HTTP plug requests, including dashboard tests and
+switching. Sensor polling and the dashboard remain available; relay and power
+values are unknown, not simulated. `/api/state` reports
+`plug_polling_enabled: false`. Manual and disabled power monitoring alone do
+not disable polling or isolate hardware.
+
+This is for development only: it also prevents fault-stop commands and is
+unsuitable for an installation controlling a real fan. To restore plug access,
+remove the marker and restart, only after checking the configured target,
+mode, faults and any outstanding Manual stop promise. The marker is ignored
+by Git and must not be copied to a production installation.
+
+Normal meter polling is every five seconds. Independent relay polling occurs
+immediately at startup or after a configuration-generation change, then every
+30 seconds regardless of sensor health. Successful sensor polls also read
+the relay before making control decisions. These are separate from the
+configurable sensor polling interval.
+
 Settings and runtime files stay outside Git. See the
 [runtime state table](architecture.md#runtime-state) for their purpose and
 durability. Protect credentials in backups just as carefully as live files.
