@@ -98,14 +98,18 @@ mode, faults and any outstanding Manual stop promise. The marker is ignored
 by Git and must not be copied to a production installation.
 
 Normal meter polling is every five seconds. Auto, Manual and Force on share
-one background relay check every 30 seconds, independently of sensor health.
-Sensor and meter loops reuse the same relay result (or failed attempt), rather
-than each making another request. The first check at startup or after a
-configuration-generation change is immediate; confirmed switch replies also
-refresh the shared result. These are separate from the configurable sensor
-polling interval. Mode changes and safety stops still act immediately; fault
-confirmation uses a fresh read rather than the background cache. Force on may
-take up to 30 seconds to detect and undo an external stop.
+relay results from normal control/sensor checks, with a 30-second minimum
+background read interval. Confirmed start/stop replies update that result;
+there is no extra background relay request while normal checks are healthy.
+An unknown state or a new client requires a check. If the air sensor fails,
+or normal observations stop for longer than the sensor interval (at least
+30 seconds) plus five seconds of scheduling grace, the meter loop supplies
+fallback relay checks at the same 30-second cadence. Failed attempts are
+shared too, rather than immediately retried by the other loop.
+Mode changes and safety stops still act immediately; fault confirmation uses
+a fresh read rather than the background cache. Force on detects external
+stops on normal checks, or fallback checks during a sensor outage, rather than
+making its own five-second relay requests.
 If a Force on relay read fails, an ON command is still attempted as a precaution.
 The activity entry reports the failed read and reassertion, not a proven new
 start; an already-known run keeps its minimum-run timer.

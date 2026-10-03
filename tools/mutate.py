@@ -64,6 +64,22 @@ MODULE_TIMEOUT_SECONDS = 120
 # by hand for the right FAILURE, not merely a failure: a mutation
 # caught by an unrelated crash is not evidence.
 MUTATIONS = [
+    ("config-sections-ignored", "controller.py",
+     'if set(body) - {"protect", "plug", "control", "email"}:',
+     'if False:', "test_config_boundaries.py",
+     "test_unknown_sections_reject_the_whole_request_without_side_effects"),
+    ("config-numeric-overflow-unhandled", "controller.py",
+     '        except (TypeError, ValueError, OverflowError):\n            raise ValueError("%s must be a finite number" % name)',
+     '        except (TypeError, ValueError):\n            raise ValueError("%s must be a finite number" % name)',
+     "test_config_boundaries.py", "test_oversized_numbers_return_json_validation_errors_without_saving"),
+    ("relay-fallback-always-enabled", "controller.py",
+     '            relay_fallback = _relay_fallback_needed(plug, gen)',
+     '            relay_fallback = True', "test_plug_polling.py",
+     "test_healthy_normal_checks_do_not_trigger_background_relay_requests"),
+    ("relay-fallback-never-enabled", "controller.py",
+     '            relay_fallback = _relay_fallback_needed(plug, gen)',
+     '            relay_fallback = False', "test_plug_polling.py",
+     "test_fallback_resumes_when_normal_checks_stop"),
     ("saved-history-metrics-unchecked", "controller.py",
      '            and all(point.get(key) is None or _finite(point[key])\n                    for key in ("v", "tc", "rh", "pm"))',
      '            and True', "test_history_and_fault_notices.py",

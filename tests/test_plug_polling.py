@@ -70,7 +70,7 @@ def test_all_modes_share_relay_reads_between_sensor_and_meter_loops():
             if now in (1010,1040):
                 C.tick()
         run_loop(C, advance=sensor_poll)
-        assert p.relays == [1000,1030,1060], (mode,p.relays)
+        assert p.relays == [1000,1040], (mode,p.relays)
         assert len(p.powers) == 13, (mode,p.powers)
 
 
@@ -183,6 +183,47 @@ def test_meter_checks_cache_expiry_not_a_second_independent_schedule():
         C.time.time = old
     run_loop(C,seconds=65)
     assert p.relays == [990,1020,1050], p.relays
+
+
+def test_healthy_normal_checks_do_not_trigger_background_relay_requests():
+    for mode in ('auto','manual','on'):
+        C = harness.load()
+        C.CFG['control']['mode'] = mode
+        p = Meter(C)
+        C._client_snapshot = lambda: (None,p,C._cfg_generation)
+        old = C.time.time
+        C.time.time = lambda: 1000
+        try:
+            C._refresh_relay(p,C._cfg_generation,poll=True)
+        finally:
+            C.time.time = old
+        C._normal_relay_at = (p,C._cfg_generation,1000)
+        def normal_check(now):
+            if now in (1030,1060):
+                C._refresh_relay(p,C._cfg_generation,poll=True)
+                C._normal_relay_at = (p,C._cfg_generation,now)
+        # This models completed normal checks; Force on need not assert ON
+        # here because a healthy normal tick already performs that action.
+        extra_force_checks = []
+        C._force_on = lambda *args,**kw: extra_force_checks.append(C.time.time())
+        run_loop(C,advance=normal_check)
+        assert p.relays == [1000,1030,1060], (mode,p.relays)
+        assert not extra_force_checks, (mode,extra_force_checks)
+
+
+def test_fallback_resumes_when_normal_checks_stop():
+    C = harness.load()
+    p = Meter(C)
+    C._client_snapshot = lambda: (None,p,C._cfg_generation)
+    old = C.time.time
+    C.time.time = lambda: 1000
+    try:
+        C._refresh_relay(p,C._cfg_generation,poll=True)
+    finally:
+        C.time.time = old
+    C._normal_relay_at = (p,C._cfg_generation,1000)
+    run_loop(C,seconds=75)
+    assert p.relays == [1000,1040,1070], p.relays
 
 
 def test_changed_generation_refreshes_relay_immediately():

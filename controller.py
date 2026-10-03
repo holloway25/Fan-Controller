@@ -156,8 +156,8 @@ def _coerce(name, spec, v):
             raise ValueError("%s must be a number" % name)
         try:
             f = float(v)
-        except (TypeError, ValueError):
-            raise ValueError("%s must be a number" % name)
+        except (TypeError, ValueError, OverflowError):
+            raise ValueError("%s must be a finite number" % name)
         if not math.isfinite(f):
             raise ValueError("%s must be a finite number" % name)
         if not (spec[1] <= f <= spec[2]):
@@ -1816,6 +1816,30 @@ def decide(co2, temp, fan_on, c, ran_for, latch, fault=None,
 
 
 _relay_cache = None
+_normal_relay_at = None
+
+
+def _relay_fallback_needed(plug, gen):
+    """Only supplement normal polling when state is unknown/unverified
+    or its relay observations have stopped. Caller does not hold locks.
+    """
+    with _act_lock:
+        if _stale_client(gen):
+            return False
+        cached = _relay_cache
+        with _state_lock:
+            unknown = STATE["fan"] is None
+            sensor_failed = bool(STATE["sensor_error"])
+        if (unknown or sensor_failed or cached is None or cached[0] is not plug
+                or cached[1] != gen or cached[4] is not None):
+            return True
+        normal = _normal_relay_at
+        if normal is None or normal[0] is not plug or normal[1] != gen:
+            return True
+        # Give the normal sensor cycle one meter interval of scheduling
+        # grace. A sensor outage never disables protection indefinitely.
+        age = time.time()-normal[2]
+        return age < 0 or age > max(RELAY_SECONDS, CFG["control"]["poll_seconds"])+WATTS_SECONDS
 
 
 def _remember_relay(plug, actual, error=None):
@@ -2068,6 +2092,7 @@ def _force_on(plug, gen=None, poll=False):
 
 
 def tick():
+    global _normal_relay_at
     p, h, gen = _client_snapshot()
     c = CFG["control"]
     # Before the sensor read: a manual stop must not depend on Protect,
@@ -2136,6 +2161,8 @@ def tick():
             _wake.set()
             return
         actual = _fan_status(h, poll=True)
+        if actual is not None:
+            _normal_relay_at = (h, gen, time.time())
         _daily_pending = None
         with _state_lock:
             STATE.update(co2=co2, co2_path=path, reading_at=now,
@@ -3610,8 +3637,9 @@ def watts_loop():
     is the expensive call: tying watts to poll_seconds left the reading up
     to 30s stale while the UI refreshed every 5s. Errors are swallowed so
     a plug hiccup cannot overwrite the control loop's error.
-    Relay state is refreshed independently of both sensor acquisition and
-    meter success, so a sensor outage cannot hide an already-running fan.
+    Relay checks only supplement the normal loop when state is unknown or
+    normal observations stop. Meter success is not required for that fallback,
+    so a sensor outage cannot hide an already-running fan.
     """
     last_issue = None
     relay_issue = None
@@ -3630,10 +3658,13 @@ def watts_loop():
             issue = "fault retry: %s" % type(e).__name__
         plug = None
         gen = None
+        relay_fallback = False
         try:
             _, plug, gen = _client_snapshot()
+            relay_fallback = _relay_fallback_needed(plug, gen)
             relay_issue = None
-            _refresh_relay(plug, gen, poll=True)
+            if relay_fallback:
+                _refresh_relay(plug, gen, poll=True)
         except Exception as e:
             relay_issue = "relay read: %s" % _plug_issue(e)
         # A power-only success cannot announce recovery of a relay failure.
@@ -3666,7 +3697,8 @@ def watts_loop():
         # Inside, a failed power_w() jumped straight to except and the
         # out-of-band timer never started.
         try:
-            if plug is not None and CFG["control"]["mode"] == "on":
+            if (relay_fallback and plug is not None
+                    and CFG["control"]["mode"] == "on"):
                 # Enforced on this thread too. The poll loop backs off to
                 # 300s while Protect is unreachable, so tick() alone could
                 # leave a fan switched off elsewhere stopped for minutes
@@ -4415,6 +4447,8 @@ def api_config():
         bad = _body_error(body)
         if bad:
             return bad
+        if set(body) - {"protect", "plug", "control", "email"}:
+            return jsonify(error="Unknown configuration section"), 400
         control = body.get("control")
         if isinstance(control, dict) and control.get("mode") == "on":
             # Hold both locks from the live-fault check through persistence

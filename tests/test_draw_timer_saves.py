@@ -59,7 +59,9 @@ def test_repeated_email_and_noop_saves_cannot_postpone_fault():
 
 
 def test_unrelated_sections_preserve_timer_and_reject_old_clients():
-    for body in ({"ui": {"password": "example-ui-password"}},
+    # UI authentication has its own endpoint; /api/config now rejects
+    # that section instead of accepting and silently ignoring it.
+    for body in ({},
                  {"protect": {"host": "protect.example.com"}},
                  {"control": {"on_at": 1200}}):
         C, clock, plug = setup()
