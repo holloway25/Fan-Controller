@@ -33,8 +33,7 @@ def setup():
 
 
 def notes(C):
-    prefixes = ('Fan on — humidity ', 'Fan on — temperature ', 'Fan on — CO2 ')
-    return [e['msg'] for e in reversed(C.STATE['events']) if e['msg'].startswith(prefixes)]
+    return [e['msg'] for e in reversed(C.STATE['events']) if e['msg'].startswith('Fan on — ')]
 
 
 def test_humidity_joining_is_logged_once_without_command_or_lease_reset():
@@ -43,7 +42,7 @@ def test_humidity_joining_is_logged_once_without_command_or_lease_reset():
     assert not notes(C)
     s.values['humidity'] = 70.05
     C.tick()
-    assert notes(C) == ['Fan on — humidity 70% RH']
+    assert notes(C) == ['Fan on — 70% RH']
     s.values['humidity'] = 74
     C.tick()
     assert len(notes(C)) == 1
@@ -57,8 +56,8 @@ def test_reactivated_trigger_is_logged_again_not_lost_in_run_accumulator():
     for rh in (70,60,71):
         s.values['humidity'] = rh
         C.tick()
-    assert notes(C) == ['Fan on — humidity 70% RH',
-                        'Fan on — humidity 71% RH']
+    assert notes(C) == ['Fan on — 70% RH',
+                        'Fan on — 71% RH']
     assert not p.commands and C.STATE['changed_at'] == lease
 
 
@@ -66,7 +65,7 @@ def test_simultaneous_new_triggers_share_one_activity_entry():
     C,s,p,lease = setup()
     s.values.update(temperature=27.2,humidity=71)
     C.tick()
-    assert notes(C) == ['Fan on — temperature 27.2 C, humidity 71% RH']
+    assert notes(C) == ['Fan on — 27.2 C and 71% RH']
     assert not p.commands
 
 
@@ -76,11 +75,11 @@ def test_start_entry_already_names_triggers_without_extra_staying_on_entry():
     p.on = False
     s.values.update(co2=1002,humidity=70)
     C.tick()
-    assert not notes(C)
+    assert notes(C) == ['Fan on — 1002 ppm and 70% RH']
     assert p.commands == [True]
     assert any(e['msg'] == 'Fan on — 1002 ppm and 70% RH' for e in C.STATE['events'])
     C.tick()
-    assert not notes(C) and p.commands == [True]
+    assert notes(C) == ['Fan on — 1002 ppm and 70% RH'] and p.commands == [True]
 
 
 def test_disabled_or_missing_metrics_do_not_invent_activation_events():
