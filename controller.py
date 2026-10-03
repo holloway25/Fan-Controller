@@ -1016,8 +1016,7 @@ def _num(v):
     if isinstance(v, bool):
         return None
     if isinstance(v, (int, float)):
-        n = float(v)
-        return n if math.isfinite(n) else None
+        return float(v) if _finite(v) else None
     if isinstance(v, dict):
         for k in VALUE_KEYS:
             if k in v:
@@ -4706,7 +4705,7 @@ def _n(v):
     """
     if isinstance(v, bool) or not isinstance(v, (int, float)):
         return None
-    return float(v) if math.isfinite(v) else None
+    return float(v) if _finite(v) else None
 
 
 def _resume_payload():

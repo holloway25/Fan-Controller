@@ -64,6 +64,14 @@ MODULE_TIMEOUT_SECONDS = 120
 # by hand for the right FAILURE, not merely a failure: a mutation
 # caught by an unrelated crash is not evidence.
 MUTATIONS = [
+    ("numeric-reading-overflow-unhandled", "controller.py",
+     '    if isinstance(v, (int, float)):\n        return float(v) if _finite(v) else None',
+     '    if isinstance(v, (int, float)):\n        return float(v)',
+     "test_numeric_parsing.py", "test_bad_disabled_co2_does_not_abort_temperature_control"),
+    ("numeric-handover-overflow-unhandled", "controller.py",
+     '    return float(v) if _finite(v) else None\n\n\ndef _resume_payload',
+     '    return float(v) if math.isfinite(v) else None\n\n\ndef _resume_payload',
+     "test_numeric_parsing.py", "test_oversized_handover_numbers_do_not_abort_resume"),
     ("events-loading-invalid-timestamp-retained", "controller.py",
      'if isinstance(x, dict) and _valid_fault_timestamp(x.get("at"))',
      'if isinstance(x, dict) and "at" in x', "test_events_loading.py",
