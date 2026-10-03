@@ -443,7 +443,7 @@ function drawTrace(hist,c){
   // scaled this chart to the window where CO2 happened to exist, so a
   // gap at either end slid the trace sideways under time labels that
   // describe the whole history. Both charts must span `all`.
-  const all=(hist||[]).filter(p=>Number.isFinite(p.t));
+  const all=(hist||[]).filter(p=>p&&Number.isFinite(p.t));
   const pts=all.filter(p=>Number.isFinite(p.v));
   if(pts.length<2||all.length<2)return;
   const NS="http://www.w3.org/2000/svg";
@@ -532,7 +532,7 @@ function drawMini(hist,c){
   const txt=(s,a)=>{const e=mk("text",a);e.textContent=s;return e};
   // Derived exactly as drawTrace does, so the two cannot drift apart:
   // these charts share one set of time labels.
-  const all=hist.filter(p=>Number.isFinite(p.t));
+  const all=hist.filter(p=>p&&Number.isFinite(p.t));
   if(all.length<2)return;
   const t0=all[0].t,t1=all[all.length-1].t,span=Math.max(1,t1-t0);
   const x=t=>L+((t-t0)/span)*(W-L);
@@ -552,7 +552,7 @@ function drawMini(hist,c){
   const BH=(H-AXIS-GAP*(defs.length-1))/defs.length;
   const rows=defs.map((d,i)=>d.concat([i*(BH+GAP),i*(BH+GAP)+BH]));
   rows.forEach(([key,col,name,top,bot])=>{
-    const pts=hist.filter(p=>p[key]!=null);
+    const pts=all.filter(p=>Number.isFinite(p[key]));
     // Guides are drawn only while that rule actually drives the fan.
     // A disabled trigger must not imply the fan reacts to it.
     const GUIDES={tc:["temp_enabled","temp_on","temp_off"],

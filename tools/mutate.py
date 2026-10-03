@@ -64,6 +64,19 @@ MODULE_TIMEOUT_SECONDS = 120
 # by hand for the right FAILURE, not merely a failure: a mutation
 # caught by an unrelated crash is not evidence.
 MUTATIONS = [
+    ("saved-history-metrics-unchecked", "controller.py",
+     '            and all(point.get(key) is None or _finite(point[key])\n                    for key in ("v", "tc", "rh", "pm"))',
+     '            and True', "test_history_and_fault_notices.py",
+     "test_saved_history_validates_every_known_metric_and_preserves_good_rows"),
+    ("fault-notice-assumes-stop-confirmed", "controller.py",
+     '    if fault.get("stopped") is True and fan is False:',
+     '    if True:', "test_history_and_fault_notices.py",
+     "test_unsaved_fault_with_failed_stop_does_not_claim_success"),
+    ("fault-notice-ignores-force-on-override", "controller.py",
+     '    if mode == "on":\n        return ("Force on overrides fault-stop enforcement;',
+     '    if False:\n        return ("Force on overrides fault-stop enforcement;',
+     "test_history_and_fault_notices.py",
+     "test_restart_notice_explains_force_on_instead_of_claiming_stopped"),
     ("midrun-trigger-activity-missing", "controller.py",
      '                    if joined:\n', '                    if False:\n',
      "test_trigger_activity.py",
@@ -393,9 +406,8 @@ MUTATIONS = [
      "test_daily.py",
      "test_the_writer_snapshot_is_deep"),
     ("daily-accepts-nan", "controller.py",
-     '''    return (isinstance(v, (int, float)) and not isinstance(v, bool)
-            and math.isfinite(v))''',
-     '''    return isinstance(v, (int, float)) and not isinstance(v, bool)''',
+     '        return math.isfinite(v)',
+     '        return True',
      "test_daily.py",
      "test_a_non_finite_reading_never_reaches_the_file"),
     ("daily-logs-on-signal", "controller.py",

@@ -141,6 +141,11 @@ alerts.
 | `FC-300` | Plug state changed outside this controller |
 | `FC-301` | The process started cold, carrying no latch and no lease |
 
+Fault persistence and restart notices distinguish a requested stop from a
+relay confirmed off at the last check. A standing fault alone does not prove
+the fan stopped. Force on overrides fault-stop enforcement and is identified
+in the notice; a development plug interlock prevents stop commands entirely.
+
 The code series are stable:
 
 - `0xx`: alarm condition or notification category

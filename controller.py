@@ -696,7 +696,9 @@ def _usable_point(point, cutoff):
     ts = point.get("t")
     if isinstance(ts, bool) or not isinstance(ts, (int, float)):
         return False
-    return math.isfinite(ts) and ts >= cutoff
+    return (_finite(ts) and ts >= cutoff
+            and all(point.get(key) is None or _finite(point[key])
+                    for key in ("v", "tc", "rh", "pm")))
 
 
 def load_hist():
@@ -748,8 +750,12 @@ def _finite(v):
     extreme the range stops updating forever. Reported by review of
     099b249.
     """
-    return (isinstance(v, (int, float)) and not isinstance(v, bool)
-            and math.isfinite(v))
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return False
+    try:
+        return math.isfinite(v)
+    except (OverflowError, ValueError):
+        return False
 
 
 def _clean_row(x):
@@ -2578,6 +2584,21 @@ _unsaved_notified = False
 _unsaved_delivered = None
 
 
+def _fault_stop_status(fault, mode, fan):
+    """Describe the observed stop, never infer success from a standing fault."""
+    if mode == "on":
+        return ("Force on overrides fault-stop enforcement; the fan may run "
+                "while this fault remains active.", "Force on override active")
+    if PLUG_ACCESS_DISABLED:
+        return ("Plug access is disabled; no stop command can be sent.",
+                "Stop not enforced: plug access disabled")
+    if fault.get("stopped") is True and fan is False:
+        return ("The relay was confirmed off at the last check.",
+                "Fan stop confirmed at last check")
+    return ("A fan stop is requested but is not currently confirmed. "
+            "The fan may still be running.", "Fan stop requested, not confirmed")
+
+
 def _unsaved_edge():
     """Notify once when fault_unsaved rises. CALL OUTSIDE ALL LOCKS.
 
@@ -2587,10 +2608,8 @@ def _unsaved_edge():
     write failure later does send again - which is right: each one is a
     fresh window where a restart would lose the fault.
 
-    This is the alert that matters most and reads as the dullest. The
-    fan IS protected right now; what is at risk is that protection
-    surviving a restart, which is invisible until the restart happens
-    and the fan starts up against a fault nobody remembers.
+    The fault is held in memory, but a requested stop need not have
+    succeeded. What is at risk is that fault surviving a restart.
     """
     global _unsaved_notified, _unsaved_delivered
     with _state_lock:
@@ -2599,12 +2618,15 @@ def _unsaved_edge():
         # here and the send would otherwise leave the message naming a
         # fault that no longer exists.
         standing = dict(STATE["fault"]) if STATE["fault"] else {}
+        fan = STATE["fan"]
         # READ UNDER THE LOCK THAT WRITES IT, so the flag has exactly
         # one owner. The callback's assignment was moved inside this
         # lock; leaving the read outside it kept a narrower version of
         # the same race, where a delivery landing mid-decision changes
         # whether an all-clear goes out.
         delivered = _unsaved_delivered
+    mode = CFG["control"]["mode"]
+    stop_text, stop_action = _fault_stop_status(standing, mode, fan)
     if not now:
         # FALLING EDGE. Two ways to get here and they are not the same
         # news: the retry finally wrote the file, or the whole fault was
@@ -2620,16 +2642,14 @@ def _unsaved_edge():
                         time.time(),
                         "The fault could not be written earlier, but the "
                         "retry has now succeeded.\nIt will survive a "
-                        "restart. The fault itself still stands and the "
-                        "fan is still stopped.",
+                        "restart. The fault itself still stands.\n" + stop_text,
                         [("Standing fault", standing.get("code")
                           or "unknown"),
                          ("Action taken", "Fault written to disk"),
                          # NOT "No". The persistence needs nothing from
                          # anyone - that is what this message is about -
-                         # but the fault still stands and the fan is
-                         # still stopped, which the body says two lines
-                         # up. A reader skimming the fields would
+                         # but the fault still stands. A reader skimming
+                         # the fields would
                          # otherwise conclude nothing was required of
                          # them, and the How to clear line below
                          # contradicts it outright.
@@ -2668,15 +2688,15 @@ def _unsaved_edge():
             _alert_body(
                 FC_FAULT_UNSAVED, "Fault Not Persisted",
                 time.time(),
-                "A fault is active and the fan is stopped, but it could "
-                "not be written to fault.json.\nThe fan is protected "
-                "NOW. The risk is a restart: the fault would be "
+                "A fault is active but could not be written to fault.json.\n"
+                + stop_text + "\nAutomatic starts are blocked while the "
+                "fault stands; Force on overrides stop enforcement.\n"
+                "The risk is a restart: the fault would be "
                 "forgotten and normal control would resume as though "
                 "nothing were wrong.\nThe service retries the write on "
                 "its own.",
                 [("Standing fault", standing.get("code") or "unknown"),
-                 ("Action taken", "Fan stopped, fault held in memory "
-                                  "only"),
+                 ("Action taken", stop_action + "; fault held in memory only"),
                  ("Manual action", "Yes"),
                  ("How to clear", "Fix the disk; the write retries "
                                   "itself"),
@@ -2805,6 +2825,7 @@ def _notify_restart_fault():
     try:
         with _state_lock:
             f = dict(STATE["fault"]) if STATE["fault"] else None
+            fan = STATE["fan"]
         if not f:
             return
         # Checked BEFORE anything is stamped. _mark_fault_attempted
@@ -2828,6 +2849,8 @@ def _notify_restart_fault():
         # If it has gone, there is nothing to notify about either.
         if not _mark_fault_attempted(expected_at):
             return
+        mode = CFG["control"]["mode"]
+        stop_text, stop_action = _fault_stop_status(f, mode, fan)
 
         def completed(ok):
             if ok:
@@ -2842,13 +2865,14 @@ def _notify_restart_fault():
                     "%s\nThe service has restarted and the fault is "
                     "still there.\nRESTARTING DOES NOT CLEAR A DRAW "
                     "FAULT. It is written to disk and reloaded on "
-                    "purpose, so the fan stays stopped until the fault "
-                    "is acknowledged.\nIf this arrives repeatedly the "
+                    "purpose; automatic starts stay blocked until "
+                    "acknowledged. Force on overrides stop enforcement.\n"
+                    "%s\nIf this arrives repeatedly the "
                     "service is restarting in a loop, which is a "
                     "separate problem from the fault itself."
-                    % _without_code(f.get("msg")),
+                    % (_without_code(f.get("msg")), stop_text),
                     [("Standing fault", f.get("code") or "unknown"),
-                     ("Action taken", "Fan kept stopped"),
+                     ("Action taken", stop_action),
                      ("Manual action", "Yes"),
                      ("How to clear", "Acknowledge in the dashboard"),
                      ("Controller mode", _mode_now())]),
