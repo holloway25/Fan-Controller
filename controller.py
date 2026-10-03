@@ -1306,6 +1306,12 @@ class Protect:
         return hit
 
 
+# One installed controller drives one plug. Share across client replacements
+# and dashboard tests, not per client instance. Lock order is actuation then
+# plug I/O; the HTTP path never takes the actuation/config/state locks.
+_plug_request_lock = threading.Lock()
+
+
 class Tasmota:
     """Athom/Tasmota plug over the HTTP command API.
 
@@ -1320,6 +1326,15 @@ class Tasmota:
         self.password = password or ""
 
     def _cmd(self, cmnd):
+        with _plug_request_lock:
+            return self._cmd_locked(cmnd)
+
+    def _cmd_locked(self, cmnd):
+        """Complete one request/reply before another plug request begins.
+
+        Transport timeout timing excludes time waiting for the request lock.
+        No caller callbacks or controller locks are acquired on this path.
+        """
         if PLUG_ACCESS_DISABLED:
             raise PlugError("Plug access is disabled for this installation",
                             reason="local interlock")

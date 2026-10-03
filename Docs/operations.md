@@ -98,6 +98,12 @@ mode, faults and any outstanding Manual stop promise. The marker is ignored
 by Git and must not be copied to a production installation.
 
 Normal meter polling is every five seconds. Auto, Manual and Force on share
+one plug-request lock: meter reads, relay checks, switching and dashboard plug
+tests run one at a time, including across replacement clients after a save.
+A switching request can wait for an in-flight read to finish or time out; the
+HTTP timeout is unchanged. This coordinates one controller process, not other
+devices or applications contacting the same plug.
+Auto, Manual and Force on share
 relay results from normal control/sensor checks, with a 30-second minimum
 background read interval. Confirmed start/stop replies update that result;
 there is no extra background relay request while normal checks are healthy.

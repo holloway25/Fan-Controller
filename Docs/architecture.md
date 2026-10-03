@@ -76,6 +76,7 @@ _cfg_lock   -> _act_lock
 _cfg_lock   -> _clients_lock
 _act_lock   -> _state_lock
 _act_lock   -> _fault_lock
+_act_lock   -> _plug_request_lock
 _fault_lock -> _state_lock
 ```
 
@@ -84,6 +85,12 @@ path may acquire `_cfg_lock` while holding `_act_lock`.
 
 `_act_lock` serialises all plug actions and mode changes. Every action
 rechecks both mode and configuration generation while holding it.
+
+`_plug_request_lock` serialises complete HTTP plug requests/replies from all
+client instances in this process, including meter reads and dashboard tests.
+The HTTP path never acquires controller locks; meter reads release the request
+lock before taking `_act_lock` to commit their result. This avoids a reversed
+lock order. Switching may wait for an in-flight read to complete or time out.
 
 `_fault_lock` treats the in-memory fault and `fault.json` as one transaction.
 Draw evaluation holds `_act_lock` before `_fault_lock` so the configured
@@ -143,8 +150,9 @@ does not control the fan.
 Latch state and timing leases are normally memory-only. Only a requested restart
 hands them to the replacement process.
 
-The relay state is read from the plug instead of trusted from memory, so changes
-made at the device or by another controller are visible.
+Confirmed switch replies and relay reads establish the fan state. Normal
+polling observes changes made at the device or by another controller; safety
+confirmation reads do not rely on the background relay cache.
 
 ## Tasmota plug
 
@@ -153,7 +161,9 @@ the relay state for confirmation. Power is read on a separate short cadence so
 the controller can distinguish a closed relay from a fan that is actually
 drawing current.
 
-The draw loop independently refreshes relay state even when Protect fails.
+The draw loop supplies fallback relay checks when state is unknown/unverified
+or normal observations stop, including when Protect fails. Healthy normal
+checks and confirmed switch replies are shared instead of duplicated.
 This lets power protection judge a fan already running at startup during a
 sensor outage. Relay adoption is serialized with settings and actuation,
 rejects stale client generations, and shares the polling loop's external-switch

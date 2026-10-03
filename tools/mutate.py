@@ -64,6 +64,10 @@ MODULE_TIMEOUT_SECONDS = 120
 # by hand for the right FAILURE, not merely a failure: a mutation
 # caught by an unrelated crash is not evidence.
 MUTATIONS = [
+    ("plug-requests-overlap", "controller.py",
+     '        with _plug_request_lock:\n            return self._cmd_locked(cmnd)',
+     '        return self._cmd_locked(cmnd)', "test_plug_requests.py",
+     "test_power_relay_and_switch_requests_are_serial_across_client_instances"),
     ("config-sections-ignored", "controller.py",
      'if set(body) - {"protect", "plug", "control", "email"}:',
      'if False:', "test_config_boundaries.py",
