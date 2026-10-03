@@ -2022,9 +2022,9 @@ def tick():
     # and neither may the override that exists for when Protect is the
     # thing that has failed. Both actuate here, then fall through so the
     # reading is still recorded.
-    if c["mode"] == "manual":
+    if not PLUG_ACCESS_DISABLED and c["mode"] == "manual":
         _manual_off(h, gen)
-    elif c["mode"] == "on":
+    elif not PLUG_ACCESS_DISABLED and c["mode"] == "on":
         _force_on(h, gen)
     sid = CFG["protect"]["sensor_id"]
     if not sid:
@@ -2151,7 +2151,7 @@ def tick():
         save_daily()
     if ext_msg:
         _log(ext_msg)
-    if c["mode"] == "manual":
+    if PLUG_ACCESS_DISABLED or c["mode"] == "manual":
         return
     # Decided under the lock, not merely actuated under it. A settings
     # save replaces CFG["control"] wholesale, and decide() latches in
@@ -3281,6 +3281,7 @@ def _draw_check(plug, gen=None):
     it.
     """
     global _oob_since, _oob_generation
+    external_stop, external_msg = False, None
     with _act_lock:
         if _stale_client(gen):
             return
@@ -3356,22 +3357,35 @@ def _draw_check(plug, gen=None):
                 return
             if now - _oob_since < float(pg["watts_fault_seconds"]):
                 return
-            reading = "no reading" if w is None else ("%g W" % w)
-            code = _draw_fault_code(w, lo, hi)
-            # The code leads the message, so the activity log, the
-            # dashboard and the email all carry the same token. It is
-            # stored on the fault too - a restart notice can then say
-            # WHICH fault survived, which it could not before.
-            msg = ("%s Draw fault - %s outside %g-%g W for %ds"
-                   % (code, reading, lo, hi, int(now - _oob_since)))
-            f = {"at": now, "msg": msg, "stopped": False, "code": code,
-                 "attempted_at": now, "delivered_at": None}
-            prev = _store_fault(f)
-            _oob_since = None
+            # Cached relay state can outlive an external stop when the
+            # fault delay is shorter than the independent relay cadence.
+            # Confirm under the same actuation hold as the fault decision.
+            # Unknown is NOT off: failed confirmation cannot disable the
+            # existing fail-closed draw/comms protection.
+            actual = _fan_status(plug) if plug is not None else None
+            if actual is False:
+                with _state_lock:
+                    external_msg = _adopt_relay_locked(False, time.time())
+                _oob_since = None
+                external_stop = True
+            else:
+                reading = "no reading" if w is None else ("%g W" % w)
+                code = _draw_fault_code(w, lo, hi)
+                # Same token in activity log, dashboard, email and disk.
+                msg = ("%s Draw fault - %s outside %g-%g W for %ds"
+                       % (code, reading, lo, hi, int(now - _oob_since)))
+                f = {"at": now, "msg": msg, "stopped": False, "code": code,
+                     "attempted_at": now, "delivered_at": None}
+                prev = _store_fault(f)
+                _oob_since = None
 
     # Out of the hold. _enforce_stop takes _act_lock itself, and the
     # log, the email and the fault-stop confirmation are all things that
     # must not extend a hold a settings save is waiting on.
+    if external_stop:
+        if external_msg:
+            _log(external_msg)
+        return
     if standing:
         _enforce_stop(plug, gen)
         return

@@ -64,6 +64,14 @@ MODULE_TIMEOUT_SECONDS = 120
 # by hand for the right FAILURE, not merely a failure: a mutation
 # caught by an unrelated crash is not evidence.
 MUTATIONS = [
+    ("draw-fault-confirmation-skipped", "controller.py",
+     '            actual = _fan_status(plug) if plug is not None else None',
+     '            actual = None', "test_plug_polling.py",
+     "test_external_stop_before_next_relay_poll_does_not_latch_draw_fault"),
+    ("interlock-sensor-blocked-by-mode-actuation", "controller.py",
+     '    if not PLUG_ACCESS_DISABLED and c["mode"] == "manual":',
+     '    if c["mode"] == "manual":', "test_plug_polling.py",
+     "test_interlocked_modes_still_read_sensor_and_preserve_stop_promise"),
     ("plug-polling-interlock-bypassed", "controller.py",
      '        if PLUG_ACCESS_DISABLED:\n            raise PlugError("Plug access is disabled for this installation",',
      '        if False:\n            raise PlugError("Plug access is disabled for this installation",',
@@ -89,8 +97,8 @@ MUTATIONS = [
      '                if False:\n                    continue',
      "test_relay_monitoring.py", "test_reconfigured_meter_read_is_discarded_before_state_commit"),
     ("relay-monitor-refresh-skipped", "controller.py",
-     '            _refresh_relay(plug, gen)\n',
-     '', "test_relay_monitoring.py",
+     '                _refresh_relay(plug, gen)\n',
+     '                pass\n', "test_relay_monitoring.py",
      "test_running_fan_is_protected_during_disconnected_sensor_startup"),
     ("relay-monitor-generation-guard-skipped", "controller.py",
      '        if _stale_client(gen):\n            return\n        actual = plug.state()',

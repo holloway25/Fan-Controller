@@ -88,6 +88,8 @@ switching. Sensor polling and the dashboard remain available; relay and power
 values are unknown, not simulated. `/api/state` reports
 `plug_polling_enabled: false`. Manual and disabled power monitoring alone do
 not disable polling or isolate hardware.
+Sensor readings continue in every mode while interlocked; any outstanding
+Manual stop promise is retained, not executed or discharged.
 
 This is for development only: it also prevents fault-stop commands and is
 unsuitable for an installation controlling a real fan. To restore plug access,
@@ -100,6 +102,9 @@ immediately at startup or after a configuration-generation change, then every
 30 seconds regardless of sensor health. Successful sensor polls also read
 the relay before making control decisions. These are separate from the
 configurable sensor polling interval.
+Before latching a new draw fault, the controller checks the relay again. A
+confirmed external stop is adopted without faulting; an unreadable relay is
+not assumed off and does not suppress protection.
 
 Settings and runtime files stay outside Git. See the
 [runtime state table](architecture.md#runtime-state) for their purpose and

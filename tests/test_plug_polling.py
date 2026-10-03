@@ -155,5 +155,81 @@ def test_response_diagnostics_are_classified_not_copied_from_device():
         C.requests.get = old
 
 
+def test_external_stop_before_next_relay_poll_does_not_latch_draw_fault():
+    C = harness.load()
+    C.START_TIME = 0
+    C.CFG['plug'].update(watts_enabled=True, watts_min=15,watts_max=25,
+                         watts_fault_seconds=10)
+    class ExternalStop(Meter):
+        commands = []
+        def state(self):
+            self.relays.append(self.C.time.time())
+            return self.C.time.time() < 1005
+        def power_w(self):
+            return 20 if self.C.time.time() < 1005 else 0
+        def set(self,on):
+            self.commands.append(on)
+    p = ExternalStop(C)
+    C._client_snapshot = lambda:(None,p,C._cfg_generation)
+    C._notify = lambda *args,**kwargs:None
+    run_loop(C,seconds=20)
+    assert C.STATE['fault'] is None, 'External stop became a persistent draw fault'
+    assert C.STATE['fan'] is False
+    assert not p.commands
+    assert p.relays == [1000,1015]
+    assert any('changed outside' in e['msg'] for e in C.STATE['events'])
+
+
+def test_interlocked_modes_still_read_sensor_and_preserve_stop_promise():
+    for mode in ('manual','on','auto'):
+        C = harness.load(plug_access_disabled=True)
+        C.CFG['control']['mode'] = mode
+        C.CFG['protect']['sensor_id'] = 'sensor'
+        C.STATE['manual_off_pending'] = True
+        C.promise_manual_off()
+        class Sensor:
+            calls = 0
+            def readings(self,sid):
+                self.calls += 1
+                return {'co2':1500,'temperature':24,'humidity':50},'airQuality.co2'
+        sensor = Sensor()
+        C._client_snapshot = lambda:(sensor,C.Tasmota('192.0.2.10'),C._cfg_generation)
+        C.tick()
+        assert sensor.calls == 1
+        assert C.STATE['co2'] == 1500 and C.STATE['reading_at'] is not None
+        assert C.STATE['manual_off_pending'] is True
+        assert C.manual_off_promised()
+        assert C.STATE['fan'] is None
+
+
+def test_running_or_unreachable_relay_still_latches_real_draw_fault():
+    for reachable in (True,False):
+        C = harness.load()
+        C.CFG['control']['mode'] = 'auto'
+        C.CFG['plug'].update(watts_enabled=True,watts_min=15,watts_max=25,
+                             watts_fault_seconds=10)
+        now = C.time.time()
+        C.STATE.update(fan=True,watts=0,watts_at=now,changed_at=now-100)
+        C._oob_since,C._oob_generation = now-20,C._cfg_generation
+        C._notify = lambda *args,**kwargs:None
+        class Plug:
+            commands = []
+            def state(self):
+                free = C._act_lock.acquire(blocking=False)
+                if free:
+                    C._act_lock.release()
+                assert not free,'Relay confirmation lost actuation locking'
+                if not reachable:
+                    raise C.PlugError('Unreachable')
+                return True
+            def set(self,on):
+                self.commands.append(on)
+        plug = Plug()
+        C._draw_check(plug,C._cfg_generation)
+        assert C.STATE['fault']['code'] == C.FC_UNDER_POWER
+        assert plug.commands == ([False] if reachable else [])
+        assert C.STATE['fault']['stopped'] is reachable
+
+
 if __name__ == '__main__':
     sys.exit(harness.run(dict(globals())))
