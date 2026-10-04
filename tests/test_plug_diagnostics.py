@@ -16,13 +16,13 @@ def test_diagnostic_records_are_safe_and_measure_each_request():
     log = Log()
     C._plug_diagnostics = log
     C._plug_diagnostics_until = C.time.time()+60
-    old = C.requests.get
+    old = C._plug_http_get
     try:
-        C.requests.get = lambda *a, **kw: Reply()
+        C._plug_http_get = lambda *a, **kw: Reply()
         assert C.Tasmota('private.example', 'secret-user', 'secret-password').power_w() == 23
         def fail(*a, **kw):
             raise C.requests.ConnectTimeout('secret-password private.example')
-        C.requests.get = fail
+        C._plug_http_get = fail
         try:
             C.Tasmota('private.example', '', 'secret-password').state()
         except C.PlugError:
@@ -30,7 +30,7 @@ def test_diagnostic_records_are_safe_and_measure_each_request():
         else:
             raise AssertionError('Timeout swallowed')
     finally:
-        C.requests.get = old
+        C._plug_http_get = old
     assert [r['phase'] for r in log.rows] == ['queued', 'start', 'ok', 'queued', 'start', 'error']
     assert log.rows[-1]['reason'] == 'ConnectTimeout'
     assert log.rows[1]['wait_s'] >= 0 and log.rows[2]['elapsed_s'] >= 0
@@ -44,15 +44,15 @@ def test_expired_or_failed_diagnostics_do_not_change_control():
     class BrokenLog:
         def info(self, value):
             raise OSError('No space')
-    old = C.requests.get
-    C.requests.get = lambda *a, **kw: Reply()
+    old = C._plug_http_get
+    C._plug_http_get = lambda *a, **kw: Reply()
     try:
         for until in (C.time.time()-1, C.time.time()+60):
             C._plug_diagnostics = BrokenLog()
             C._plug_diagnostics_until = until
             assert C.Tasmota('192.0.2.10').state() is True
     finally:
-        C.requests.get = old
+        C._plug_http_get = old
 
 
 def test_local_opt_in_has_private_bounded_files_and_expiry():

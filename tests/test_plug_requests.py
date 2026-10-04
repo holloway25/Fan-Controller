@@ -33,8 +33,8 @@ def test_power_relay_and_switch_requests_are_serial_across_client_instances():
         with gate:
             active[0] -= 1
         return Reply()
-    old = C.requests.get
-    C.requests.get = get
+    old = C._plug_http_get
+    C._plug_http_get = get
     # Different instances matter: config saves rebuild the client, and the
     # old meter call can still be in flight when the replacement is used.
     a,b = C.Tasmota('192.0.2.10'),C.Tasmota('192.0.2.10')
@@ -66,13 +66,13 @@ def test_power_relay_and_switch_requests_are_serial_across_client_instances():
         for thread in threads:
             if thread.ident is not None:
                 thread.join(2)
-        C.requests.get = old
+        C._plug_http_get = old
 
 
 def test_transport_and_reply_errors_release_the_request_lock():
     C = harness.load()
     p = C.Tasmota('192.0.2.10')
-    old = C.requests.get
+    old = C._plug_http_get
     class BadReply(Reply):
         def json(self):
             raise ValueError('bad response')
@@ -80,7 +80,7 @@ def test_transport_and_reply_errors_release_the_request_lock():
         raise C.requests.ConnectTimeout('unsafe request details')
     try:
         for get in (timeout,lambda *a,**kw:BadReply()):
-            C.requests.get = get
+            C._plug_http_get = get
             try:
                 p.state()
                 raise AssertionError('Expected a plug error')
@@ -88,18 +88,18 @@ def test_transport_and_reply_errors_release_the_request_lock():
                 pass
             assert C._plug_request_lock.acquire(blocking=False), 'Lock leaked after error'
             C._plug_request_lock.release()
-            C.requests.get = lambda *a,**kw:Reply()
+            C._plug_http_get = lambda *a,**kw:Reply()
             assert p.state() is True
     finally:
-        C.requests.get = old
+        C._plug_http_get = old
 
 
 def test_request_path_does_not_require_actuation_lock():
     C = harness.load()
-    old = C.requests.get
+    old = C._plug_http_get
     done = threading.Event()
     failures = []
-    C.requests.get = lambda *a,**kw:Reply()
+    C._plug_http_get = lambda *a,**kw:Reply()
     def read():
         try:
             assert C.Tasmota('192.0.2.10').state() is True
@@ -115,7 +115,7 @@ def test_request_path_does_not_require_actuation_lock():
         thread.join(1)
         assert not failures, failures
     finally:
-        C.requests.get = old
+        C._plug_http_get = old
 
 
 if __name__ == '__main__':

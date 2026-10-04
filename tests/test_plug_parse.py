@@ -81,10 +81,10 @@ def test_a_json_reply_must_be_an_object():
         def json(self):
             return self.value
 
-    real = C.requests.get
+    real = C._plug_http_get
     try:
         for value in (None, True, 1, 1.5, "ON", ["POWER"]):
-            C.requests.get = lambda *a, _value=value, **k: Reply(_value)
+            C._plug_http_get = lambda *a, _value=value, **k: Reply(_value)
             try:
                 C.Tasmota("192.0.2.1")._cmd("Power")
             except C.PlugError as exc:
@@ -94,7 +94,7 @@ def test_a_json_reply_must_be_an_object():
             else:
                 assert False, "%r was accepted" % (value,)
     finally:
-        C.requests.get = real
+        C._plug_http_get = real
     return "six non-object JSON shapes rejected as plug errors"
 
 

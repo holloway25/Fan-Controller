@@ -18,6 +18,13 @@ mode 0700 and initial file mode 0600. Logging failure does not change control.
 Polling, thresholds and fault protection are unchanged. Keep these local
 diagnostics out of Git and share only redacted excerpts.
 
+Plug HTTP connections bind their source socket before connecting and avoid
+ports used in the preceding 180 seconds. This prevents reusing a closed TCP
+tuple while the plug still retains it. The hold is shared across plug-client
+replacements and carried by a preserving restart; a cold start has no previous
+in-memory port history. No system TCP settings or plug firmware are changed.
+Requests remain serialized, with the same timeouts, polling and fault delay.
+
 ```sh
 systemctl status office-fan-controller
 journalctl -u office-fan-controller -n 100

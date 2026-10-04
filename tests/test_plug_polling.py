@@ -266,10 +266,10 @@ def test_disabled_installation_has_no_background_plug_calls():
 
 def test_interlock_blocks_real_client_reads_tests_and_switches_before_http():
     C = harness.load(plug_access_disabled=True)
-    old = C.requests.get
+    old = C._plug_http_get
     def forbidden(*args,**kwargs):
         raise AssertionError('HTTP reached despite interlock')
-    C.requests.get = forbidden
+    C._plug_http_get = forbidden
     try:
         p = C.Tasmota('192.0.2.10')
         for action in (p.state,p.power_w,lambda:p.set(True),lambda:p.set(False)):
@@ -280,15 +280,15 @@ def test_interlock_blocks_real_client_reads_tests_and_switches_before_http():
             else:
                 raise AssertionError('Interlock did not reject request')
     finally:
-        C.requests.get = old
+        C._plug_http_get = old
 
 
 def test_transport_diagnostics_never_include_request_urls_or_credentials():
     C = harness.load()
-    old = C.requests.get
+    old = C._plug_http_get
     def fail(*args,**kwargs):
         raise C.requests.ReadTimeout('http://device/cm?password=CHANGEME')
-    C.requests.get = fail
+    C._plug_http_get = fail
     try:
         try:
             C.Tasmota('192.0.2.10',password='CHANGEME').state()
@@ -299,12 +299,12 @@ def test_transport_diagnostics_never_include_request_urls_or_credentials():
         else:
             raise AssertionError('Timeout did not raise')
     finally:
-        C.requests.get = old
+        C._plug_http_get = old
 
 
 def test_response_diagnostics_are_classified_not_copied_from_device():
     C = harness.load()
-    old = C.requests.get
+    old = C._plug_http_get
     class Reply:
         status_code = 200
         content = b'PRIVATE'
@@ -314,7 +314,7 @@ def test_response_diagnostics_are_classified_not_copied_from_device():
                 raise self.value
             return self.value
     reply = Reply()
-    C.requests.get = lambda *args,**kwargs:reply
+    C._plug_http_get = lambda *args,**kwargs:reply
     try:
         cases = [(503,b'PRIVATE',{},'HTTP 503'),
                  (200,b'',{},'empty reply'),
@@ -332,7 +332,7 @@ def test_response_diagnostics_are_classified_not_copied_from_device():
             else:
                 raise AssertionError('Invalid reply accepted')
     finally:
-        C.requests.get = old
+        C._plug_http_get = old
 
 
 def test_external_stop_before_next_relay_poll_does_not_latch_draw_fault():

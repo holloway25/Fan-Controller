@@ -13,6 +13,10 @@ import socket, ssl, sys, tempfile
 import threading, time
 import logging
 from logging.handlers import RotatingFileHandler
+from urllib3.connection import HTTPConnection
+from urllib3.connectionpool import HTTPConnectionPool
+from urllib3.exceptions import ConnectTimeoutError, NameResolutionError, NewConnectionError
+from urllib3.util.connection import allowed_gai_family
 from datetime import date
 from contextlib import nullcontext
 from urllib.parse import urlsplit
@@ -1316,6 +1320,113 @@ class Protect:
 # plug I/O; the HTTP path never takes the actuation/config/state locks.
 _plug_request_lock = threading.Lock()
 
+# The plug can retain a closed TCP tuple longer than Linux does. Bind first,
+# reject recently used source ports, then connect using that SAME socket.
+# Shared across client replacements; never tune system-wide TCP settings.
+PLUG_PORT_HOLD_SECONDS = 180
+_plug_ports = {}
+_plug_ports_lock = threading.Lock()
+
+
+def _bind_plug_socket(sock):
+    sock.bind(('', 0))
+    key = (int(sock.family), sock.getsockname()[1])
+    now = time.monotonic()
+    with _plug_ports_lock:
+        for old in list(_plug_ports):
+            if now-_plug_ports[old] >= PLUG_PORT_HOLD_SECONDS:
+                del _plug_ports[old]
+        if key in _plug_ports:
+            return None
+        _plug_ports[key] = now
+    return key
+
+
+class _PlugHTTPConnection(HTTPConnection):
+    def _new_conn(self):
+        try:
+            addresses = socket.getaddrinfo(self._dns_host, self.port,
+                                          allowed_gai_family(), socket.SOCK_STREAM)
+            error = OSError('No usable plug address or source port')
+            for family, kind, proto, _, address in addresses:
+                for _ in range(128):
+                    sock = socket.socket(family, kind, proto)
+                    try:
+                        for option in self.socket_options or ():
+                            sock.setsockopt(*option)
+                        if self.timeout is not socket._GLOBAL_DEFAULT_TIMEOUT:
+                            sock.settimeout(self.timeout)
+                        key = _bind_plug_socket(sock)
+                        if key is None:
+                            sock.close()
+                            continue
+                        self._plug_port_key = key
+                        sock.connect(address)
+                        return sock
+                    except OSError as exc:
+                        sock.close()
+                        error = exc
+                        break
+                    except BaseException:
+                        sock.close()
+                        raise
+            raise error
+        except socket.gaierror as exc:
+            raise NameResolutionError(self.host, self, exc) from exc
+        except socket.timeout as exc:
+            raise ConnectTimeoutError(self, 'Plug connection timed out') from exc
+        except OSError as exc:
+            raise NewConnectionError(self, 'Could not establish plug connection') from exc
+
+    def close(self):
+        # Start the hold at close, not request start (a read can take 12s).
+        if self.sock is not None and hasattr(self, '_plug_port_key'):
+            with _plug_ports_lock:
+                _plug_ports[self._plug_port_key] = time.monotonic()
+        super().close()
+
+
+class _PlugHTTPPool(HTTPConnectionPool):
+    ConnectionCls = _PlugHTTPConnection
+
+
+class _PlugHTTPAdapter(requests.adapters.HTTPAdapter):
+    def init_poolmanager(self, *args, **kwargs):
+        super().init_poolmanager(*args, **kwargs)
+        self.poolmanager.pool_classes_by_scheme = dict(self.poolmanager.pool_classes_by_scheme)
+        self.poolmanager.pool_classes_by_scheme['http'] = _PlugHTTPPool
+
+
+def _plug_http_get(url, **kwargs):
+    # A local plug must be reached directly, never through an environment
+    # proxy. No automatic retries of commands that may already have landed.
+    with requests.Session() as session:
+        session.trust_env = False
+        session.mount('http://', _PlugHTTPAdapter(max_retries=0))
+        return session.get(url, **kwargs)
+
+
+def _plug_port_handover():
+    with _plug_ports_lock:
+        now = time.monotonic()
+        return [[family, port, PLUG_PORT_HOLD_SECONDS-(now-at)]
+                for (family, port), at in _plug_ports.items()
+                if 0 <= now-at < PLUG_PORT_HOLD_SECONDS]
+
+
+def _restore_plug_ports(rows):
+    if not isinstance(rows, list) or len(rows) > 2048:
+        return
+    with _plug_ports_lock:
+        for row in rows:
+            if not isinstance(row, list) or len(row) != 3:
+                continue
+            family, port, remaining = row
+            if (type(family) is int and family in (socket.AF_INET, socket.AF_INET6)
+                    and type(port) is int and 1 <= port <= 65535
+                    and _finite(remaining) and 0 < remaining <= PLUG_PORT_HOLD_SECONDS):
+                _plug_ports[(family, port)] = time.monotonic()-(PLUG_PORT_HOLD_SECONDS-remaining)
+
 
 def _open_plug_diagnostics():
     """Local, time-limited opt-in; never part of saved device settings."""
@@ -1403,7 +1514,7 @@ class Tasmota:
             params["password"] = self.password
         started = time.monotonic()
         try:
-            r = requests.get("http://%s/cm" % self.host, params=params,
+            r = _plug_http_get("http://%s/cm" % self.host, params=params,
                              timeout=12)
         except requests.RequestException as e:
             # Only the exception type: requests puts the full URL in the
@@ -4788,6 +4899,7 @@ def _resume_payload():
     with _state_lock:
         return {
             "v": 1,
+            "plug_ports": _plug_port_handover(),
             "latch": dict(STATE["latch"]),
             "ran_with": dict(STATE["ran_with"]),
             "changed_at": STATE["changed_at"],
@@ -4826,6 +4938,7 @@ def _apply_resume():
         _log("%s Restart - handover data not a version this build "
              "reads, starting clean" % FC_RESTART_PROBLEM)
         return False
+    _restore_plug_ports(d.get('plug_ports'))
     latch = d.get("latch")
     with _state_lock:
         if isinstance(latch, dict):

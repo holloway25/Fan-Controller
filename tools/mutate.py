@@ -64,6 +64,13 @@ MODULE_TIMEOUT_SECONDS = 120
 # by hand for the right FAILURE, not merely a failure: a mutation
 # caught by an unrelated crash is not evidence.
 MUTATIONS = [
+    ("plug-recent-source-port-reused", "controller.py",
+     '        if key in _plug_ports:', '        if False:',
+     "test_plug_ports.py", "test_recent_port_is_skipped_before_connecting_on_same_socket"),
+    ("plug-port-guard-bypassed", "controller.py",
+     "self.poolmanager.pool_classes_by_scheme['http'] = _PlugHTTPPool",
+     "self.poolmanager.pool_classes_by_scheme['http'] = HTTPConnectionPool",
+     "test_plug_ports.py", "test_transport_uses_guard_for_real_local_http_and_preserves_credentials"),
     ("numeric-reading-overflow-unhandled", "controller.py",
      '    if isinstance(v, (int, float)):\n        return float(v) if _finite(v) else None',
      '    if isinstance(v, (int, float)):\n        return float(v)',
