@@ -18,7 +18,7 @@ from urllib3.connectionpool import HTTPConnectionPool
 from urllib3.exceptions import ConnectTimeoutError, NameResolutionError, NewConnectionError
 from urllib3.util.connection import allowed_gai_family
 from datetime import date
-from contextlib import nullcontext
+from contextlib import nullcontext, contextmanager
 from urllib.parse import urlsplit
 import requests, urllib3
 from flask import Flask, Response, jsonify, request, render_template
@@ -1318,7 +1318,61 @@ class Protect:
 # One installed controller drives one plug. Share across client replacements
 # and dashboard tests, not per client instance. Lock order is actuation then
 # plug I/O; the HTTP path never takes the actuation/config/state locks.
-_plug_request_lock = threading.Lock()
+class _PlugRequestGate:
+    """Concurrent HTTP requests, with an exclusive bounded restart barrier."""
+    def __init__(self):
+        self._condition = threading.Condition()
+        self._active = 0
+        self._exclusive = False
+        self._waiting = 0
+
+    @contextmanager
+    def request(self):
+        with self._condition:
+            while self._exclusive or self._waiting:
+                self._condition.wait()
+            self._active += 1
+        try:
+            yield
+        finally:
+            with self._condition:
+                self._active -= 1
+                self._condition.notify_all()
+
+    def acquire(self, blocking=True, timeout=-1):
+        deadline = None if timeout < 0 else time.monotonic()+timeout
+        with self._condition:
+            self._waiting += 1
+            try:
+                while self._exclusive or self._active:
+                    if not blocking:
+                        return False
+                    remaining = None if deadline is None else deadline-time.monotonic()
+                    if remaining is not None and remaining <= 0:
+                        return False
+                    self._condition.wait(remaining)
+                self._exclusive = True
+                return True
+            finally:
+                self._waiting -= 1
+                self._condition.notify_all()
+
+    def release(self):
+        with self._condition:
+            if not self._exclusive:
+                raise RuntimeError('Plug restart barrier is not held')
+            self._exclusive = False
+            self._condition.notify_all()
+
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, *args):
+        self.release()
+
+
+_plug_request_lock = _PlugRequestGate()
 
 # The plug can retain a closed TCP tuple longer than Linux does. Bind first,
 # reject recently used source ports, then connect using that SAME socket.
@@ -1494,7 +1548,7 @@ class Tasmota:
         operation = {'Status 8': 'power', 'Power': 'relay',
                      'Power ON': 'switch_on', 'Power OFF': 'switch_off'}.get(cmnd, 'other')
         _plug_diag('queued', request_id, operation)
-        with _plug_request_lock:
+        with _plug_request_lock.request():
             started = time.monotonic()
             _plug_diag('start', request_id, operation, wait_s=round(started-queued, 6))
             try:
@@ -1510,9 +1564,9 @@ class Tasmota:
             return result
 
     def _cmd_locked(self, cmnd):
-        """Complete one request/reply before another plug request begins.
+        """Execute one HTTP request; other registered requests may overlap.
 
-        Transport timeout timing excludes time waiting for the request lock.
+        Transport timeout timing excludes waiting for the restart barrier.
         No caller callbacks or controller locks are acquired on this path.
         """
         if PLUG_ACCESS_DISABLED:
@@ -2297,7 +2351,7 @@ def tick():
     if not PLUG_ACCESS_DISABLED and c["mode"] == "manual":
         _manual_off(h, gen)
     elif not PLUG_ACCESS_DISABLED and c["mode"] == "on":
-        _force_on(h, gen, poll=True)
+        _force_on(h, gen)
     sid = CFG["protect"]["sensor_id"]
     if not sid:
         raise ProtectError("No air-quality sensor selected yet")
@@ -2355,7 +2409,7 @@ def tick():
         if gen != _cfg_generation:
             _wake.set()
             return
-        actual = _fan_status(h, poll=True)
+        actual = _fan_status(h)
         if actual is not None:
             _normal_relay_at = (h, gen, time.time())
         _daily_pending = None
@@ -3856,7 +3910,8 @@ def watts_loop():
         relay_fallback = False
         try:
             _, plug, gen = _client_snapshot()
-            relay_fallback = _relay_fallback_needed(plug, gen)
+            relay_fallback = (CFG['control']['mode'] != 'on'
+                              and _relay_fallback_needed(plug, gen))
             relay_issue = None
             if relay_fallback:
                 _refresh_relay(plug, gen, poll=True)
@@ -3892,13 +3947,13 @@ def watts_loop():
         # Inside, a failed power_w() jumped straight to except and the
         # out-of-band timer never started.
         try:
-            if (relay_fallback and plug is not None
+            if (plug is not None
                     and CFG["control"]["mode"] == "on"):
                 # Enforced on this thread too. The poll loop backs off to
                 # 300s while Protect is unreachable, so tick() alone could
                 # leave a fan switched off elsewhere stopped for minutes
                 # while the mode says otherwise.
-                _force_on(plug, gen, poll=True)
+                _force_on(plug, gen)
         except Exception as e:
             issue = issue or "Force on: %s" % _plug_issue(e)
         # Called even in Force on, where it stands down and clears the

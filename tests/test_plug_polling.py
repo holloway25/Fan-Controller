@@ -46,7 +46,7 @@ def test_meter_five_seconds_relay_thirty_seconds_and_immediate_start():
     assert p.powers == list(range(1000,1065,5))
 
 
-def test_all_modes_share_relay_reads_between_sensor_and_meter_loops():
+def test_normal_checks_are_fresh_and_force_on_uses_original_five_second_cadence():
     for mode in ('auto', 'manual', 'on'):
         C = harness.load()
         C.CFG['control']['mode'] = mode
@@ -70,11 +70,13 @@ def test_all_modes_share_relay_reads_between_sensor_and_meter_loops():
             if now in (1010,1040):
                 C.tick()
         run_loop(C, advance=sensor_poll)
-        assert p.relays == [1000,1040], (mode,p.relays)
+        expected = (sorted(list(range(1000,1065,5))+[1010,1010,1040,1040])
+                    if mode == 'on' else [1000,1010,1040])
+        assert p.relays == expected, (mode,p.relays)
         assert len(p.powers) == 13, (mode,p.powers)
 
 
-def test_force_on_command_reply_prevents_duplicate_poll_and_start():
+def test_force_on_checks_every_five_seconds_without_duplicate_start():
     C = harness.load()
     C.CFG['control']['mode'] = 'on'
     class Switching(Meter):
@@ -89,9 +91,24 @@ def test_force_on_command_reply_prevents_duplicate_poll_and_start():
     p = Switching(C)
     C._client_snapshot = lambda: (None,p,C._cfg_generation)
     run_loop(C, seconds=20)
-    assert p.relays == [1000]
+    assert p.relays == [1000,1005,1010,1015]
     assert p.commands == 1
     assert C.STATE['changed_at'] == 1000
+
+
+def test_force_on_confirmation_is_available_to_fallback_cache():
+    C = harness.load()
+    C.CFG['control']['mode'] = 'on'
+    class Switching(Meter):
+        on = False
+        def state(self):
+            self.relays.append(self.C.time.time())
+            return self.on
+        def set(self,on): self.on = on
+    p = Switching(C)
+    C._force_on(p,C._cfg_generation)
+    C._refresh_relay(p,C._cfg_generation,poll=True)
+    assert len(p.relays) == 1 and C.STATE['fan'] is True
 
 
 def test_cached_failed_attempt_does_not_retry_from_second_loop():
@@ -186,7 +203,7 @@ def test_meter_checks_cache_expiry_not_a_second_independent_schedule():
 
 
 def test_healthy_normal_checks_do_not_trigger_background_relay_requests():
-    for mode in ('auto','manual','on'):
+    for mode in ('auto','manual'):
         C = harness.load()
         C.CFG['control']['mode'] = mode
         p = Meter(C)
@@ -198,16 +215,22 @@ def test_healthy_normal_checks_do_not_trigger_background_relay_requests():
         finally:
             C.time.time = old
         C._normal_relay_at = (p,C._cfg_generation,1000)
+        refresh = C._refresh_relay
+        background_checks = []
+        def background_refresh(*args, **kwargs):
+            background_checks.append(C.time.time())
+            return refresh(*args, **kwargs)
+        C._refresh_relay = background_refresh
         def normal_check(now):
             if now in (1030,1060):
-                C._refresh_relay(p,C._cfg_generation,poll=True)
+                refresh(p,C._cfg_generation,poll=True)
                 C._normal_relay_at = (p,C._cfg_generation,now)
-        # This models completed normal checks; Force on need not assert ON
-        # here because a healthy normal tick already performs that action.
+        # Auto and Manual need no extra relay reads during healthy polling.
         extra_force_checks = []
         C._force_on = lambda *args,**kw: extra_force_checks.append(C.time.time())
         run_loop(C,advance=normal_check)
         assert p.relays == [1000,1030,1060], (mode,p.relays)
+        assert not background_checks, (mode,background_checks)
         assert not extra_force_checks, (mode,extra_force_checks)
 
 

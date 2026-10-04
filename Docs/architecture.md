@@ -86,11 +86,12 @@ path may acquire `_cfg_lock` while holding `_act_lock`.
 `_act_lock` serialises all plug actions and mode changes. Every action
 rechecks both mode and configuration generation while holding it.
 
-`_plug_request_lock` serialises complete HTTP plug requests/replies from all
-client instances in this process, including meter reads and dashboard tests.
-The HTTP path never acquires controller locks; meter reads release the request
-lock before taking `_act_lock` to commit their result. This avoids a reversed
-lock order. Switching may wait for an in-flight read to complete or time out.
+`_plug_request_lock` is a counted request gate, not a normal-request mutex.
+HTTP requests from different client instances may overlap. Each request
+registers while active; restart takes exclusive access, waiting for all active
+requests and preventing new ones through handover. The HTTP path never acquires
+controller locks, and meter reads unregister before taking `_act_lock` to commit
+their result. The gate's internal condition is not held during network I/O.
 
 `_fault_lock` treats the in-memory fault and `fault.json` as one transaction.
 Draw evaluation holds `_act_lock` before `_fault_lock` so the configured
@@ -166,8 +167,10 @@ the controller can distinguish a closed relay from a fan that is actually
 drawing current.
 
 The draw loop supplies fallback relay checks when state is unknown/unverified
-or normal observations stop, including when Protect fails. Healthy normal
-checks and confirmed switch replies are shared instead of duplicated.
+or normal observations stop, including when Protect fails. Auto and Manual
+reuse healthy normal checks and confirmed switch replies for this fallback.
+Normal control checks read the relay afresh; Force on also checks every five
+seconds independently of sensor acquisition.
 This lets power protection judge a fan already running at startup during a
 sensor outage. Relay adoption is serialized with settings and actuation,
 rejects stale client generations, and shares the polling loop's external-switch

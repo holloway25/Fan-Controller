@@ -23,7 +23,7 @@ ports used in the preceding 180 seconds. This prevents reusing a closed TCP
 tuple while the plug still retains it. The hold is shared across plug-client
 replacements and carried by a preserving restart; a cold start has no previous
 in-memory port history. No system TCP settings or plug firmware are changed.
-Requests remain serialized, with the same timeouts, polling and fault delay.
+Normal requests may overlap; the connection timeout and fault delay are unchanged.
 
 ```sh
 systemctl status office-fan-controller
@@ -120,25 +120,26 @@ remove the marker and restart, only after checking the configured target,
 mode, faults and any outstanding Manual stop promise. The marker is ignored
 by Git and must not be copied to a production installation.
 
-Normal meter polling is every five seconds. Auto, Manual and Force on share
-one plug-request lock: meter reads, relay checks, switching and dashboard plug
-tests run one at a time, including across replacement clients after a save.
-A switching request can wait for an in-flight read to finish or time out; the
-HTTP timeout is unchanged. This coordinates one controller process, not other
-devices or applications contacting the same plug.
-Auto, Manual and Force on share
-relay results from normal control/sensor checks, with a 30-second minimum
-background read interval. Confirmed start/stop replies update that result;
-there is no extra background relay request while normal checks are healthy.
+Normal meter polling is every five seconds in all modes. Normal control checks
+read the relay afresh at the sensor polling interval (30 seconds by default).
+Force on additionally checks and reasserts the relay every five seconds, as in
+the earlier polling arrangement. Confirmed start/stop replies update the relay
+cache. Auto and Manual make no extra background relay requests while normal
+checks are healthy.
 An unknown state or a new client requires a check. If the air sensor fails,
 or normal observations stop for longer than the sensor interval (at least
 30 seconds) plus five seconds of scheduling grace, the meter loop supplies
-fallback relay checks at the same 30-second cadence. Failed attempts are
-shared too, rather than immediately retried by the other loop.
+fallback relay checks every 30 seconds in Auto and Manual. Failed fallback
+attempts are cached too, avoiding an immediate background retry.
 Mode changes and safety stops still act immediately; fault confirmation uses
-a fresh read rather than the background cache. Force on detects external
-stops on normal checks, or fallback checks during a sensor outage, rather than
-making its own five-second relay requests.
+a fresh read rather than the background cache.
+
+Plug HTTP requests may overlap, including across replacement clients after a
+save. Switching and relay-state adoption remain protected by the actuation
+lock, and source-port protection applies to every request. A preserving restart
+waits up to two seconds for active requests, then blocks new requests through
+handover. If it cannot obtain exclusive access, it refuses and can be retried.
+This coordinates one controller process, not other devices contacting the plug.
 If a Force on relay read fails, an ON command is still attempted as a precaution.
 The activity entry reports the failed read and reassertion, not a proven new
 start; an already-known run keeps its minimum-run timer.

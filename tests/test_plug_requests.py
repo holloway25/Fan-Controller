@@ -1,4 +1,4 @@
-"""Real Tasmota client, mocked HTTP: plug requests cannot overlap."""
+"""Plug HTTP may overlap; preserving restart still freezes every request."""
 import os
 import sys
 import threading
@@ -13,7 +13,7 @@ class Reply:
         return {'POWER':'ON', 'StatusSNS':{'ENERGY':{'Power':23}}}
 
 
-def test_power_relay_and_switch_requests_are_serial_across_client_instances():
+def test_power_relay_and_switch_requests_may_overlap_across_client_instances():
     C = harness.load()
     first_entered, release_first = threading.Event(), threading.Event()
     second_started, overlapped = threading.Event(), threading.Event()
@@ -51,10 +51,14 @@ def test_power_relay_and_switch_requests_are_serial_across_client_instances():
     try:
         threads[0].start()
         assert first_entered.wait(1)
+        free = C._plug_request_lock.acquire(blocking=False)
+        if free:
+            C._plug_request_lock.release()
+        assert not free, 'Active HTTP request missing from restart barrier'
         threads[1].start()
         threads[2].start()
         assert second_started.wait(1)
-        assert not overlapped.wait(.15), 'HTTP requests overlapped'
+        assert overlapped.wait(1), 'HTTP requests are still serialized'
         release_first.set()
         for thread in threads:
             thread.join(2)
@@ -116,6 +120,36 @@ def test_request_path_does_not_require_actuation_lock():
         assert not failures, failures
     finally:
         C._plug_http_get = old
+
+
+def test_exclusive_restart_barrier_blocks_new_requests_until_released():
+    C = harness.load()
+    started, entered = threading.Event(), threading.Event()
+    def request():
+        started.set()
+        with C._plug_request_lock.request():
+            entered.set()
+    C._plug_request_lock.acquire()
+    worker = threading.Thread(target=request,daemon=True)
+    try:
+        worker.start()
+        assert started.wait(1)
+        assert not entered.wait(.1)
+    finally:
+        C._plug_request_lock.release()
+    assert entered.wait(1)
+    worker.join(1)
+    assert not worker.is_alive()
+
+
+def test_restart_barrier_waits_for_all_concurrent_requests():
+    C = harness.load()
+    with C._plug_request_lock.request():
+        with C._plug_request_lock.request():
+            assert not C._plug_request_lock.acquire(blocking=False)
+        assert not C._plug_request_lock.acquire(blocking=False)
+    assert C._plug_request_lock.acquire(blocking=False)
+    C._plug_request_lock.release()
 
 
 if __name__ == '__main__':
