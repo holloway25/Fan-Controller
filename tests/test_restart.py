@@ -888,7 +888,7 @@ def test_restart_handover_blocks_configuration_and_actuation():
 
     def check_locks():
         def probe():
-            for name in ("_cfg_lock", "_act_lock", "_fault_lock"):
+            for name in ("_cfg_lock", "_act_lock", "_plug_request_lock", "_fault_lock"):
                 lock = getattr(C, name)
                 free = lock.acquire(blocking=False)
                 seen[name] = free
@@ -910,11 +910,32 @@ def test_restart_handover_blocks_configuration_and_actuation():
         C.os.execv = real_exec
         C._mark_fds_close_on_exec = real_mark
         C.os.environ.pop(C.RESUME_ENV, None)
-    assert seen == {"_cfg_lock": False, "_act_lock": False, "_fault_lock": False}, seen
+    assert seen == {"_cfg_lock": False, "_act_lock": False,
+                    "_plug_request_lock": False, "_fault_lock": False}, seen
     # A failed exec must release every lock, not strand the service.
     check_locks()
     assert all(seen.values()), seen
     return "config, actuation and fault locks span handover and release on failure"
+
+
+def test_restart_refuses_inflight_meter_request_with_bounded_wait():
+    C = harness.load()
+    called = []
+    old = C._restart_from_here
+    C._restart_from_here = lambda: called.append(True)
+    C._plug_request_lock.acquire()
+    started = time.monotonic()
+    try:
+        assert C._restart_now() is False
+        assert not called, 'Restart crossed an in-flight HTTP request'
+        assert 1.8 <= time.monotonic()-started < 4
+        assert any('a plug request is in progress' in e['msg'] for e in C.STATE['events'])
+    finally:
+        C._plug_request_lock.release()
+        C._restart_from_here = old
+    for lock in (C._cfg_lock,C._act_lock,C._plug_request_lock,C._fault_lock):
+        assert lock.acquire(blocking=False)
+        lock.release()
 
 
 def test_resumed_manual_reconciles_durable_stop_promise():

@@ -92,6 +92,41 @@ def test_port_hold_expires_and_is_shared_across_preserving_restart():
     assert C._bind_plug_socket(Socket()) == key
 
 
+def test_failed_connect_holds_port_for_full_interval_after_close():
+    C = harness.load()
+    clock = [100.0]
+    sockets = []
+    class Socket:
+        family = C.socket.AF_INET
+        def __init__(self,*args):
+            self.closed = False
+            sockets.append(self)
+        def setsockopt(self,*args): pass
+        def settimeout(self,value): pass
+        def bind(self,address): pass
+        def getsockname(self): return ('127.0.0.1',41000)
+        def connect(self,address):
+            clock[0] += 12
+            raise C.socket.timeout('connect timed out')
+        def close(self): self.closed = True
+    old_socket, old_gai, old_clock = C.socket.socket, C.socket.getaddrinfo, C.time.monotonic
+    C.socket.socket = Socket
+    C.socket.getaddrinfo = lambda *a: [(C.socket.AF_INET,C.socket.SOCK_STREAM,0,'',('127.0.0.1',80))]
+    C.time.monotonic = lambda: clock[0]
+    try:
+        try:
+            C._PlugHTTPConnection('localhost',timeout=12)._new_conn()
+        except C.ConnectTimeoutError:
+            pass
+        else:
+            raise AssertionError('Expected connect timeout')
+        assert sockets[0].closed
+        assert C._plug_ports[(int(C.socket.AF_INET),41000)] == 112
+        assert C._plug_port_handover() == [[int(C.socket.AF_INET),41000,180]]
+    finally:
+        C.socket.socket, C.socket.getaddrinfo, C.time.monotonic = old_socket, old_gai, old_clock
+
+
 def test_refused_real_connection_remains_a_classified_plug_error():
     C = harness.load()
     with C.socket.socket() as sock:

@@ -117,9 +117,13 @@ are still loaded from disk. Events are bounded and best-effort, so the absence
 of a start event does not prove no restart occurred.
 
 A requested restart is refused while a live fault has not been saved. It takes
-`_cfg_lock`, then `_act_lock`, then `_fault_lock`, retaining all three through
+`_cfg_lock`, then `_act_lock`, then `_plug_request_lock`, then `_fault_lock`,
+retaining all four through
 handover capture and `execv`. This prevents settings, plug actions or fault
 transactions from changing the promised state between capture and replacement.
+The request lock also freezes meter connections so their recently used ports
+cannot be omitted from handover. A busy plug request refuses restart after a
+bounded wait; retry once the request has finished.
 Lock waits are bounded and refusal leaves the running process in place.
 Startup reconciles a durable pending Manual stop even after handover; a carried
 false flag cannot erase a committed stop promise.

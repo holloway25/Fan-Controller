@@ -64,6 +64,13 @@ MODULE_TIMEOUT_SECONDS = 120
 # by hand for the right FAILURE, not merely a failure: a mutation
 # caught by an unrelated crash is not evidence.
 MUTATIONS = [
+    ("plug-failed-connect-hold-not-refreshed", "controller.py",
+     '                _plug_ports[key] = time.monotonic()',
+     '                pass', "test_plug_ports.py",
+     "test_failed_connect_holds_port_for_full_interval_after_close"),
+    ("restart-plug-request-not-frozen", "controller.py",
+     '                (_plug_request_lock, "a plug request is in progress"),\n',
+     '', "test_restart.py", "test_restart_handover_blocks_configuration_and_actuation"),
     ("plug-recent-source-port-reused", "controller.py",
      '        if key in _plug_ports:', '        if False:',
      "test_plug_ports.py", "test_recent_port_is_skipped_before_connecting_on_same_socket"),

@@ -1342,6 +1342,15 @@ def _bind_plug_socket(sock):
     return key
 
 
+def _close_failed_plug_socket(sock, key):
+    try:
+        sock.close()
+    finally:
+        if key is not None:
+            with _plug_ports_lock:
+                _plug_ports[key] = time.monotonic()
+
+
 class _PlugHTTPConnection(HTTPConnection):
     def _new_conn(self):
         try:
@@ -1351,6 +1360,7 @@ class _PlugHTTPConnection(HTTPConnection):
             for family, kind, proto, _, address in addresses:
                 for _ in range(128):
                     sock = socket.socket(family, kind, proto)
+                    key = None
                     try:
                         for option in self.socket_options or ():
                             sock.setsockopt(*option)
@@ -1364,11 +1374,11 @@ class _PlugHTTPConnection(HTTPConnection):
                         sock.connect(address)
                         return sock
                     except OSError as exc:
-                        sock.close()
+                        _close_failed_plug_socket(sock, key)
                         error = exc
                         break
                     except BaseException:
-                        sock.close()
+                        _close_failed_plug_socket(sock, key)
                         raise
             raise error
         except socket.gaierror as exc:
@@ -5155,6 +5165,7 @@ def _restart_now():
         for lock, reason in (
                 (_cfg_lock, "settings are being changed"),
                 (_act_lock, "a plug action is in progress"),
+                (_plug_request_lock, "a plug request is in progress"),
                 (_fault_lock, "a fault is being written right now")):
             if not lock.acquire(timeout=2):
                 _log("%s Restart refused - %s; try again in a moment"
@@ -5177,7 +5188,7 @@ def _restart_now():
 
 
 def _restart_from_here():
-    """The exec itself; hold _cfg_lock, _act_lock and _fault_lock in order."""
+    """Hold config, actuation, plug-request and fault locks through exec."""
     _log("Restarting on request")
     if not flush_hist():
         # Worth saying, not worth refusing over: the graph loses at
