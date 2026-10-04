@@ -2,6 +2,22 @@
 
 ## Check the running service
 
+### Temporary plug-request diagnostics
+
+For connection fault-finding, an operator can create a local ignored
+`plug-diagnostics.enabled` file containing `{"until": <Unix expiry time>}`
+and use the preserving restart. Timing logging is off by default and stops
+at that expiry, capped at 48 hours from startup. Remove the marker to prevent
+reactivation on subsequent restarts.
+
+Private `diagnostics/plug-requests.jsonl` records fixed operation labels,
+queued/start/completion timestamps, lock wait and elapsed time, and classified
+errors. It never records request URLs, credentials, command contents or replies.
+Files rotate at 1 MiB with three backups (roughly 4 MiB maximum), with directory
+mode 0700 and initial file mode 0600. Logging failure does not change control.
+Polling, thresholds and fault protection are unchanged. Keep these local
+diagnostics out of Git and share only redacted excerpts.
+
 ```sh
 systemctl status office-fan-controller
 journalctl -u office-fan-controller -n 100

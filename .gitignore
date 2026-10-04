@@ -39,6 +39,8 @@ fault.json
 restart.request
 manual-off.pending
 plug-access.disabled
+plug-diagnostics.enabled
+diagnostics/
 
 # Node, for the jsdom tests only. Never a runtime dependency: the
 # controller needs Python and nothing else, and the Pi has no Node at

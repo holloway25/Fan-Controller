@@ -11,6 +11,8 @@ break on firmware updates; use the Debug view to inspect the live payload.
 import atexit, copy, hashlib, hmac, json, math, os, re, signal, smtplib
 import socket, ssl, sys, tempfile
 import threading, time
+import logging
+from logging.handlers import RotatingFileHandler
 from datetime import date
 from contextlib import nullcontext
 from urllib.parse import urlsplit
@@ -1315,6 +1317,42 @@ class Protect:
 _plug_request_lock = threading.Lock()
 
 
+def _open_plug_diagnostics():
+    """Local, time-limited opt-in; never part of saved device settings."""
+    try:
+        with open(os.path.join(DIR, 'plug-diagnostics.enabled')) as stream:
+            until = json.load(stream)['until']
+        if not _finite(until) or until <= time.time():
+            return None, 0
+        folder = os.path.join(DIR, 'diagnostics')
+        os.makedirs(folder, mode=0o700, exist_ok=True)
+        os.chmod(folder, 0o700)
+        path = os.path.join(folder, 'plug-requests.jsonl')
+        fd = os.open(path, os.O_CREAT | os.O_APPEND | os.O_WRONLY, 0o600)
+        os.fchmod(fd, 0o600)
+        os.close(fd)
+        logger = logging.Logger('fan-plug-diagnostics')
+        logger.addHandler(RotatingFileHandler(path, maxBytes=1048576,
+                                             backupCount=3))
+        return logger, min(until, time.time()+48*3600)
+    except Exception:
+        # Diagnostics must never block startup or change fan protection.
+        return None, 0
+
+
+_plug_diagnostics, _plug_diagnostics_until = _open_plug_diagnostics()
+
+
+def _plug_diag(phase, request_id, operation, **fields):
+    if _plug_diagnostics is None or time.time() >= _plug_diagnostics_until:
+        return
+    try:
+        _plug_diagnostics.info(json.dumps(dict(at=time.time(), phase=phase,
+            request_id=request_id, operation=operation, **fields)))
+    except Exception:
+        pass
+
+
 class Tasmota:
     """Athom/Tasmota plug over the HTTP command API.
 
@@ -1329,8 +1367,26 @@ class Tasmota:
         self.password = password or ""
 
     def _cmd(self, cmnd):
+        queued = time.monotonic()
+        request_id = time.monotonic_ns()
+        # Fixed labels only: never commands, URLs, credentials or replies.
+        operation = {'Status 8': 'power', 'Power': 'relay',
+                     'Power ON': 'switch_on', 'Power OFF': 'switch_off'}.get(cmnd, 'other')
+        _plug_diag('queued', request_id, operation)
         with _plug_request_lock:
-            return self._cmd_locked(cmnd)
+            started = time.monotonic()
+            _plug_diag('start', request_id, operation, wait_s=round(started-queued, 6))
+            try:
+                result = self._cmd_locked(cmnd)
+            except Exception as exc:
+                _plug_diag('error', request_id, operation,
+                           elapsed_s=round(time.monotonic()-started, 6),
+                           error_type=type(exc).__name__,
+                           reason=exc.reason if isinstance(exc, PlugError) else 'unexpected')
+                raise
+            _plug_diag('ok', request_id, operation,
+                       elapsed_s=round(time.monotonic()-started, 6))
+            return result
 
     def _cmd_locked(self, cmnd):
         """Complete one request/reply before another plug request begins.
