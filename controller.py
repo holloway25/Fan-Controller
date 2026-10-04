@@ -683,7 +683,11 @@ def prune_hist(hist, now=None):
     remains as a memory bound, not as the retention policy.
     """
     cutoff = (now or time.time()) - HIST_HOURS * 3600
-    kept = [p for p in hist if _usable_point(p, cutoff)]
+    # Restored records may contain arbitrary extra fields, including values
+    # that cannot be represented in browser JSON. Keep only our schema.
+    fields = ("t", "v", "tc", "rh", "pm")
+    kept = [{k: p[k] for k in fields if k in p}
+            for p in hist if _usable_point(p, cutoff)]
     return kept[-HIST_CAP:]
 
 

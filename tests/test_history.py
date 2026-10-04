@@ -7,6 +7,7 @@ drift rather than break - so the important test here is the round trip:
 drive a simulated client through appends and prunes and assert it holds
 exactly what the server holds.
 """
+import json
 import os
 import sys
 
@@ -17,6 +18,28 @@ import harness
 def delta_url(C, since):
     """A delta request as the dashboard makes it: revision AND generation."""
     return "/api/history?since=%s&gen=%s" % (since, C.PROC_GENERATION)
+
+
+def test_restored_history_keeps_only_supported_fields_and_browser_valid_json():
+    C = harness.load()
+    good = [{"t": C.time.time()-1, "v": 500, "tc": 24, "rh": 60, "pm": None},
+            {"t": C.time.time(), "v": None}]
+    restored = [dict(point, extra=float('inf'), nested={"bad": float('nan')})
+                for point in good]
+    with open(C.HIST_PATH, 'w') as stream:
+        json.dump(restored, stream)
+    loaded = C.load_hist()
+    assert loaded == good, loaded
+    C.STATE['history'] = loaded
+    C.STATE['history_rev'] = len(loaded)
+    def invalid_constant(value):
+        raise AssertionError('Invalid browser JSON: '+value)
+    for url, key, expected in (("/api/history", "history", good),
+                               (delta_url(C, 1), "add", good[1:])):
+        reply = C.app.test_client().get(url)
+        assert reply.status_code == 200 and reply.is_json
+        body = json.loads(reply.get_data(as_text=True), parse_constant=invalid_constant)
+        assert body[key] == expected
 
 
 def seed(C, n, start=1000.0, step=30.0):
