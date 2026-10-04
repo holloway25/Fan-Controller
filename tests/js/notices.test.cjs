@@ -32,6 +32,23 @@ async function action(id, messageId, resultFails = false, confirmFault = false, 
 }
 
 module.exports = {
+  async test_fault_banner_distinguishes_force_on_override_from_stop_retry() {
+    for (const mode of ["auto","manual","on"]) {
+      for (const stopped of [false,true]) {
+        const state = H.baseState({fault:{msg:"Draw fault",stopped}});
+        state.config.control.mode = mode;
+        const {document} = await H.open({state});
+        const text = document.getElementById("topmsg").textContent;
+        assert(text.includes("Draw fault"));
+        assert.strictEqual(text.includes("Force on overrides fault stop"),mode === "on");
+        assert.strictEqual(text.includes("stop unconfirmed, retrying"),mode !== "on" && !stopped);
+      }
+    }
+    const state = H.baseState({fault:null});
+    state.config.control.mode = "on";
+    const {document} = await H.open({state});
+    assert(!document.getElementById("topmsg").textContent.includes("overrides"));
+  },
   async test_mode_save_and_confirmed_override_keep_notices_after_refresh() {
     for (const confirmed of [false,true]) {
       const msg = await action("mode", "modemsg", false, confirmed);

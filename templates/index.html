@@ -658,10 +658,11 @@ function render(s){
   const drawLate=(Date.now()/1000-(s.draw_loop_at||s.process_started_at))>30;
   $("dot").className="dot "+(s.error||s.draw_loop_error||drawLate
     ||(anyReading&&!liveReading)?"bad":(anyReading?"live":""));
-  // An unconfirmed stop is the worse case: faulted but possibly still
-  // running, and the plug is not answering to say either way.
-  const fmsg=s.fault?(s.fault.msg+(s.fault.stopped?"":
-    " — stop unconfirmed, retrying")):"";
+  // Force on deliberately overrides fault-stop enforcement; do not promise
+  // a retry while that override is active, even if an earlier stop was confirmed.
+  const fmsg=s.fault?(s.fault.msg+(c.mode==="on"?
+    " — Force on overrides fault stop":(s.fault.stopped?"":
+    " — stop unconfirmed, retrying"))):"";
   say("topmsg",fmsg||s.error||"", "err");
   say("drawloopmsg",drawLate?"Power monitoring loop is not responding":
     (s.draw_loop_error?"Power monitoring loop: "+s.draw_loop_error:""),"err");
