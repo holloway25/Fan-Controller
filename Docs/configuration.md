@@ -141,6 +141,7 @@ alerts.
 | `FC-208` | Dashboard rendered no data despite server data |
 | `FC-300` | Plug state changed outside this controller |
 | `FC-301` | The process started cold, carrying no latch and no lease |
+| `FC-302` | Already-ON relay given a bounded fault-free Auto cold-start hold |
 
 Fault persistence and restart notices distinguish a requested stop from a
 relay confirmed off at the last check. A standing fault alone does not prove
@@ -168,7 +169,7 @@ start, a crash, or a loss of power. Those starts deliberately begin with no
 rule latch and no restored minimum-run lease. The compact entry is
 `FC-301 Started cold`. A saved fault is named separately and still blocks Auto.
 If the first confirmed relay observation is ON in fault-free Auto, the
-controller logs `Latched on — Fan on (10 min)` (using the configured duration)
+controller logs `FC-302 Latched on — Fan on (10 min)` (using the configured duration)
 and holds it for `cold_start_minutes`. OFF or unknown is not assumed ON.
 After the hold, fresh readings decide normally; missing enabled measurements
 do not prove demand has cleared. Fresh trigger demand takes over with the

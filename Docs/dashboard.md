@@ -43,7 +43,8 @@ an event means; CSS decides how that class appears. `FC-0xx` and `FC-2xx`
 are faults, `FC-1xx` is an all-clear, and `FC-300` depends on the mode
 recorded with the event.
 
-`FC-301` is neutral: it reports a cold start, not a fault. An unexpected or
+`FC-301` and `FC-302` are neutral: they report a cold start and its optional
+already-ON recovery hold, not faults. An unexpected or
 repeated cold start still warrants checking the service journal and power.
 
 ## Safety controls and loop health

@@ -52,7 +52,8 @@ def test_already_on_cold_boot_holds_ten_minutes_then_stops_without_demand():
         C.tick()
         assert p.commands == [False] and C.STATE['cold_start_hold_until'] is None
         assert sum('Latched on' in e['msg'] for e in C.STATE['events']) == 1
-        assert any(e['msg']=='Latched on — Fan on (10 min)' for e in C.STATE['events'])
+        assert any(e['msg']=='FC-302 Latched on — Fan on (10 min)' for e in C.STATE['events'])
+        assert C.event_class('FC-302 Latched on — Fan on (10 min)') == ''
 
 
 def test_off_unknown_disabled_manual_forced_and_faulted_starts_do_not_get_hold():

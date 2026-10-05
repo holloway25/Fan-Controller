@@ -611,7 +611,7 @@ def event_class(msg):
             # want attention, and a line that appears every time the
             # network switch reboots must not join that column. The
             # information is in the text for whoever is already reading.
-            if raw.startswith(FC_COLD_START):
+            if raw.startswith((FC_COLD_START, FC_COLD_HOLD)):
                 return ""
             # The rest of 3xx is the plug moving without this service
             # commanding it. In Manual that is the mode doing its job;
@@ -2205,7 +2205,7 @@ def _adopt_relay_locked(actual, now):
                 and CFG["control"]["cold_start_minutes"] > 0):
             minutes = CFG["control"]["cold_start_minutes"]
             STATE["cold_start_hold_until"] = time.monotonic() + minutes * 60
-            startup_msg = "Latched on \u2014 Fan on (%d min)" % minutes
+            startup_msg = "%s Latched on \u2014 Fan on (%d min)" % (FC_COLD_HOLD, minutes)
     if actual is False:
         STATE["cold_start_hold_until"] = None
         _end_run_locked()
@@ -3298,6 +3298,7 @@ FC_EXTERNAL_CHANGE = "FC-300"
 # not to be acted on, so it is not emailed and it is not coloured as a
 # problem. See event_class.
 FC_COLD_START = "FC-301"
+FC_COLD_HOLD = "FC-302"  # Already-ON relay given a bounded Auto startup hold.
 
 # 2xx: SOMETHING FAILED, NOBODY WAS EMAILED. Operational errors that
 # reach the activity log and stop there.
