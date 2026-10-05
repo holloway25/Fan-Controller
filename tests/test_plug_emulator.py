@@ -135,7 +135,7 @@ def test_fan_profile_starts_runs_and_warms_without_restarting_on_repeated_comman
         now[0] += 900
         assert plug.set(True) is True  # Reasserting ON is not a new motor start.
         server.state.update(dict(relay=True))  # Nor is saving the same relay state.
-        assert plug.power_w() == 22.5
+        assert plug.power_w() == 23
         now[0] += 900
         assert plug.power_w() == 22 and server.state.snapshot()["phase"] == "warmed"
         server.state.update(dict(on_watts=24))
@@ -163,7 +163,7 @@ def test_profile_settings_reject_invalid_patches_atomically():
     before = state.snapshot()
     for patch in (dict(relay=True, startup_seconds=61), dict(fan_profile=1),
                   dict(warm_after_minutes=-1), dict(warm_watts=float("inf")),
-                  dict(startup_watts=10**400)):
+                  dict(startup_watts=10**400), dict(on_watts=23.6)):
         try:
             state.update(patch)
         except ValueError:
@@ -173,6 +173,19 @@ def test_profile_settings_reject_invalid_patches_atomically():
         assert state.snapshot() == before
     state.update(dict(relay=True, startup_seconds=0, warm_after_minutes=0))
     assert state.snapshot()["current_watts"] == 22
+
+
+def test_emulated_meter_and_controls_report_integer_watts():
+    def check(server):
+        server.state.update(dict(fan_profile=False, relay=True, on_watts=23.0))
+        base = "http://127.0.0.1:%d" % server.server_port
+        with urllib.request.urlopen(base + "/cm?cmnd=Status+8") as response:
+            assert type(json.load(response)["StatusSNS"]["ENERGY"]["Power"]) is int
+        with urllib.request.urlopen(base + "/api/emulator") as response:
+            settings = json.load(response)
+            for key in ("current_watts", "on_watts", "off_watts", "startup_watts", "warm_watts"):
+                assert type(settings[key]) is int, key
+    with_server(check)
 
 
 if __name__ == "__main__":

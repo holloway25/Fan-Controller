@@ -11,9 +11,9 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
-DEFAULTS = dict(relay=False, on_watts=23.0, off_watts=0.0,
-                fan_profile=True, startup_watts=27.0, startup_seconds=3.0,
-                warm_watts=22.0, warm_after_minutes=30.0,
+DEFAULTS = dict(relay=False, on_watts=23, off_watts=0,
+                fan_profile=True, startup_watts=27, startup_seconds=3.0,
+                warm_watts=22, warm_after_minutes=30.0,
                 failure="none", target="all", delay_seconds=0.0)
 PAGE = b'''<!doctype html><meta name="viewport" content="width=device-width">
 <title>Test plug</title><h1>Emulated plug (no hardware)</h1>
@@ -21,12 +21,12 @@ PAGE = b'''<!doctype html><meta name="viewport" content="width=device-width">
 <form id="form">
 <label>Relay <select id="relay"><option value="false">OFF</option><option value="true">ON</option></select></label><br>
 <label>Fan profile <select id="fan_profile"><option value="true">Enabled</option><option value="false">Disabled (fixed ON watts)</option></select></label><br>
-<label>Startup watts <input id="startup_watts" type="number" min="0" max="100000" step="any" value="27"></label><br>
+<label>Startup watts <input id="startup_watts" type="number" min="0" max="100000" step="1" value="27"></label><br>
 <label>Startup seconds <input id="startup_seconds" type="number" min="0" max="60" step="any" value="3"></label><br>
-<label>Running / fixed ON watts <input id="on_watts" type="number" min="0" max="100000" step="any" value="23"></label><br>
-<label>Warm running watts <input id="warm_watts" type="number" min="0" max="100000" step="any" value="22"></label><br>
+<label>Running / fixed ON watts <input id="on_watts" type="number" min="0" max="100000" step="1" value="23"></label><br>
+<label>Warm running watts <input id="warm_watts" type="number" min="0" max="100000" step="1" value="22"></label><br>
 <label>Minutes to warm after startup <input id="warm_after_minutes" type="number" min="0" max="1440" step="any" value="30"></label><br>
-<label>OFF watts <input id="off_watts" type="number" min="0" max="100000" step="any" value="0"></label><br>
+<label>OFF watts <input id="off_watts" type="number" min="0" max="100000" step="1" value="0"></label><br>
 <label>Failure <select id="failure"><option>none</option><option>http_error</option><option>malformed</option><option>reject_switch</option></select></label><br>
 <label>Target <select id="target"><option>all</option><option>relay</option><option>power</option><option>switch</option></select></label><br>
 <label>Reply delay, seconds <input id="delay_seconds" type="number" min="0" max="20" step="any" value="0"></label><br>
@@ -63,12 +63,12 @@ class PlugState:
         if elapsed < values["startup_seconds"]:
             fraction = elapsed / values["startup_seconds"]
             watts = values["startup_watts"] + fraction * (values["on_watts"] - values["startup_watts"])
-            return round(watts, 2), "startup", elapsed
+            return int(math.floor(watts + 0.5)), "startup", elapsed
         running = elapsed - values["startup_seconds"]
         duration = values["warm_after_minutes"] * 60
         fraction = min(1.0, running / duration) if duration else 1.0
         watts = values["on_watts"] + fraction * (values["warm_watts"] - values["on_watts"])
-        return round(watts, 2), "warmed" if fraction == 1 else "running", elapsed
+        return int(math.floor(watts + 0.5)), "warmed" if fraction == 1 else "running", elapsed
 
     def snapshot(self):
         with self.lock:
@@ -92,6 +92,8 @@ class PlugState:
                     valid = (type(value) in (int, float) and math.isfinite(value)
                              and 0 <= value <= {"delay_seconds":20, "startup_seconds":60,
                                                  "warm_after_minutes":1440}.get(key, 100000))
+                    if valid and key.endswith("_watts"):
+                        valid = float(value).is_integer()
                 except OverflowError:
                     valid = False
             if not valid:
@@ -99,7 +101,8 @@ class PlugState:
         with self.lock:
             if "relay" in body:
                 self._set_relay_locked(body["relay"])
-            self.values.update({key:value for key,value in body.items() if key != "relay"})
+            self.values.update({key:int(value) if key.endswith("_watts") else value
+                                for key,value in body.items() if key != "relay"})
 
 
 class EmulatorServer(ThreadingHTTPServer):

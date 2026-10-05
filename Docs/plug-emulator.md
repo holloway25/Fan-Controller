@@ -54,7 +54,7 @@ For a sustained fault, use `{"fan_profile":false,"on_watts":100}` rather
 than changing normal running watts while the warm profile remains enabled.
 
 Settings: `relay` and `fan_profile` (Booleans), `on_watts`, `off_watts`,
-`startup_watts` and `warm_watts` (0–100000), `startup_seconds` (0–60),
+`startup_watts` and `warm_watts` (whole watts, 0–100000), `startup_seconds` (0–60),
 `warm_after_minutes` (0–1440, warming duration after startup),
 `delay_seconds` (0–20), `target` (`all`, `relay`, `power`, `switch`), and
 `failure` (`none`, `http_error`, `malformed`, `reject_switch`). The delay and
@@ -66,6 +66,7 @@ writes. Tasmota credential parameters are ignored and never logged.
 The control page's live status includes current watts, phase and run duration.
 Repeated ON commands or settings saves do not restart the motor profile;
 only an OFF-to-ON transition does. Timing uses an elapsed clock, not wall time.
+Reported power is rounded to whole watts, including during the load taper.
 
 Run its isolated checks on development:
 
