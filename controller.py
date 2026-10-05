@@ -1690,6 +1690,8 @@ STATE = {
     "plug_polling_enabled": not PLUG_ACCESS_DISABLED,
     "co2": None, "co2_path": None, "fan": None, "reading_at": None,
     "changed_at": None, "error": None, "sensor_name": None,
+    # Demand may renew a lease without physically starting the motor.
+    "min_run_at": None,
     # Sensor acquisition health is separate from plug/control failures that
     # may occur after a valid reading has already been recorded.
     "sensor_error": None,
@@ -2187,6 +2189,7 @@ def _end_run_locked():
     the record to name.
     """
     STATE["ran_with"].clear()
+    STATE["min_run_at"] = None
 
 
 def _adopt_relay_locked(actual, now):
@@ -2213,6 +2216,7 @@ def _adopt_relay_locked(actual, now):
         STATE["fan"] = actual
         if prev is not None:
             STATE["changed_at"] = now
+            STATE["min_run_at"] = None
             return "%s Fan %s — changed outside (%s)" % (
                 FC_EXTERNAL_CHANGE, "on" if actual else "off", _mode_now())
     return startup_msg
@@ -2347,6 +2351,7 @@ def _force_on(plug, gen=None, poll=False):
             STATE["fan"] = True
             if actual is not None or not was_on:
                 STATE["changed_at"] = now
+                STATE["min_run_at"] = None
         # Folds into "Mode: Force on" when that is still the newest
         # line: same click, same second, and the mode alone already
         # says the fan is being held on.
@@ -2532,7 +2537,8 @@ def tick():
         with _state_lock:
             fan_on = STATE["fan"]
             changed = STATE["changed_at"]
-            ran_for = (time.time() - changed) if changed is not None else None
+            lease_at = STATE["min_run_at"] if STATE["min_run_at"] is not None else changed
+            ran_for = (time.time() - lease_at) if lease_at is not None else None
             ran_snapshot = dict(STATE["ran_with"])
             before_latch = dict(STATE["latch"])
             want, why = decide(co2, vals.get('temperature'), fan_on, cur,
@@ -2547,7 +2553,7 @@ def tick():
                     # Fresh demand takes over with the configured normal
                     # minimum run; this is not a restored pre-cut timer.
                     STATE["cold_start_hold_until"] = None
-                    STATE["changed_at"] = time.time()
+                    STATE["min_run_at"] = time.time()
                 elif time.monotonic() < deadline:
                     if want is False:
                         want, why = True, "cold-start hold"
@@ -2582,6 +2588,7 @@ def tick():
             with _state_lock:
                 STATE["fan"] = want
                 STATE["changed_at"] = time.time()
+                STATE["min_run_at"] = None
                 # Only after confirmed actuation: failures keep the run.
                 STATE["ran_with"] = ran_snapshot
             activity = "Fan %s \u2014 %s" % ("on" if want else "off", why)
@@ -2657,6 +2664,7 @@ def _failsafe():
             if STATE["fan"] is not True:
                 STATE["fan"] = True
                 STATE["changed_at"] = time.time()
+                STATE["min_run_at"] = None
     if not already_on:
         _log("%s Fan on \u2014 no reading for %s"
              % (FC_SENSOR_COMMS, _plural(mins, "min")))
@@ -4889,6 +4897,7 @@ def _api_config_locked(act_locked=False):
             # from the forced switch hold the fan on once auto resumes.
             with _state_lock:
                 STATE["changed_at"] = None
+                STATE["min_run_at"] = None
     if summary:
         _log(summary)
     _wake.set()
@@ -5021,6 +5030,7 @@ def _resume_payload():
             "latch": dict(STATE["latch"]),
             "ran_with": dict(STATE["ran_with"]),
             "changed_at": STATE["changed_at"],
+            "min_run_at": STATE["min_run_at"],
             "cold_start_pending": STATE["cold_start_pending"],
             "cold_start_hold_until": STATE["cold_start_hold_until"],
             "reading_at": STATE["reading_at"],
@@ -5076,6 +5086,7 @@ def _apply_resume():
                 k: True for k in STATE["latch"]
                 if isinstance(ran.get(k), bool) and ran[k]}
         STATE["changed_at"] = _n(d.get("changed_at"))
+        STATE["min_run_at"] = _n(d.get("min_run_at"))
         deadline = _n(d.get("cold_start_hold_until"))
         STATE["cold_start_hold_until"] = (deadline if deadline is not None
             and 0 < deadline <= time.monotonic()+CFG["control"]["cold_start_minutes"]*60

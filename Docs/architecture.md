@@ -118,8 +118,10 @@ Manual stop are still loaded from disk. A fault-free Auto cold start may hold
 an already-ON relay for `cold_start_minutes` (default 15, 0 disables). Only the
 first confirmed observation qualifies; it does not turn an OFF relay ON. The
 hold uses a monotonic deadline and never delays fault-stop enforcement. Fresh
-trigger demand takes over with a new normal minimum-run lease. A preserving
-restart carries the existing deadline without extending or creating a hold.
+trigger demand takes over with a new normal minimum-run lease.
+The lease uses `min_run_at` separately from physical relay timing (`changed_at`),
+so demand handover does not renew motor spin-up grace or reset draw protection.
+A preserving restart carries the existing deadline without extending or creating a hold.
 Changes to plug, sensor or control settings cancel it; unrelated saves do not.
 Events are bounded and best-effort, so the absence
 of a start event does not prove no restart occurred.

@@ -96,7 +96,8 @@ def test_fresh_demand_takes_over_with_normal_minimum_run():
         C.tick()
         assert C.STATE['latch']['co2'] is True
         assert C.STATE['cold_start_hold_until'] is None
-        assert C.STATE['changed_at'] == clock[0]
+        assert C.STATE['min_run_at'] == clock[0]
+        assert C.STATE['changed_at'] is None
         reading[0] = 700
         clock[0] = 10601
         C.tick()
@@ -200,6 +201,43 @@ def test_power_protection_remains_active_during_startup_hold():
         C._draw_check(p,C._cfg_generation)
         assert C.STATE['fault'] is not None and p.commands == [False]
         assert C.STATE['cold_start_hold_until'] is None
+
+
+def test_demand_handover_does_not_reset_existing_draw_fault_timer():
+    with boot() as (C,p,clock,reading):
+        C.START_TIME = clock[0]-100
+        C.CFG['plug'].update(watts_enabled=True,watts_min=19,watts_max=27,
+                             watts_fault_seconds=30)
+        C.tick()
+        C.STATE.update(watts=100,watts_at=clock[0])
+        C._draw_check(p,C._cfg_generation)
+        started = C._oob_since
+        clock[0] += 29
+        reading[0] = 1100
+        C.tick()
+        assert C.STATE['changed_at'] is None
+        assert C.STATE['min_run_at'] == clock[0]
+        C.STATE['watts_at'] = clock[0]
+        C._draw_check(p,C._cfg_generation)
+        assert C._oob_since == started, 'Demand handover reset draw timer'
+        clock[0] += 2
+        C.STATE['watts_at'] = clock[0]
+        C._draw_check(p,C._cfg_generation)
+        assert C.STATE['fault'] is not None and p.commands == [False]
+
+
+def test_preserving_restart_keeps_separate_minimum_run_and_physical_times():
+    with boot() as (C,p,clock,reading):
+        C.tick()
+        clock[0] += 60
+        reading[0] = 1100
+        C.tick()
+        data = C._resume_payload()
+        C.STATE['min_run_at'] = None
+        with patch.dict(os.environ,{C.RESUME_ENV:json.dumps(data)}):
+            assert C._apply_resume() is True
+        assert C.STATE['min_run_at'] == clock[0]
+        assert C.STATE['changed_at'] is None
 
 
 if __name__ == '__main__':

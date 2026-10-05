@@ -173,6 +173,8 @@ UNIT="office-fan-controller.service"
 # and a space both survive, and systemd takes a quoted first token for
 # exactly this case. The quotes go around the executable only:
 # everything after it is an argument.
+# Percent signs are doubled because systemd expands specifiers even inside
+# quotes; both executable and working-directory paths must remain literal.
 #
 # THAT IS NOT THE SAME AS "awk never interprets them", which is what
 # this comment used to say. awk -v DOES perform escape processing on
@@ -181,6 +183,7 @@ UNIT="office-fan-controller.service"
 # top of the script instead.
 GROUP="$(id -gn)"
 awk -v who="$WHO" -v grp="$GROUP" -v dir="$WHERE" '
+  BEGIN { gsub(/%/, "%%", dir) }
   /^User=/            { print "User=" who; next }
   /^Group=/           { print "Group=" grp; next }
   /^WorkingDirectory=/{ print "WorkingDirectory=" dir; next }

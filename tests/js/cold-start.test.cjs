@@ -37,4 +37,11 @@ module.exports = {
     await H.poll(page.window);
     assert(page.document.getElementById('minrun').textContent.startsWith('Min run'));
   },
+  async test_minimum_run_countdown_uses_demand_lease_not_physical_switch_time() {
+    const state = H.baseState({fan:true,changed_at:H.now()-3600,min_run_at:H.now()-60});
+    const page = await H.open({state});
+    const pill = page.document.getElementById('minrun');
+    assert(pill.classList.contains('on'),'renewed lease not shown');
+    assert(pill.textContent.startsWith('Min run 9m'),'countdown used physical switch time');
+  },
 };

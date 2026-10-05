@@ -39,6 +39,9 @@ Framework-generated errors may be HTML or plain text rather than JSON.
 in an active cold-start hold (0 otherwise). Its internal monotonic deadline is
 not exposed as a wall-clock timestamp. Configure the duration through
 `control.cold_start_minutes`; see [configuration](configuration.md#control).
+`min_run_at` is an optional minimum-run lease start, separate from the physical
+relay-switch time `changed_at`. If null, the normal lease uses `changed_at`.
+Cold-start demand handover can renew the lease without resetting draw protection.
 
 Common rejection statuses are 400 for invalid JSON objects or settings, 401
 when Basic credentials are required, 403 for a rejected browser origin, and

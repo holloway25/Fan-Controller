@@ -691,10 +691,11 @@ function render(s){
     &&!s.latch.temp&&!s.latch.humidity;
   const cold=idle&&!s.fault&&Number.isFinite(s.cold_start_remaining)
     &&s.cold_start_remaining>0;
+  const leaseAt=s.min_run_at??s.changed_at;
   SUB={read:s.reading_at,poll:Number(c.poll_seconds)||30,
        changed:s.changed_at, mins:(+c.min_run_minutes||0)+"m",
        cold, hold:cold?Date.now()/1000+s.cold_start_remaining:
-         (idle&&mr>0&&s.changed_at)?s.changed_at+mr:null};
+         (idle&&mr>0&&leaseAt)?leaseAt+mr:null};
   paintSub();
   // History is fetched separately and only when it actually changed:
   // it is ~99% of the old /api/state payload but only moves once per poll.
