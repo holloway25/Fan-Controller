@@ -36,8 +36,9 @@ def setup():
 def test_failsafe_restart_renews_physical_spin_up_grace():
     C = setup()
     clock = [1000.0]
-    real_time = C.time.time
+    real_time, real_mono = C.time.time, C.time.monotonic
     C.time.time = lambda: clock[0]
+    C.time.monotonic = lambda: clock[0]
     C.CFG['control'].update(stale_minutes=1)
     C.CFG['plug']['watts_fault_seconds'] = 5
     C.STATE.update(fan=True, changed_at=1, reading_at=1)
@@ -60,12 +61,13 @@ def test_failsafe_restart_renews_physical_spin_up_grace():
         assert C.STATE['fault'] and plug.commands[-1] is False
     finally:
         C.time.time = real_time
+        C.time.monotonic = real_mono
 
 
 def test_running_fan_is_protected_during_disconnected_sensor_startup():
     C = setup()
     clock = [1000.0]
-    real_time, real_sleep = C.time.time, C.time.sleep
+    real_time, real_sleep, real_mono = C.time.time, C.time.sleep, C.time.monotonic
     C.START_TIME = clock[0] - 100
     C.CFG["protect"]["sensor_id"] = "sensor"
     class Sensor:
@@ -80,6 +82,7 @@ def test_running_fan_is_protected_during_disconnected_sensor_startup():
         if clock[0] >= 1100:
             raise StopIteration()
     C.time.time, C.time.sleep = lambda: clock[0], advance
+    C.time.monotonic = lambda: clock[0]
     try:
         try:
             C.tick()
@@ -90,6 +93,7 @@ def test_running_fan_is_protected_during_disconnected_sensor_startup():
         pass
     finally:
         C.time.time, C.time.sleep = real_time, real_sleep
+        C.time.monotonic = real_mono
     assert plug.commands == [False], "100 W running fan escaped draw protection"
     assert C.STATE["fault"]["code"] == C.FC_OVER_POWER
     assert C.STATE["fault"]["stopped"] is True

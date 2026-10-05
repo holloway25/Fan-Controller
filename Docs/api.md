@@ -135,10 +135,13 @@ GET /api/history?since=REV&gen=GENERATION
 | `add` | Points added since `since`; present for a delta |
 | `first_t` | Timestamp of the oldest retained point |
 | `history_rev` | Revision represented by this response |
-| `history_generation` | Process generation represented by this response |
+| `history_generation` | History epoch represented by this response |
 
 The server returns a full copy when the revision cannot be reconciled, the
-caller has fallen behind pruning, or the process generation differs. Clients
+caller has fallen behind pruning, or the history epoch differs. The epoch
+changes on process replacement and when a clock rollback inserts a point
+before the trace's tail. Full traces are sorted by timestamp, including
+restored history. Clients
 drop locally held points older than `first_t` before appending a delta.
 
 `process_started_at` in `/api/state` is used by `restart.sh` to verify that

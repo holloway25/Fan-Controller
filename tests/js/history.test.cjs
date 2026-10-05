@@ -2,6 +2,26 @@ const assert = require('assert');
 const H = require('./harness.cjs');
 const tests = {};
 
+tests['rollback epoch replaces cached chart with all sorted samples'] = async () => {
+  const t = H.now();
+  const state = H.baseState({history_rev:2,history_generation:'g1'});
+  const history = H.baseHistory([{t:t-60,v:700},{t:t-30,v:800}]);
+  history.history_rev=2;
+  const page = await H.open({state,history});
+  await H.poll(page.window);
+  state.co2=900; state.history_rev=3; state.history_generation='g1:rollback';
+  Object.assign(history,{full:true,history_rev:3,history_generation:'g1:rollback',
+    first_t:t-600,history:[{t:t-600,v:900},{t:t-60,v:700},{t:t-30,v:800}]});
+  await H.poll(page.window);
+  const line=page.document.querySelector('#trace polyline');
+  assert(line, 'CO2 chart not drawn');
+  const points=line.getAttribute('points').trim().split(/\s+/);
+  assert.strictEqual(points.length,3,'rollback reading missing from chart');
+  const xs=points.map(p=>Number(p.split(',')[0]));
+  assert(xs[0]<xs[1]&&xs[1]<xs[2],'chart does not progress chronologically');
+  assert.deepStrictEqual(page.errors,[]);
+};
+
 tests['bad historical metrics do not freeze newer metrics or activity'] = async () => {
   const t = H.now();
   const state = H.baseState({temperature:21,humidity:50,events:[]});

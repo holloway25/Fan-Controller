@@ -64,6 +64,22 @@ MODULE_TIMEOUT_SECONDS = 120
 # by hand for the right FAILURE, not merely a failure: a mutation
 # caught by an unrelated crash is not evidence.
 MUTATIONS = [
+    ("draw-duration-follows-wall-clock", "controller.py",
+     '            elapsed = mono - _oob_monotonic[1]',
+     '            elapsed = now - _oob_since', "test_clock_rollback.py",
+     "test_draw_fault_uses_elapsed_time_through_rollback_and_restart"),
+    ("restart-drops-monotonic-draw-timer", "controller.py",
+     '    _oob_monotonic = clock_pair(d.get("oob_monotonic"))',
+     '    _oob_monotonic = None', "test_clock_rollback.py",
+     "test_draw_fault_uses_elapsed_time_through_rollback_and_restart"),
+    ("history-rollback-keeps-old-epoch", "controller.py",
+     '                STATE["history_epoch"] = os.urandom(8).hex()',
+     '                pass', "test_clock_rollback.py",
+     "test_actual_poll_rollback_forces_full_sorted_history_reconciliation"),
+    ("history-rollback-not-sorted", "controller.py",
+     '    kept.sort(key=lambda p: p["t"])',
+     '    pass', "test_clock_rollback.py",
+     "test_actual_poll_rollback_forces_full_sorted_history_reconciliation"),
     ("failsafe-confirmed-restart-keeps-old-grace", "controller.py",
      '            if actual is False or not was_on:',
      '            if not was_on:', "test_relay_monitoring.py",

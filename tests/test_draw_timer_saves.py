@@ -21,6 +21,7 @@ def setup():
     C = harness.load()
     clock = [10000.0]
     C.time.time = lambda: clock[0]
+    C.time.monotonic = lambda: clock[0]
     C.CFG["control"]["mode"] = "auto"
     C.CFG["plug"].update(watts_enabled=True, watts_min=10.0,
                          watts_max=20.0, watts_fault_seconds=60)

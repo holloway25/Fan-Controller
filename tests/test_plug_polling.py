@@ -7,7 +7,7 @@ import harness
 
 def run_loop(C, seconds=65, advance=None):
     clock = [1000.0]
-    old_time, old_sleep = C.time.time, C.time.sleep
+    old_time, old_sleep, old_mono = C.time.time, C.time.sleep, C.time.monotonic
     def sleep(n):
         clock[0] += n
         if advance:
@@ -15,12 +15,14 @@ def run_loop(C, seconds=65, advance=None):
         if clock[0] >= 1000+seconds:
             raise StopIteration()
     C.time.time, C.time.sleep = lambda: clock[0], sleep
+    C.time.monotonic = lambda: clock[0]
     try:
         C.watts_loop()
     except StopIteration:
         pass
     finally:
         C.time.time, C.time.sleep = old_time, old_sleep
+        C.time.monotonic = old_mono
 
 
 class Meter:

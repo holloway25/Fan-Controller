@@ -530,6 +530,8 @@ def save_fault(f):
 
 
 _oob_since = None
+_oob_monotonic = None  # (wall start, monotonic start); wall start is for diagnostics
+_draw_grace = None  # (physical wall timestamp, monotonic grace deadline)
 # Which config the out-of-band timer belongs to. A timer accumulated
 # against one plug and one draw band must not carry into another: the
 # elapsed seconds would be counted against limits they were never
@@ -692,6 +694,7 @@ def prune_hist(hist, now=None):
     fields = ("t", "v", "tc", "rh", "pm")
     kept = [{k: p[k] for k in fields if k in p}
             for p in hist if _usable_point(p, cutoff)]
+    kept.sort(key=lambda p: p["t"])
     return kept[-HIST_CAP:]
 
 
@@ -2457,6 +2460,10 @@ def tick():
                          temperature=vals.get('temperature'),
                          humidity=vals.get('humidity'),
                          pm25=vals.get('pm25'))
+            if STATE["history"] and now < STATE["history"][-1]["t"]:
+                # Inserting before the tail is not an append delta. Rotate the
+                # history epoch so all existing clients request a full trace.
+                STATE["history_epoch"] = os.urandom(8).hex()
             STATE["history"].append({"t": now, "v": co2,
                                      "tc": vals.get('temperature'),
                                      "rh": vals.get('humidity'),
@@ -3743,7 +3750,7 @@ def _draw_check(plug, gen=None):
     commanding the wrong plug is not the same as not faulting because of
     it.
     """
-    global _oob_since, _oob_generation
+    global _oob_since, _oob_generation, _oob_monotonic, _draw_grace
     external_stop, external_msg = False, None
     with _act_lock:
         if _stale_client(gen):
@@ -3801,7 +3808,11 @@ def _draw_check(plug, gen=None):
             # disabled draw protection for as long as that run lasted,
             # which on a high-CO2 day is hours.
             since = changed if changed is not None else START_TIME
-            if fan is not True or now - since <= SETTLE_SECONDS:
+            mono = time.monotonic()
+            if _draw_grace is None or _draw_grace[0] != since:
+                remaining = min(SETTLE_SECONDS, SETTLE_SECONDS - (now - since))
+                _draw_grace = (since, mono + remaining)
+            if fan is not True or mono <= _draw_grace[1]:
                 _oob_since = None
                 return
             # Freshness is judged here, not taken from the cached value:
@@ -3817,8 +3828,15 @@ def _draw_check(plug, gen=None):
                 return
             if _oob_since is None:
                 _oob_since = now
+                _oob_monotonic = (now, mono)
                 return
-            if now - _oob_since < float(pg["watts_fault_seconds"]):
+            if _oob_monotonic is None or _oob_monotonic[0] != _oob_since:
+                # Legacy handovers carried only a wall timestamp. Migrate once;
+                # subsequent elapsed checks must never follow wall-clock changes.
+                elapsed = max(0, now - _oob_since)
+                _oob_monotonic = (_oob_since, mono - elapsed)
+            elapsed = mono - _oob_monotonic[1]
+            if elapsed < float(pg["watts_fault_seconds"]):
                 return
             # Cached relay state can outlive an external stop when the
             # fault delay is shorter than the independent relay cadence.
@@ -3836,7 +3854,7 @@ def _draw_check(plug, gen=None):
                 code = _draw_fault_code(w, lo, hi)
                 # Same token in activity log, dashboard, email and disk.
                 msg = ("%s Draw fault - %s outside %g-%g W for %ds"
-                       % (code, reading, lo, hi, int(now - _oob_since)))
+                       % (code, reading, lo, hi, int(elapsed)))
                 f = {"at": now, "msg": msg, "stopped": False, "code": code,
                      "attempted_at": now, "delivered_at": None}
                 prev = _store_fault(f)
@@ -4587,7 +4605,8 @@ def api_state():
     # request first: revisions restart with the process, so a dashboard
     # holding revision 100 from a process that is gone would otherwise
     # see a matching revision, never fetch, and never learn.
-    s["history_generation"] = PROC_GENERATION
+    epoch = s.pop("history_epoch", "")
+    s["history_generation"] = PROC_GENERATION + (":" + epoch if epoch else "")
     return jsonify(s)
 
 
@@ -4711,6 +4730,8 @@ def api_history():
     with _state_lock:
         hist = list(STATE["history"])
         rev = STATE["history_rev"]
+        epoch = STATE.get("history_epoch", "")
+        generation = PROC_GENERATION + (":" + epoch if epoch else "")
 
     first_t = hist[0].get("t") if hist else None
     since = request.args.get("since", type=int)
@@ -4718,7 +4739,7 @@ def api_history():
     # the obvious case, and treating one as real turns rev - since into
     # a larger number than the trace has ever held.
     known = since is not None and since >= 0
-    same_process = request.args.get("gen") == PROC_GENERATION
+    same_process = request.args.get("gen") == generation
     behind = rev - since if (known and same_process) else None
     if behind is not None and 0 <= behind <= len(hist):
         # RANGES GO ON BOTH ARMS. A delta carries only the new points,
@@ -4727,12 +4748,12 @@ def api_history():
         # they were when the page loaded, which is the sort of wrong
         # that looks right for hours.
         return jsonify({"history_rev": rev, "full": False,
-                        "history_generation": PROC_GENERATION,
+                        "history_generation": generation,
                         "add": hist[len(hist) - behind:],
                         "ranges": history_ranges(hist),
                         "first_t": first_t})
     return jsonify({"history": hist, "history_rev": rev, "full": True,
-                    "history_generation": PROC_GENERATION,
+                    "history_generation": generation,
                     "ranges": history_ranges(hist),
                     "first_t": first_t})
 
@@ -5084,6 +5105,8 @@ def _resume_payload():
             "reading_at": STATE["reading_at"],
             "manual_off_pending": bool(STATE["manual_off_pending"]),
             "oob_since": _oob_since,
+            "oob_monotonic": _oob_monotonic,
+            "draw_grace": _draw_grace,
             "start_time": START_TIME,
         }
 
@@ -5102,7 +5125,7 @@ def _apply_resume():
     clean slate is the behaviour we had before this existed; not
     starting at all is worse.
     """
-    global _oob_since, _oob_generation, START_TIME
+    global _oob_since, _oob_generation, START_TIME, _oob_monotonic, _draw_grace
     raw = os.environ.pop(RESUME_ENV, None)
     if not raw:
         return False
@@ -5152,6 +5175,19 @@ def _apply_resume():
         held = [k for k, v in sorted(STATE["latch"].items()) if v]
         lease = STATE["min_run_at"] is not None or STATE["changed_at"] is not None
     _oob_since = _n(d.get("oob_since"))
+    mono = time.monotonic()
+    def clock_pair(value):
+        if not isinstance(value, (list, tuple)) or len(value) != 2:
+            return None
+        a, b = _n(value[0]), _n(value[1])
+        return (a, b) if a is not None and b is not None else None
+    _oob_monotonic = clock_pair(d.get("oob_monotonic"))
+    if (_oob_monotonic is not None and
+            (_oob_monotonic[0] != _oob_since or _oob_monotonic[1] > mono)):
+        _oob_monotonic = None
+    _draw_grace = clock_pair(d.get("draw_grace"))
+    if _draw_grace is not None and _draw_grace[1] > mono + SETTLE_SECONDS:
+        _draw_grace = None
     # Stamped with the CURRENT generation, not left at None. The
     # replacement loaded the same config.json the outgoing process was
     # running, so the restored timer belongs to this generation - but
