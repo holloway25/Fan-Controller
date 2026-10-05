@@ -350,8 +350,8 @@ window.addEventListener("error",e=>_report(
 window.addEventListener("unhandledrejection",e=>_report(
   "unhandled promise: "+(e.reason&&e.reason.message||e.reason),"",0));
 const $=id=>document.getElementById(id);
-let CFG=null, touched=false;
-const dirty=()=>{touched=true};
+let CFG=null, touched=false, editRevision=0;
+const dirty=()=>{touched=true;editRevision++};
 
 function say(el,text,kind){const n=$(el);n.textContent=text||"";
   n.className="msg"+(text?" "+kind:"")}
@@ -933,6 +933,7 @@ document.addEventListener("change",e=>{
   if(e.target&&e.target.closest&&e.target.closest(".lights"))dirty();});
 
 async function saveAll(msgEl){
+  const submittedRevision=editRevision;
   const body={control:{
       on_at:+$("on_at").value, off_at:+$("off_at").value,
       min_run_minutes:+$("min_run_minutes").value,
@@ -968,9 +969,16 @@ async function saveAll(msgEl){
   const sid=$("p_sensor").value;
   if(sensorSelectionTouched||sid||!(CFG&&CFG.protect.sensor_id))body.protect.sensor_id=sid;
   const j=await post("/api/config",body);
+  for(const [id,section] of [["p_pass","protect"],["g_pass","plug"],["e_pass","email"]]){
+    const input=$(id);
+    if(Object.prototype.hasOwnProperty.call(body[section],"password")
+       &&input.value===body[section].password)input.value="";
+    if(j.config&&j.config[section])
+      input.placeholder=j.config[section].password==="SET"?"unchanged":"";
+  }
   if(CFG&&Object.prototype.hasOwnProperty.call(body.protect,"sensor_id"))
     CFG.protect.sensor_id=body.protect.sensor_id;
-  touched=false;
+  touched=editRevision!==submittedRevision;
   // A cleared secret is reported so the change is never silent.
   say(msgEl, j.notice || "Saved.", j.notice ? "err" : "ok");
   return j.notice || "";

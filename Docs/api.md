@@ -165,9 +165,10 @@ needed.
 
 ## Loop health
 
-`/api/state` includes `draw_loop_at`, the last draw-monitor cycle time,
-and `draw_loop_error`, the latest draw-monitor exception category or `null`.
-Clients can detect a stalled monitor by checking the age of `draw_loop_at`.
-The dashboard warns after 30 seconds, using `process_started_at` until the
-first heartbeat arrives. These fields describe loop execution, not proof that
+`/api/state` includes `draw_loop_at`, the last draw-monitor cycle wall timestamp,
+`draw_loop_age`, elapsed seconds since that cycle (or this process's startup
+until its first heartbeat), and `draw_loop_error`, the latest exception
+category or `null`. Clients detect a stalled monitor using `draw_loop_age > 30`;
+keep wall timestamps for display, not age comparisons with another device's
+clock. These fields describe loop execution, not proof that
 the fan or plug is healthy; check fault, power and error fields as well.
