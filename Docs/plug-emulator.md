@@ -32,7 +32,13 @@ testing Auto, Force on or draw protection. No physical load is involved.
 
 The local control page is `http://127.0.0.1:8981/`. For a remote development
 machine, forward that loopback port through SSH and open the forwarded address
-locally. Do not expose the emulator through a public/LAN reverse proxy.
+locally. Keep the emulator listener on loopback. If an operator chooses LAN
+access, a separate, trusted reverse proxy may expose **only** `/` and
+`/api/emulator`, restricted to authorised local clients. It must reject
+unexpected Host headers and cross-origin/fetch-site browser requests before
+adapting headers for the loopback upstream. Do not proxy `/cm`, expose the
+whole server, or publish the controls to the internet. Anyone allowed to use
+these controls can change the simulated relay and load; there is no login.
 
 Alternatively, on the development machine:
 
