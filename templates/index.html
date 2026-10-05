@@ -324,13 +324,13 @@ font-size:16px}
   <div class="row"><label for="e_to">Send to
     <span class="hint">One or more addresses, separated by commas.</span></label>
     <input type="text" id="e_to" autocomplete="off"></div>
-  <p class="hint">Sent when the fan is stopped by a draw fault, when a
-  fault cannot be saved, when readings stop for long enough to force the
-  fan on, and again when readings return. Mode changes and normal
-  switching are not sent - they are in the activity log.</p>
-  <p class="hint">The stale-readings alert follows "Ventilate if readings
-  stop": setting that to 0 turns off the fail-safe <em>and</em> this
-  warning, and neither applies outside Auto.</p>
+  <p class="hint">Email alerts cover power faults, faults that cannot be
+  saved, and sensor outages that trigger fail-safe ventilation. A recovery
+  alert follows when readings return. Normal switching and mode changes
+  appear only in the activity log.</p>
+  <p class="hint">Sensor-outage alerts follow &ldquo;Ventilate if readings
+  stop&rdquo; and apply only in Auto. Setting this to 0 disables both
+  fail-safe ventilation and its outage/recovery alerts.</p>
   <div class="actions"><button id="emailtest">Send test email</button>
     <button id="save4">Save</button></div>
   <div class="msg" id="emsg"></div>
