@@ -79,6 +79,11 @@ WHERE="$PWD"
 # happens to be installed, which is not something to rely on: the next
 # box planned here is a distribution change on a second SD card.
 case "$WHERE" in
+  *"'"*)
+    die "the checkout path contains an apostrophe:
+             $WHERE
+         It cannot be carried into the systemd unit safely.
+         Move the checkout somewhere without one and run this again." ;;
   *\\*)
     die "the checkout path contains a backslash:
              $WHERE

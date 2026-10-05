@@ -232,12 +232,19 @@ def test_preserving_restart_keeps_separate_minimum_run_and_physical_times():
         clock[0] += 60
         reading[0] = 1100
         C.tick()
+        lease_at = clock[0]
+        clock[0] += 60
+        reading[0] = 700
+        C.tick()
+        assert not any(C.STATE['latch'].values())
         data = C._resume_payload()
         C.STATE['min_run_at'] = None
         with patch.dict(os.environ,{C.RESUME_ENV:json.dumps(data)}):
             assert C._apply_resume() is True
-        assert C.STATE['min_run_at'] == clock[0]
+        assert C.STATE['min_run_at'] == lease_at
         assert C.STATE['changed_at'] is None
+        assert any('no latch held, minimum-run lease carried' in e['msg']
+                   for e in C.STATE['events']), 'Restart incorrectly reported no lease'
 
 
 if __name__ == '__main__':

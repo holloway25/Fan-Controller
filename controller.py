@@ -5102,7 +5102,7 @@ def _apply_resume():
         owed = d.get("manual_off_pending")
         STATE["manual_off_pending"] = owed if isinstance(owed, bool) else False
         held = [k for k, v in sorted(STATE["latch"].items()) if v]
-        lease = STATE["changed_at"] is not None
+        lease = STATE["min_run_at"] is not None or STATE["changed_at"] is not None
     _oob_since = _n(d.get("oob_since"))
     # Stamped with the CURRENT generation, not left at None. The
     # replacement loaded the same config.json the outgoing process was

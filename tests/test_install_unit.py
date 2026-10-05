@@ -50,5 +50,27 @@ def test_percent_path_unit_is_valid_for_systemd_without_running_it():
         assert reply.returncode == 0, reply.stdout+reply.stderr
 
 
+def test_apostrophe_path_is_rejected_by_initial_guard_without_installing():
+    if not shutil.which('bash'):
+        harness.skip('bash not available')
+    source = (ROOT/'install.sh').read_text()
+    begin = source.index('case "$WHERE" in')
+    end = source.index('\nesac',begin)+len('\nesac')
+    assert end < source.index('step "Python"'), 'Path guard runs too late'
+    snippet = ('WHERE=$1\nNL="$(printf \'\\nx\')"; NL="${NL%x}"\n'
+               'die() { printf \'%s\\n\' "$*" >&2; exit 1; }\n'
+               +source[begin:end]+'\nprintf \'accepted\\n\'\n')
+    for directory, rejected in (("/tmp/fan's controller",True),
+                                ("/tmp/fan'controller",True),
+                                ('/tmp/fan%Z & controller',False)):
+        reply = subprocess.run(['bash','-s','--',directory],input=snippet,
+                               text=True,capture_output=True)
+        if rejected:
+            assert reply.returncode == 1 and 'apostrophe' in reply.stderr, reply
+            assert 'accepted' not in reply.stdout
+        else:
+            assert reply.returncode == 0 and reply.stdout.strip() == 'accepted', reply
+
+
 if __name__ == '__main__':
     sys.exit(harness.run(dict(globals())))
