@@ -113,8 +113,15 @@ rules have latched during the current run, the minimum-run lease, draw-fault
 timing, stale-reading timing and the original `START_TIME` used for grace
 periods. The API's `process_started_at` is a separate, fresh process-generation
 marker used to verify replacement. A crash or systemd restart starts with clean
-transient state and logs `FC-301`; a saved fault and durable pending Manual stop
-are still loaded from disk. Events are bounded and best-effort, so the absence
+transient state and logs `FC-301 Started cold`; a saved fault and durable pending
+Manual stop are still loaded from disk. A fault-free Auto cold start may hold
+an already-ON relay for `cold_start_minutes` (default 10, 0 disables). Only the
+first confirmed observation qualifies; it does not turn an OFF relay ON. The
+hold uses a monotonic deadline and never delays fault-stop enforcement. Fresh
+trigger demand takes over with a new normal minimum-run lease. A preserving
+restart carries the existing deadline without extending or creating a hold.
+Changes to plug, sensor or control settings cancel it; unrelated saves do not.
+Events are bounded and best-effort, so the absence
 of a start event does not prove no restart occurred.
 
 A requested restart is refused while a live fault has not been saved. It takes

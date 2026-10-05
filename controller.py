@@ -49,6 +49,7 @@ DEFAULTS = {
               "recipients": ""},
     "control": {"mode": "auto", "on_at": 1000, "off_at": 800,
                 "poll_seconds": 30, "min_run_minutes": 5,
+                "cold_start_minutes": 10,
                 # Must stay True: load_cfg fills missing keys from
                 # here, so this is what a config.json written before
                 # the flag existed picks up. False would stop every
@@ -74,6 +75,7 @@ CONTROL_SCHEMA = {
     "off_at": ("num", 300.0, 10000.0),
     "poll_seconds": ("int", 5, 3600),
     "min_run_minutes": ("int", 0, 240),
+    "cold_start_minutes": ("int", 0, 240),
     "co2_enabled": ("bool",),
     "temp_enabled": ("bool",),
     "temp_on": ("num", -20.0, 60.0),
@@ -1701,6 +1703,9 @@ STATE = {
     # must not read as still holding the fan on. Accumulated while the
     # fan runs, cleared when it stops.
     "ran_with": {},
+    # One bounded hold for a relay found ON after a fault-free Auto cold
+    # start. Monotonic time avoids wall-clock corrections extending it.
+    "cold_start_pending": False, "cold_start_hold_until": None,
     "manual_off_pending": False,
     "history": [], "events": [], "history_rev": 0, "fault": None,
     # True when the fault in memory could not be written to disk, so
@@ -2192,7 +2197,17 @@ def _adopt_relay_locked(actual, now):
     Unknown is never interpreted as off or as the end of a run.
     """
     prev = STATE["fan"]
+    startup_msg = None
+    if STATE["cold_start_pending"] and actual is not None:
+        STATE["cold_start_pending"] = False
+        if (prev is None and actual is True and CFG["control"]["mode"] == "auto"
+                and STATE["fault"] is None and not PLUG_ACCESS_DISABLED
+                and CFG["control"]["cold_start_minutes"] > 0):
+            minutes = CFG["control"]["cold_start_minutes"]
+            STATE["cold_start_hold_until"] = time.monotonic() + minutes * 60
+            startup_msg = "Latched on \u2014 Fan on (%d min)" % minutes
     if actual is False:
+        STATE["cold_start_hold_until"] = None
         _end_run_locked()
     if actual is not None and actual != prev:
         STATE["fan"] = actual
@@ -2200,7 +2215,7 @@ def _adopt_relay_locked(actual, now):
             STATE["changed_at"] = now
             return "%s Fan %s — changed outside (%s)" % (
                 FC_EXTERNAL_CHANGE, "on" if actual else "off", _mode_now())
-    return None
+    return startup_msg
 
 
 def _refresh_relay(plug, gen=None, poll=False):
@@ -2524,6 +2539,27 @@ def tick():
                                ran_for, STATE["latch"], STATE["fault"],
                                humidity=vals.get('humidity'),
                                ran_with=ran_snapshot)
+            deadline = STATE["cold_start_hold_until"]
+            if deadline is not None:
+                if STATE["fault"] or fan_on is not True:
+                    STATE["cold_start_hold_until"] = None
+                elif any(STATE["latch"].values()):
+                    # Fresh demand takes over with the configured normal
+                    # minimum run; this is not a restored pre-cut timer.
+                    STATE["cold_start_hold_until"] = None
+                    STATE["changed_at"] = time.time()
+                elif time.monotonic() < deadline:
+                    if want is False:
+                        want, why = True, "cold-start hold"
+                else:
+                    readings = {"co2": co2, "temp": vals.get('temperature'),
+                                "humidity": vals.get('humidity')}
+                    if want is False and any(readings[r["key"]] is None
+                                              for r in active_rules(cur)):
+                        # Missing measurements are not proof demand cleared.
+                        want, why = None, None
+                    else:
+                        STATE["cold_start_hold_until"] = None
         if want is None or want == fan_on:
             # No command needed, so the fan is already in the state the
             # record describes. This is the path most cycles take, and
@@ -3435,6 +3471,9 @@ def _store_fault(value):
         with _state_lock:
             had = STATE["fault"]
             STATE["fault"] = value
+            if value is not None:
+                STATE["cold_start_pending"] = False
+                STATE["cold_start_hold_until"] = None
         try:
             save_fault(value)
             with _state_lock:
@@ -4467,6 +4506,9 @@ def api_state():
         # refetch.
         s = copy.deepcopy({k: v for k, v in STATE.items()
                            if k not in ("history", "daily")})
+    deadline = s.pop("cold_start_hold_until", None)
+    s.pop("cold_start_pending", None)
+    s["cold_start_remaining"] = max(0, deadline-time.monotonic()) if deadline else 0
     # Trim: 300 events every 5s is needless payload; the rest stay on disk.
     # An unreachable plug must not leave a positive draw on screen: a
     # stale reading is reported as unknown, not as current.
@@ -4813,6 +4855,8 @@ def _api_config_locked(act_locked=False):
     # everywhere, which is why this cannot deadlock.
     with nullcontext() if act_locked else _act_lock:
         was = CFG["control"].get("mode")
+        recovery_changed = any(cand[key] != CFG[key]
+                               for key in ("plug", "protect", "control"))
         draw_changed = (cand["plug"] != CFG["plug"] or
                         (was == "on") !=
                         (cand["control"].get("mode") == "on"))
@@ -4830,6 +4874,10 @@ def _api_config_locked(act_locked=False):
             # Carry only a timer known to belong to the previous settings.
             _oob_generation = _cfg_generation
         now_mode = CFG["control"].get("mode")
+        if recovery_changed:
+            with _state_lock:
+                STATE["cold_start_pending"] = False
+                STATE["cold_start_hold_until"] = None
         if now_mode == "manual" and was != "manual":
             # Entering manual switches the fan off once, then hands to the
             # plug's own controls or Google Home without interference.
@@ -4972,6 +5020,8 @@ def _resume_payload():
             "latch": dict(STATE["latch"]),
             "ran_with": dict(STATE["ran_with"]),
             "changed_at": STATE["changed_at"],
+            "cold_start_pending": STATE["cold_start_pending"],
+            "cold_start_hold_until": STATE["cold_start_hold_until"],
             "reading_at": STATE["reading_at"],
             "manual_off_pending": bool(STATE["manual_off_pending"]),
             "oob_since": _oob_since,
@@ -5025,6 +5075,15 @@ def _apply_resume():
                 k: True for k in STATE["latch"]
                 if isinstance(ran.get(k), bool) and ran[k]}
         STATE["changed_at"] = _n(d.get("changed_at"))
+        deadline = _n(d.get("cold_start_hold_until"))
+        STATE["cold_start_hold_until"] = (deadline if deadline is not None
+            and 0 < deadline <= time.monotonic()+CFG["control"]["cold_start_minutes"]*60
+            else None)
+        STATE["cold_start_pending"] = d.get("cold_start_pending") is True
+        if (STATE["fault"] or CFG["control"]["mode"] != "auto"
+                or CFG["control"]["cold_start_minutes"] <= 0 or PLUG_ACCESS_DISABLED):
+            STATE["cold_start_pending"] = False
+            STATE["cold_start_hold_until"] = None
         STATE["reading_at"] = _n(d.get("reading_at"))
         # A real bool, like the latches: anything truthy would promise a
         # stop that was never owed.
@@ -5086,10 +5145,11 @@ def _announce_start(resumed):
     with _state_lock:
         f = STATE["fault"]
         standing = (f.get("code") or "unknown") if f else None
-    msg = ("%s Started cold \u2014 no latch, no minimum-run lease, %s"
-           % (FC_COLD_START,
-              "standing fault %s still held" % standing if standing
-              else "no standing fault"))
+        STATE["cold_start_pending"] = (f is None
+            and CFG["control"]["mode"] == "auto" and not PLUG_ACCESS_DISABLED
+            and CFG["control"]["cold_start_minutes"] > 0)
+        STATE["cold_start_hold_until"] = None
+    msg = "%s Started cold" % FC_COLD_START
     # _log attempts the events.json write before it returns, so the
     # line is offered to disk ahead of the first reading rather than
     # riding on the periodic history flush that the 2026-08-18 readings
@@ -5098,6 +5158,8 @@ def _announce_start(resumed):
     # lost event is recoverable and does not control the fan. Do not
     # read this as a durability promise.
     _log(msg)
+    if standing:
+        _log("%s Standing fault still held" % standing)
     return msg
 
 

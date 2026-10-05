@@ -106,6 +106,8 @@ One browser timer updates:
 
 - **Refresh in**, derived from `poll_seconds`
 - **Min run**, showing the remaining lease
+- **Cold start**, temporarily replacing Min run while an already-ON fan gets
+  its bounded Auto startup hold. Set its duration under Fan Plug; 0 disables it.
 
 The server is polled every five seconds, so **Refresh due** may appear briefly
 between a server reading and the dashboard learning about it.

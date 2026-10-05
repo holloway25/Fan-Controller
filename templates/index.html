@@ -275,6 +275,9 @@ font-size:16px}
   <div class="row"><label for="min_run_minutes">Minimum run time
     <span class="hint">Once started, keep the fan on this long even if readings drop back below the levels that started it. Minutes.</span></label>
     <input type="number" id="min_run_minutes" min="0" max="240" step="1"></div>
+  <div class="row"><label for="cold_start_minutes">Cold-start run time
+    <span class="hint">Minutes to keep an already-on fan running after a fault-free Auto cold start. 0 disables. Normal starts use Minimum run time.</span></label>
+    <input type="number" id="cold_start_minutes" min="0" max="240" step="1"></div>
   <div class="row"><label for="watts_enabled">Power monitoring
     <span class="hint">Watch the draw while the fan runs. Off means the wattage is shown but never acted on.</span></label>
     <input type="checkbox" id="watts_enabled" style="width:auto"></div>
@@ -396,7 +399,7 @@ function paintHold(){
   // Always present so the lease is discoverable before it is holding
   // anything: green while it counts down, neutral showing its length
   // otherwise.
-  mp.textContent=n>0?("Min run "+fmtDur(n)):("Min run "+SUB.mins);
+  mp.textContent=n>0?((SUB.cold?"Cold start ":"Min run ")+fmtDur(n)):("Min run "+SUB.mins);
   mp.className="pill"+(n>0?" on":"");
 }
 function paintSub(){
@@ -686,9 +689,12 @@ function render(s){
   // what holds the fan, not the lease.
   const idle=s.fan===true&&c.mode==="auto"&&!s.latch.co2
     &&!s.latch.temp&&!s.latch.humidity;
+  const cold=idle&&!s.fault&&Number.isFinite(s.cold_start_remaining)
+    &&s.cold_start_remaining>0;
   SUB={read:s.reading_at,poll:Number(c.poll_seconds)||30,
        changed:s.changed_at, mins:(+c.min_run_minutes||0)+"m",
-       hold:(idle&&mr>0&&s.changed_at)?s.changed_at+mr:null};
+       cold, hold:cold?Date.now()/1000+s.cold_start_remaining:
+         (idle&&mr>0&&s.changed_at)?s.changed_at+mr:null};
   paintSub();
   // History is fetched separately and only when it actually changed:
   // it is ~99% of the old /api/state payload but only moves once per poll.
@@ -868,9 +874,9 @@ function render(s){
   }else{logEl.textContent="Nothing yet."}
   if(touched)return;
   CFG=s.config;
-  ["on_at","off_at","min_run_minutes","poll_seconds","temp_on","temp_off",
+  ["on_at","off_at","min_run_minutes","cold_start_minutes","poll_seconds","temp_on","temp_off",
    "humidity_on","humidity_off","stale_minutes"]
-    .forEach(k=>$(k).value=c[k]);
+    .forEach(k=>$(k).value=k==="cold_start_minutes"?(c[k]??10):c[k]);
   // Absent means enabled, matching the backend default, so a config
   // written before the flag existed does not show as switched off.
   $("co2_enabled").checked=c.co2_enabled!==false;
@@ -901,7 +907,7 @@ function render(s){
 
 // Checkboxes and selects fire "change", not "input". Listening for both
 // stops the 5s refresh from overwriting a control the user just touched.
-["on_at","off_at","min_run_minutes","poll_seconds","p_host",
+["on_at","off_at","min_run_minutes","cold_start_minutes","poll_seconds","p_host",
  "p_user","p_pass","g_host","g_user","g_pass","p_sensor","co2_enabled","temp_enabled","temp_on","temp_off","humidity_enabled","humidity_on","humidity_off","p_verify","stale_minutes","watts_min","watts_max","watts_enabled","watts_fault_seconds",
  "e_enabled","e_host","e_port","e_user","e_pass","e_sender","e_to"].forEach(id=>{
   $(id).addEventListener("input",dirty);
@@ -922,6 +928,7 @@ async function saveAll(msgEl){
   const body={control:{
       on_at:+$("on_at").value, off_at:+$("off_at").value,
       min_run_minutes:+$("min_run_minutes").value,
+      cold_start_minutes:+$("cold_start_minutes").value,
       poll_seconds:+$("poll_seconds").value,
       co2_enabled:$("co2_enabled").checked,
       temp_enabled:$("temp_enabled").checked,

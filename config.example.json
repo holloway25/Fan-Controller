@@ -28,6 +28,7 @@
     "humidity_off": 60.0,
     "poll_seconds": 30,
     "min_run_minutes": 10,
+    "cold_start_minutes": 10,
     "stale_minutes": 0
   },
   "ui": {

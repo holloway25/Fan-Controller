@@ -35,6 +35,11 @@ is sufficient); rejected requests leave the safety latch intact.
 
 Framework-generated errors may be HTML or plain text rather than JSON.
 
+`/api/state` includes `cold_start_remaining`, the non-negative seconds remaining
+in an active cold-start hold (0 otherwise). Its internal monotonic deadline is
+not exposed as a wall-clock timestamp. Configure the duration through
+`control.cold_start_minutes`; see [configuration](configuration.md#control).
+
 Common rejection statuses are 400 for invalid JSON objects or settings, 401
 when Basic credentials are required, 403 for a rejected browser origin, and
 415 for a missing or incorrect JSON content type. A rejected fault clear does

@@ -52,7 +52,9 @@ before the run record is cleared. Force on starts a new, non-rule-driven run
 if the plug is first observed off.
 
 `./restart.sh` carries the record. A cold start does not; `FC-301` records that
-loss of transient state. See [restart model](architecture.md#restart-model).
+loss of transient state. Fault-free Auto can give an already-ON relay a separate
+bounded cold-start hold; it does not reconstruct the old run or its triggers.
+See [restart model](architecture.md#restart-model).
 
 ## Latch storage
 

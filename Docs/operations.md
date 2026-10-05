@@ -56,7 +56,10 @@ for a busy refusal rather than clearing a fault that may not exist.
 `sudo systemctl restart office-fan-controller` is a fallback or a required step
 when changing systemd settings. It drops transient latches and timing state;
 a saved draw fault remains persistent. Schedule it with awareness of the fan's
-current demand and minimum-run lease. See [restart model](architecture.md#restart-model).
+current demand and minimum-run lease. A fault-free Auto cold start may instead
+hold a relay already ON for `cold_start_minutes` (default 10). This is a bounded
+new hold, not restoration of the old timer; it never delays a fault stop.
+See [restart model](architecture.md#restart-model).
 
 ## Apply a reviewed update
 

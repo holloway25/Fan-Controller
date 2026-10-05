@@ -94,7 +94,10 @@ Check the current mode, latch values and minimum-run lease in `/api/state`.
 
 Check mode changes, draw faults and external plug changes first. A cold restart
 can also explain a stop above the off threshold or during a minimum-run lease:
-it drops transient latches and the lease. Look for `FC-301` or, for a requested
+it drops transient latches and the lease. An already-ON relay can instead get
+the bounded cold-start hold in fault-free Auto; look for `Latched on` and the
+dashboard's Cold start countdown. This does not restore the old trigger latch.
+Look for `FC-301` or, for a requested
 restart, "Resumed after restart". See [restart behaviour](architecture.md#restart-model).
 
 Missing activity entries do not rule out a restart: events can be pruned or

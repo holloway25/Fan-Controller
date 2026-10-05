@@ -247,25 +247,15 @@ def test_handover_carries_the_latches_and_the_lease():
     return "latches, lease, draw and fail-safe clocks all carried"
 
 
-def test_a_cold_start_says_what_it_did_not_carry():
-    """THE 2026-08-18 FALSE DEFECT REPORT, as a test.
-
-    A cold start drops the latch and the minimum-run lease by design.
-    Without a line saying so, the log showed a fan stopping at a
-    reading well above off_at, seconds into a lease - correct
-    behaviour, read as the rules breaking, investigated as a bug.
-
-    Both facts are asserted because either one alone leaves the reader
-    with half an explanation.
-    """
+def test_a_cold_start_has_a_short_explicit_message():
+    """Cold boot is compact; a confirmed startup hold gets its own entry."""
     C = harness.load()
     msg = C._announce_start(False)
     assert msg is not None, "a cold start logged nothing"
     assert msg.startswith(C.FC_COLD_START), msg
-    assert "no latch" in msg, "the dropped latch is not mentioned: %r" % msg
-    assert "lease" in msg, "the dropped lease is not mentioned: %r" % msg
+    assert msg == "FC-301 Started cold", msg
     assert C.STATE["events"][0]["msg"] == msg, "it did not reach the log"
-    return "cold start names the latch and the lease"
+    return "compact cold-start entry"
 
 
 def test_a_handover_does_not_also_announce_a_cold_start():
@@ -294,19 +284,23 @@ def test_a_cold_start_names_a_fault_that_survived_it():
     with C._state_lock:
         C.STATE["fault"] = {"msg": "x", "code": C.FC_UNDER_POWER, "at": 1.0}
     msg = C._announce_start(False)
-    assert C.FC_UNDER_POWER in msg, \
-        "a standing fault was not named in the cold-start line: %r" % msg
+    assert msg == "FC-301 Started cold"
+    assert any(C.FC_UNDER_POWER in e['msg'] and 'Standing fault still held' in e['msg']
+               for e in C.STATE['events']), "standing fault not named separately"
+    assert C.STATE['cold_start_pending'] is False
     return "the surviving fault is named"
 
 
 def test_a_clean_cold_start_says_there_was_no_fault():
     """Absence stated, not left to be inferred from a missing clause."""
     C = harness.load()
+    C.CFG['control']['mode'] = 'auto'
     with C._state_lock:
         C.STATE["fault"] = None
     msg = C._announce_start(False)
-    assert "no standing fault" in msg, msg
-    return "no fault is said out loud"
+    assert msg == "FC-301 Started cold", msg
+    assert C.STATE['cold_start_pending'] is True
+    return "fault-free Auto boot is eligible for one observation"
 
 
 def test_the_cold_start_line_is_written_before_the_threads_start():
