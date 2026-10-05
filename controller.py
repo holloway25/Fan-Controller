@@ -373,6 +373,13 @@ _last_flush = 0.0
 
 FAULT_PATH = os.path.join(DIR, "fault.json")
 RESTART_PATH = os.path.join(DIR, "restart.request")
+def _restart_identity(st):
+    return (st.st_dev, st.st_ino, st.st_mtime_ns, st.st_ctime_ns, st.st_size)
+
+try:
+    _startup_restart_identity = _restart_identity(os.stat(RESTART_PATH))
+except OSError:
+    _startup_restart_identity = None
 # A one-time stop that has been promised and not yet made. On disk
 # because a crash or a power cut between committing Manual and making
 # the stop would otherwise drop the promise, leaving the fan running in
@@ -1734,6 +1741,28 @@ STATE = {
 # RLock, not Lock: nested acquisition deadlocked the poll thread.
 _state_lock = threading.RLock()
 START_TIME = time.time()
+_elapsed_clocks = {"startup": (START_TIME, time.monotonic())}
+
+
+def _stamp_elapsed_locked(key, wall=None):
+    """Record acquisition/switch time in both clocks under the state lock."""
+    wall = time.time() if wall is None else wall
+    STATE[key] = wall
+    _elapsed_clocks[key] = (wall, time.monotonic())
+
+
+def _elapsed_age_locked(key, startup=False):
+    """Elapsed age; legacy wall-only state is converted once, never per poll."""
+    wall = STATE.get(key)
+    if wall is None:
+        if not startup:
+            return None
+        key, wall = "startup", START_TIME
+    pair = _elapsed_clocks.get(key)
+    if pair is None or pair[0] != wall:
+        pair = (wall, time.monotonic() - max(0, time.time() - wall))
+        _elapsed_clocks[key] = pair
+    return max(0, time.monotonic() - pair[1])
 _wake = threading.Event()  # set to make the poll loop act at once
 # Force on is asserted from both the poll thread and the draw thread, so
 # the read-decide-switch has to be atomic or the two can each see the fan
@@ -2229,7 +2258,7 @@ def _adopt_relay_locked(actual, now):
     if actual is not None and actual != prev:
         STATE["fan"] = actual
         if prev is not None:
-            STATE["changed_at"] = now
+            _stamp_elapsed_locked("changed_at", now)
             STATE["min_run_at"] = None
             return "%s Fan %s — changed outside (%s)" % (
                 FC_EXTERNAL_CHANGE, "on" if actual else "off", _mode_now())
@@ -2287,7 +2316,7 @@ def _manual_off_locked(plug):
     with _state_lock:
         STATE["manual_off_pending"] = False
         STATE["fan"] = False
-        STATE["changed_at"] = time.time()
+        _stamp_elapsed_locked("changed_at")
         # tick() returns before the control decision in manual mode,
         # so this is the only place that can end this run.
         _end_run_locked()
@@ -2367,7 +2396,7 @@ def _force_on(plug, gen=None, poll=False):
         with _state_lock:
             STATE["fan"] = True
             if actual is not None or not was_on:
-                STATE["changed_at"] = now
+                _stamp_elapsed_locked("changed_at", now)
                 STATE["min_run_at"] = None
         # Folds into "Mode: Force on" when that is still the newest
         # line: same click, same second, and the mode alone already
@@ -2460,6 +2489,7 @@ def tick():
                          temperature=vals.get('temperature'),
                          humidity=vals.get('humidity'),
                          pm25=vals.get('pm25'))
+            _stamp_elapsed_locked("reading_at", now)
             if STATE["history"] and now < STATE["history"][-1]["t"]:
                 # Inserting before the tail is not an append delta. Rotate the
                 # history epoch so all existing clients request a full trace.
@@ -2561,7 +2591,8 @@ def tick():
             fan_on = STATE["fan"]
             changed = STATE["changed_at"]
             lease_at = STATE["min_run_at"] if STATE["min_run_at"] is not None else changed
-            ran_for = (time.time() - lease_at) if lease_at is not None else None
+            lease_key = "min_run_at" if STATE["min_run_at"] is not None else "changed_at"
+            ran_for = _elapsed_age_locked(lease_key) if lease_at is not None else None
             ran_snapshot = dict(STATE["ran_with"])
             before_latch = dict(STATE["latch"])
             want, why = decide(co2, vals.get('temperature'), fan_on, cur,
@@ -2576,7 +2607,7 @@ def tick():
                     # Fresh demand takes over with the configured normal
                     # minimum run; this is not a restored pre-cut timer.
                     STATE["cold_start_hold_until"] = None
-                    STATE["min_run_at"] = time.time()
+                    _stamp_elapsed_locked("min_run_at")
                 elif time.monotonic() < deadline:
                     if want is False:
                         want, why = True, "cold-start hold"
@@ -2610,7 +2641,7 @@ def tick():
             _remember_relay(h, want)
             with _state_lock:
                 STATE["fan"] = want
-                STATE["changed_at"] = time.time()
+                _stamp_elapsed_locked("changed_at")
                 STATE["min_run_at"] = None
                 # Only after confirmed actuation: failures keep the run.
                 STATE["ran_with"] = ran_snapshot
@@ -2641,8 +2672,9 @@ def _failsafe():
         last = STATE["reading_at"]
     # "Never read anything" is measured from startup, not treated as fresh:
     # otherwise a service that never got a first reading stayed passive.
-    since = last if last is not None else START_TIME
-    if time.time() - since < mins * 60:
+    with _state_lock:
+        age = _elapsed_age_locked("reading_at", startup=True)
+    if age < mins * 60:
         return
     # Ask the plug rather than trusting cached state: it may have rebooted
     # off, or been switched off while Protect was unreachable.
@@ -2667,8 +2699,9 @@ def _failsafe():
             if STATE["fault"]:
                 return
             last = STATE["reading_at"]
-        since = last if last is not None else START_TIME
-        if time.time() - since < mins * 60:
+        with _state_lock:
+            age = _elapsed_age_locked("reading_at", startup=True)
+        if age < mins * 60:
             return
         already_on = False
         actual = None
@@ -2691,7 +2724,7 @@ def _failsafe():
         with _state_lock:
             if actual is False or not was_on:
                 STATE["fan"] = True
-                STATE["changed_at"] = time.time()
+                _stamp_elapsed_locked("changed_at")
                 STATE["min_run_at"] = None
     if not already_on:
         _log("%s Fan on \u2014 no reading for %s"
@@ -3801,6 +3834,7 @@ def _draw_check(plug, gen=None):
             with _state_lock:
                 fan, w = STATE["fan"], STATE["watts"]
                 w_at, changed = STATE["watts_at"], STATE["changed_at"]
+                watt_age = _elapsed_age_locked("watts_at")
             # A motor spinning up draws nothing yet, and a fan meant to
             # be off is not a fault. changed_at is deliberately left
             # unset when startup finds the fan already running, so fall
@@ -3820,7 +3854,7 @@ def _draw_check(plug, gen=None):
             # reading and would otherwise look healthy for as long as
             # the outage lasted. No reading is out of band, since an
             # unanswering plug is what this catches.
-            if w_at is None or (now - w_at) > WATTS_STALE:
+            if watt_age is None or watt_age > WATTS_STALE:
                 w = None
             lo, hi = float(pg["watts_min"]), float(pg["watts_max"])
             if w is not None and lo <= w <= hi:
@@ -4055,7 +4089,7 @@ def watts_loop():
                     continue
                 with _state_lock:
                     STATE["watts"] = w
-                    STATE["watts_at"] = time.time()
+                    _stamp_elapsed_locked("watts_at")
         except Exception as e:
             # Left for the staleness check rather than cleared here: one
             # missed request should not blank a valid reading, but a
@@ -4208,8 +4242,8 @@ def _failsafe_cap(delay):
     with _state_lock:
         last = STATE["reading_at"]
     # Measured from startup when nothing has been read, matching _failsafe.
-    due = (last if last is not None else START_TIME) + mins * 60
-    remaining = due - time.time()
+    with _state_lock:
+        remaining = mins * 60 - _elapsed_age_locked("reading_at", startup=True)
     if remaining <= 0:
         return delay
     return min(delay, remaining)
@@ -4581,13 +4615,18 @@ def api_state():
         # refetch.
         s = copy.deepcopy({k: v for k, v in STATE.items()
                            if k not in ("history", "daily")})
+        watt_age = _elapsed_age_locked("watts_at")
+        s["sensor_age"] = _elapsed_age_locked("reading_at")
+        lease_key = "min_run_at" if STATE["min_run_at"] is not None else "changed_at"
+        age = _elapsed_age_locked(lease_key)
+        s["min_run_remaining"] = max(0, CFG["control"]["min_run_minutes"]*60-age) if age is not None else 0
     deadline = s.pop("cold_start_hold_until", None)
     s.pop("cold_start_pending", None)
     s["cold_start_remaining"] = max(0, deadline-time.monotonic()) if deadline else 0
     # Trim: 300 events every 5s is needless payload; the rest stay on disk.
     # An unreachable plug must not leave a positive draw on screen: a
     # stale reading is reported as unknown, not as current.
-    if not s["watts_at"] or time.time() - s["watts_at"] > WATTS_STALE:
+    if watt_age is None or watt_age > WATTS_STALE:
         s["watts"] = None
     # Served with the class, not stored with it: the colour is a
     # presentation decision that can change, and rewriting events.json
@@ -4965,8 +5004,10 @@ def _api_config_locked(act_locked=False):
             # Leaving a forced state: do not let the minimum-run timer
             # from the forced switch hold the fan on once auto resumes.
             with _state_lock:
-                STATE["changed_at"] = None
-                STATE["min_run_at"] = None
+                # Cancel only the lease, retaining physical switch timing.
+                expired = time.time() - CFG["control"]["min_run_minutes"]*60 - 1
+                _stamp_elapsed_locked("min_run_at", expired)
+                _elapsed_clocks["min_run_at"] = (expired, time.monotonic() - CFG["control"]["min_run_minutes"]*60 - 1)
     if summary:
         _log(summary)
     _wake.set()
@@ -5108,6 +5149,7 @@ def _resume_payload():
             "oob_monotonic": _oob_monotonic,
             "draw_grace": _draw_grace,
             "start_time": START_TIME,
+            "elapsed_clocks": dict(_elapsed_clocks),
         }
 
 
@@ -5200,6 +5242,13 @@ def _apply_resume():
     st = _n(d.get("start_time"))
     if st is not None:
         START_TIME = st
+    carried = d.get("elapsed_clocks")
+    if isinstance(carried, dict):
+        for key in ("startup", "changed_at", "min_run_at", "reading_at", "watts_at"):
+            pair = clock_pair(carried.get(key))
+            wall = START_TIME if key == "startup" else STATE.get(key)
+            if pair is not None and pair[0] == wall and pair[1] <= mono:
+                _elapsed_clocks[key] = pair
     # Logged because the handover is otherwise invisible: the values it
     # carries are the ones that decide whether the fan keeps running,
     # and without a line here the only way to tell a handover from a
@@ -5268,16 +5317,15 @@ def _consume_restart_request():
     this one, and again by the next, forever. A failed unlink refuses
     the request and says so rather than retrying.
 
-    A file older than this process has already been acted on: exec
-    keeps the working directory, so a trigger written just before
-    startup would otherwise fire a second, pointless restart. It is
-    still removed, so it cannot accumulate.
+    Only the exact file present at startup is treated as leftover. A new
+    or rewritten trigger is accepted even when a clock correction gives
+    it a timestamp earlier than process startup.
     """
     try:
         st = os.stat(RESTART_PATH)
     except OSError:
         return False
-    fresh = st.st_mtime >= _PROC_START
+    fresh = _restart_identity(st) != _startup_restart_identity
     try:
         os.unlink(RESTART_PATH)
     except OSError as e:

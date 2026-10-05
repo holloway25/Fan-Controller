@@ -657,7 +657,7 @@ function render(s){
   // A plug/control error may follow a valid sensor sample. Only a sensor
   // acquisition failure or an old timestamp makes these values stale.
   const liveReading=!s.sensor_error&&Number.isFinite(s.reading_at)&&s.reading_at>0
-    &&(Date.now()/1000-s.reading_at)<=Math.max(30,2*(Number(c.poll_seconds)||30));
+    &&(s.sensor_age??(Date.now()/1000-s.reading_at))<=Math.max(30,2*(Number(c.poll_seconds)||30));
   const drawLate=(Date.now()/1000-(s.draw_loop_at||s.process_started_at))>30;
   $("dot").className="dot "+(s.error||s.draw_loop_error||drawLate
     ||(anyReading&&!liveReading)?"bad":(anyReading?"live":""));
@@ -695,7 +695,8 @@ function render(s){
   SUB={read:s.reading_at,poll:Number(c.poll_seconds)||30,
        changed:s.changed_at, mins:(+c.min_run_minutes||0)+"m",
        cold, hold:cold?Date.now()/1000+s.cold_start_remaining:
-         (idle&&mr>0&&leaseAt)?leaseAt+mr:null};
+         (idle&&mr>0&&leaseAt)?(s.min_run_remaining!=null
+           ?Date.now()/1000+s.min_run_remaining:leaseAt+mr):null};
   paintSub();
   // History is fetched separately and only when it actually changed:
   // it is ~99% of the old /api/state payload but only moves once per poll.

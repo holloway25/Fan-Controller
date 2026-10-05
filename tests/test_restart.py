@@ -84,6 +84,7 @@ def test_stale_request_is_removed_without_restarting():
     open(C.RESTART_PATH, "w").close()
     old = C._PROC_START - 60
     os.utime(C.RESTART_PATH, (old, old))
+    C._startup_restart_identity = C._restart_identity(os.stat(C.RESTART_PATH))
 
     assert C._consume_restart_request() is False, \
         "a trigger older than the process caused a restart - boot loop"
