@@ -58,6 +58,10 @@ def _f(template):
 # ------------------------------------------------------- must be caught
 
 CAUGHT = [
+    _f('{"{k}": "abcdef123456"}'),
+    _f('"{a}": "another value with spaces"'),
+    _f("'{t}': 'abcdef123456'"),
+    _f('"{s}": abcdef123456'),
     # The review's finding against 40f2d3f: the shell check saw only the
     # first word of a quoted value, so spaces hid the rest.
     _f('{k} = "a value with spaces in it"'),
@@ -93,6 +97,8 @@ CAUGHT = [
 ]
 
 NOT_CAUGHT = [
+    _f('{"{k}": "CHANGEME"}'),
+    _f("'{t}': '${VAULT_VALUE}'"),
     # References to a secret. This is what correct code looks like.
     _f('{s} = (CFG.get(section) or {}).get(key)'),
     _f('body.email.{k} = $("e_pass").value'),

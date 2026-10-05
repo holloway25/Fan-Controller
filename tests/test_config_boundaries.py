@@ -1,9 +1,29 @@
 """Configuration requests reject unknown sections and overflowing numbers."""
 import copy
+import json
 import os
 import sys
 sys.path.insert(0,os.path.dirname(os.path.abspath(__file__)))
 import harness
+
+
+def test_legacy_enable_requires_boolean_before_migration():
+    C = harness.load()
+    for value in ('false', 'true', 0, 1, None, [], {}):
+        with open(C.CFG_PATH, 'w') as stream:
+            json.dump({'control': {'mode': 'auto', 'enabled': value}}, stream)
+        try:
+            C.load_cfg()
+        except C.ConfigurationError:
+            pass
+        else:
+            raise AssertionError('Invalid legacy enable accepted: %r' % value)
+    for value, mode in ((False, 'manual'), (True, 'auto')):
+        with open(C.CFG_PATH, 'w') as stream:
+            json.dump({'control': {'mode': 'auto', 'enabled': value}}, stream)
+        cfg = C.load_cfg()
+        assert cfg['control']['mode'] == mode
+        assert 'enabled' not in cfg['control']
 
 
 def test_unknown_sections_reject_the_whole_request_without_side_effects():

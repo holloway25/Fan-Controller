@@ -691,6 +691,30 @@ def test_a_real_reading_produces_the_all_clear():
     return "a reading clears it"
 
 
+def test_late_outage_delivery_cannot_suppress_next_episode():
+    C = harness.load()
+    pending = []
+    C._notify = lambda subject, body, on_complete=None: pending.append(on_complete)
+    C._notify_stale(30, True)
+    old = pending[-1]
+    feed_a_reading(C)
+    assert not C._stale_inflight and not C._stale_delivered
+    # A's late success must not contaminate B, before or during its send.
+    old(True)
+    assert not C._stale_delivered
+    C._notify_stale(30, True)
+    assert len(pending) == 2
+    old(True)
+    assert C._stale_inflight and not C._stale_delivered
+    pending[-1](False)
+    C._notify_stale(30, True)
+    assert len(pending) == 3
+    pending[-1](True)
+    assert C._stale_delivered and not C._stale_inflight
+    feed_a_reading(C)
+    assert len(pending) == 4  # One all-clear for B, not A.
+
+
 def test_no_all_clear_when_the_warning_was_never_delivered():
     """An all-clear for a warning nobody received is worse than silence.
 

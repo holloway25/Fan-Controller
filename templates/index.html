@@ -907,6 +907,8 @@ function render(s){
 }
 
 // Checkboxes and selects fire "change", not "input". Listening for both
+let sensorSelectionTouched=false;
+$("p_sensor").addEventListener("change",()=>{sensorSelectionTouched=true});
 // stops the 5s refresh from overwriting a control the user just touched.
 ["on_at","off_at","min_run_minutes","cold_start_minutes","poll_seconds","p_host",
  "p_user","p_pass","g_host","g_user","g_pass","p_sensor","co2_enabled","temp_enabled","temp_on","temp_off","humidity_enabled","humidity_on","humidity_off","p_verify","stale_minutes","watts_min","watts_max","watts_enabled","watts_fault_seconds",
@@ -959,7 +961,7 @@ async function saveAll(msgEl){
   // Only send a selection when the picker is actually populated, so a
   // save from a freshly loaded page cannot wipe a stored choice.
   const sid=$("p_sensor").value;
-  if(sid||!(CFG&&CFG.protect.sensor_id))body.protect.sensor_id=sid;
+  if(sensorSelectionTouched||sid||!(CFG&&CFG.protect.sensor_id))body.protect.sensor_id=sid;
   const j=await post("/api/config",body);
   touched=false;
   // A cleared secret is reported so the change is never silent.

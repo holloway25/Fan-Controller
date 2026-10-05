@@ -94,7 +94,7 @@ def test_malformed_bodies_are_rejected_not_crashed():
         ("/api/config", {"plug": [1]}),
         ("/api/config", "bad"),
         ("/api/config", [1, 2]),
-        ("/api/ui/password", {"password": 12345678}),
+        ("/api/ui/password", {"password": 123}),
         ("/api/ui/password", "bad"),
         ("/api/clienterror", "bad"),
     ]

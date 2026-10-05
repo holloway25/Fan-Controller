@@ -454,7 +454,7 @@ def test_setting_a_password_that_is_not_synced_is_also_not_denied():
     C.os.open = picky
     try:
         r = C.app.test_client().post("/api/ui/password",
-                                     json={"password": "a-long-password"})
+                                     json={"password": "CHANGEME-test-value"})
     finally:
         C.os.open = real_open
 

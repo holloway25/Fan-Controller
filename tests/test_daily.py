@@ -15,6 +15,20 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import harness
 
 
+def test_backward_date_updates_existing_row_and_survives_reload():
+    C = harness.load()
+    now = time.time()
+    C._daily_note(now - 86400, 700, 19, 40)
+    C._daily_note(now, 1000, 25, 60)
+    C._daily_note(now - 86400, 900, 22, 50)
+    rows = C.STATE['daily']
+    assert len(rows) == 2 and [r['d'] for r in rows] == sorted(r['d'] for r in rows)
+    assert rows[0]['n'] == 2 and rows[0]['v'] == {'lo': 700, 'hi': 900}
+    assert rows[0]['tc'] == {'lo': 19, 'hi': 22}
+    assert C.save_daily(force=True)
+    assert C.load_daily() == rows
+
+
 def test_a_reading_lands_in_todays_row():
     C = harness.load()
     now = time.time()

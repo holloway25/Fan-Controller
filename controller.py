@@ -232,6 +232,8 @@ def load_cfg():
     if "enabled" in ctl:
         # Older configs used a separate enable flag; "not enabled" is now
         # simply manual mode. Fold it in and drop the duplicate control.
+        if not isinstance(ctl["enabled"], bool):
+            raise ConfigurationError("control.enabled must be a Boolean; refusing to start")
         if not ctl.pop("enabled") and ctl.get("mode") == "auto":
             ctl["mode"] = "manual"
     # Missing fields receive upgrade defaults. Present but invalid fields do
@@ -817,9 +819,8 @@ def load_daily():
     if not isinstance(d, list):
         return []
     rows = [r for r in (_clean_row(x) for x in d) if r]
-    # SORTED AND DEDUPLICATED. The endpoint promises oldest-first, and
-    # the fold assumes the last row is today - both of which a
-    # hand-edited file can break without being malformed. Later
+    # SORTED AND DEDUPLICATED. The endpoint promises oldest-first;
+    # a hand-edited file can break this without being malformed. Later
     # duplicates win, being the ones written most recently.
     byday = {}
     for r in rows:
@@ -841,13 +842,15 @@ def _daily_note(now, co2, tc, rh):
     day = time.strftime("%Y-%m-%d", time.localtime(now))
     with _daily_lock:
         rows = STATE.setdefault("daily", [])
-        if not rows or rows[-1].get("d") != day:
+        row = next((r for r in rows if r.get("d") == day), None)
+        if row is None:
             # A gap of days leaves gaps in the list rather than empty
             # rows: a day the controller was off has no readings, and
             # inventing zeroes for it would be a lie a chart would draw.
-            rows.append({"d": day, "n": 0})
+            row = {"d": day, "n": 0}
+            rows.append(row)
+            rows.sort(key=lambda r: r["d"])
             del rows[:-DAILY_KEEP_DAYS]
-        row = rows[-1]
         row["n"] = row.get("n", 0) + 1
         for key, val in (("v", co2), ("tc", tc), ("rh", rh)):
             if not _finite(val):
@@ -1178,9 +1181,9 @@ class Protect:
         s.verify = self.verify
         try:
             r = s.post(self.base + "/api/auth/login",
-                       json={"username": self.username,
-                             "password": self.password,
-                             "rememberMe": True}, timeout=15)
+                       json=dict(username=self.username,
+                                 password=self.password,
+                                 rememberMe=True), timeout=15)
         except requests.exceptions.SSLError as e:
             raise ProtectError(
                 "TLS verification failed for %s. The certificate must cover "
@@ -2458,10 +2461,12 @@ def tick():
     # ways. Dispatched OUTSIDE the locks, and only once this cycle has
     # been accepted: a discarded cycle must not announce that readings
     # have returned on the strength of the old sensor answering.
-    global _stale_delivered
-    if _stale_delivered:
+    global _stale_delivered, _stale_inflight, _stale_episode
+    with _state_lock:
+        recovered = _stale_delivered
+        _stale_episode = None
         _stale_delivered = False
-        recovered = True
+        _stale_inflight = False
     if recovered:
         # LOGGED AS WELL AS MAILED. The recovery was mailed and never
         # written down, so events.json showed a fail-safe starting and
@@ -2685,6 +2690,7 @@ def _failsafe():
 # once the relay has accepted the message.
 _stale_delivered = False
 _stale_inflight = False
+_stale_episode = None
 
 SMTP_TIMEOUT = 20
 # Long enough that a slow relay still delivers, short enough that a
@@ -2903,21 +2909,28 @@ def _notify_stale(mins, already_on):
     A send that fails is retried on the next fail-safe cycle, which is
     the behaviour you want during an outage.
 
-    BOTH FLAGS ARE CLEARED BY THE WORKER, never by this function after
-    the call. _notify returns as soon as the thread starts, so clearing
-    _stale_inflight here let the next poll queue a second warning while
-    the first was still talking to the relay.
+    Completion updates only its own outage episode under the state lock.
+    An accepted reading closes that episode, even if delivery is still
+    pending. Late completion cannot mark a new outage delivered or clear
+    its in-flight send. Failed sends retry within the same episode.
     """
-    global _stale_inflight
-    if _stale_delivered or _stale_inflight:
-        return
-    _stale_inflight = True
+    global _stale_inflight, _stale_episode
+    with _state_lock:
+        if _stale_delivered or _stale_inflight:
+            return
+        if _stale_episode is None:
+            _stale_episode = object()
+        episode = _stale_episode
+        _stale_inflight = True
 
     def completed(ok):
         global _stale_delivered, _stale_inflight
-        if ok:
-            _stale_delivered = True
-        _stale_inflight = False
+        with _state_lock:
+            if _stale_episode is not episode:
+                return
+            if ok:
+                _stale_delivered = True
+            _stale_inflight = False
     _notify("%s Sensor readings stopped - fan on as a precaution"
             % FC_SENSOR_COMMS,
             _alert_body(
