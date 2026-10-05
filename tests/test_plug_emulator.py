@@ -127,8 +127,10 @@ def test_fan_profile_starts_runs_and_warms_without_restarting_on_repeated_comman
         plug = C.Tasmota("127.0.0.1:%d" % server.server_port)
         assert plug.power_w() == 0
         assert plug.set(True) is True
-        assert plug.power_w() == 45 and server.state.snapshot()["phase"] == "startup"
-        now[0] += 3
+        assert plug.power_w() == 27 and server.state.snapshot()["phase"] == "startup"
+        now[0] += 1.5
+        assert plug.power_w() == 25
+        now[0] += 1.5
         assert plug.power_w() == 23 and server.state.snapshot()["phase"] == "running"
         now[0] += 900
         assert plug.set(True) is True  # Reasserting ON is not a new motor start.
@@ -148,6 +150,8 @@ def test_fan_profile_starts_runs_and_warms_without_restarting_on_repeated_comman
         assert plug.power_w() == 24
         now[0] += 60
         assert plug.power_w() == 21
+        server.state.update(dict(warm_watts=20))
+        assert plug.power_w() == 20
         server.state.update(dict(relay=False))
         server.state.update(dict(relay=True))  # External relay start also gets the profile.
         assert plug.power_w() == 55

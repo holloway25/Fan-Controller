@@ -12,7 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
 DEFAULTS = dict(relay=False, on_watts=23.0, off_watts=0.0,
-                fan_profile=True, startup_watts=45.0, startup_seconds=3.0,
+                fan_profile=True, startup_watts=27.0, startup_seconds=3.0,
                 warm_watts=22.0, warm_after_minutes=30.0,
                 failure="none", target="all", delay_seconds=0.0)
 PAGE = b'''<!doctype html><meta name="viewport" content="width=device-width">
@@ -21,7 +21,7 @@ PAGE = b'''<!doctype html><meta name="viewport" content="width=device-width">
 <form id="form">
 <label>Relay <select id="relay"><option value="false">OFF</option><option value="true">ON</option></select></label><br>
 <label>Fan profile <select id="fan_profile"><option value="true">Enabled</option><option value="false">Disabled (fixed ON watts)</option></select></label><br>
-<label>Startup watts <input id="startup_watts" type="number" min="0" max="100000" step="any" value="45"></label><br>
+<label>Startup watts <input id="startup_watts" type="number" min="0" max="100000" step="any" value="27"></label><br>
 <label>Startup seconds <input id="startup_seconds" type="number" min="0" max="60" step="any" value="3"></label><br>
 <label>Running / fixed ON watts <input id="on_watts" type="number" min="0" max="100000" step="any" value="23"></label><br>
 <label>Warm running watts <input id="warm_watts" type="number" min="0" max="100000" step="any" value="22"></label><br>
@@ -61,7 +61,9 @@ class PlugState:
         if not values["fan_profile"]:
             return values["on_watts"], "fixed", elapsed
         if elapsed < values["startup_seconds"]:
-            return values["startup_watts"], "startup", elapsed
+            fraction = elapsed / values["startup_seconds"]
+            watts = values["startup_watts"] + fraction * (values["on_watts"] - values["startup_watts"])
+            return round(watts, 2), "startup", elapsed
         running = elapsed - values["startup_seconds"]
         duration = values["warm_after_minutes"] * 60
         fraction = min(1.0, running / duration) if duration else 1.0

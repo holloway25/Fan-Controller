@@ -18,9 +18,10 @@ verifying the saved address targets the local emulator, never a real plug.
 The controller must run on the same machine as the emulator.
 
 The emulator starts OFF and reports 0 W when OFF. Its default fan profile
-reports 45 W for the first three seconds after switching ON, then 23 W,
+starts at 27 W and tapers to 23 W over the first three seconds after switching ON,
 gradually reducing to 22 W over 30 minutes. These are adjustable example
-values, not measurements of a particular fan. Disable the fan profile to
+values, not measurements of a particular fan. The warm draw can also be set
+to 20 W, or another value, on the control page. Disable the fan profile to
 use a fixed `on_watts` value for sustained low/high-draw fault tests.
 Settings are
 in-memory and reset whenever it restarts. Keep development in Manual with
