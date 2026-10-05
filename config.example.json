@@ -13,7 +13,8 @@
     "watts_enabled": false,
     "watts_min": 15.0,
     "watts_max": 25.0,
-    "watts_fault_seconds": 60
+    "watts_fault_seconds": 60,
+    "watts_off_max": 1.0
   },
   "control": {
     "mode": "manual",

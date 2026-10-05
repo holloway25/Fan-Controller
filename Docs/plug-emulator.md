@@ -76,3 +76,10 @@ Run its isolated checks on development:
 
 These checks use an ephemeral loopback server and the controller's actual
 HTTP transport; they do not access configured hardware or live settings.
+
+To simulate contacts remaining closed despite an OFF report, keep the relay
+OFF and set `off_watts` to a load value such as 23. With controller power
+monitoring enabled this should latch FC-007 after settling and the configured
+fault delay, leave the stop unconfirmed, and alert once. Restore `off_watts`
+to 0 before acknowledging the fault. To simulate a rejected OFF command,
+start the emulated relay ON and use `reject_switch` targeting `switch`.

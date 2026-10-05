@@ -16,7 +16,7 @@ class Plug:
         return self.on
 
     def power_w(self):
-        return self.watts
+        return self.watts if self.on else 0
 
     def set(self, on):
         self.commands.append(on)

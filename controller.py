@@ -39,7 +39,8 @@ DEFAULTS = {
                 "sensor_id": ""},
     "plug": {"host": "192.0.2.10", "user": "admin", "password": "",
              "watts_enabled": False, "watts_min": 15.0,
-             "watts_max": 25.0, "watts_fault_seconds": 60},
+             "watts_max": 25.0, "watts_fault_seconds": 60,
+             "watts_off_max": 1.0},
     "ui": {"password_hash": ""},
     # Off until it is configured deliberately: an install that upgrades
     # into this must not start trying to send. Every other key can be
@@ -110,6 +111,7 @@ PLUG_SCHEMA = {
     "watts_min": ("num", 1.0, 5000.0),
     "watts_max": ("num", 1.0, 5000.0),
     "watts_fault_seconds": ("int", 5, 3600),
+    "watts_off_max": ("num", 0.0, 5000.0),
 }
 SCHEMAS = {"protect": PROTECT_SCHEMA, "plug": PLUG_SCHEMA, "ui": UI_SCHEMA,
            "control": CONTROL_SCHEMA, "email": EMAIL_SCHEMA}
@@ -538,6 +540,7 @@ def save_fault(f):
 
 
 _oob_since = None
+_off_draw_since = None  # monotonic: sustained draw while relay reports OFF
 _oob_monotonic = None  # (wall start, monotonic start); wall start is for diagnostics
 _draw_grace = None  # (physical wall timestamp, monotonic grace deadline)
 # Which config the out-of-band timer belongs to. A timer accumulated
@@ -3342,6 +3345,7 @@ FC_UNDER_POWER = "FC-003"
 FC_OVER_POWER = "FC-004"
 FC_FAULT_UNSAVED = "FC-005"
 FC_RESTART_FAULT = "FC-006"
+FC_OFF_DRAW = "FC-007"  # Relay reports OFF but the load still draws power.
 FC_SENSOR_RETURNED = "FC-100"
 FC_HARD_CLEARED = "FC-101"
 FC_FAULT_PERSISTED = "FC-102"
@@ -3530,6 +3534,7 @@ WATTS_SECONDS = 5
 RELAY_SECONDS = 30
 WATTS_STALE = 15   # a reading older than this is reported as unknown
 SETTLE_SECONDS = 20  # spin-up grace before draw is judged
+OFF_SETTLE_SECONDS = 5  # allow the meter to settle after a reported stop
 
 
 
@@ -3705,6 +3710,15 @@ def _record_relay_observation(actual):
                 STATE["fault_unsaved"] = True
 
 
+def _invalidate_fault_stop():
+    with _fault_lock:
+        with _state_lock:
+            fault = STATE["fault"]
+            if fault and fault.get("stopped"):
+                fault.update(stopped=False)
+                STATE["fault_unsaved"] = True
+
+
 def _enforce_stop(plug, gen=None):
     """Keep a faulted fan off until the fault is acknowledged.
 
@@ -3745,13 +3759,27 @@ def _enforce_stop(plug, gen=None):
                 # _act_lock, so a clear cannot now complete between this
                 # check and the command below.
                 return False
+            off_draw_fault = STATE["fault"].get("code") == FC_OFF_DRAW
         try:
             actual = plug.state()
             _record_relay_observation(actual)
-            if actual is not False:
+            if actual is not False or off_draw_fault:
                 plug.set(False)
             _remember_relay(plug, False)
+            _record_relay_observation(False)
+            # A software OFF reply is not contact confirmation. Read AFTER
+            # the command, never trust cached pre-stop watts. Unknown draw
+            # cannot certify a stop when monitoring is enabled.
+            if CFG["plug"].get("watts_enabled"):
+                w = plug.power_w()
+                with _state_lock:
+                    STATE["watts"] = w
+                    _stamp_elapsed_locked("watts_at")
+                if w is None or not _finite(w) or w > CFG["plug"]["watts_off_max"]:
+                    _invalidate_fault_stop()
+                    return False
         except PlugError:
+            _invalidate_fault_stop()
             return False            # unconfirmed: retried next cycle
         with _state_lock:
             STATE["fan"] = False
@@ -3767,6 +3795,69 @@ def _enforce_stop(plug, gen=None):
         _log("%sFan off \u2014 stop confirmed"
              % ("%s " % code if code else ""))
     return True
+
+def _off_draw_check(plug, gen=None):
+    """Latch sustained fresh draw despite a confirmed software OFF state."""
+    global _off_draw_since
+    with _act_lock:
+        if _stale_client(gen):
+            return False
+        pg = CFG["plug"]
+        with _state_lock:
+            fault, fan, w = STATE["fault"], STATE["fan"], STATE["watts"]
+            age = _elapsed_age_locked("watts_at")
+            switch_age = _elapsed_age_locked("changed_at", startup=True)
+        if (fault or not pg.get("watts_enabled") or CFG["control"]["mode"] == "on"
+                or fan is not False or switch_age < OFF_SETTLE_SECONDS
+                or age is None or age > WATTS_STALE or w is None
+                or not _finite(w) or w <= pg["watts_off_max"]):
+            _off_draw_since = None
+            return False
+        mono = time.monotonic()
+        if _off_draw_since is None:
+            _off_draw_since = mono
+            return False
+        elapsed = mono - _off_draw_since
+        if elapsed < pg["watts_fault_seconds"]:
+            return False
+        # A cached OFF must not fault a legitimate external ON transition.
+        actual = _fan_status(plug) if plug is not None else None
+        if actual is not False:
+            if actual is True:
+                with _state_lock:
+                    message = _adopt_relay_locked(True, time.time())
+            else:
+                message = None
+            _off_draw_since = None
+            if message:
+                _log(message)
+            return False
+        now = time.time()
+        msg = "%s OFF but drawing %g W for %ds" % (FC_OFF_DRAW, w, int(elapsed))
+        f = dict(at=now, msg=msg, stopped=False, code=FC_OFF_DRAW,
+                 attempted_at=now, delivered_at=None)
+        prev = _store_fault(f)
+        _off_draw_since = None
+    _log(msg)
+    try:
+        confirmed = bool(_enforce_stop(plug, gen))
+    except Exception:
+        confirmed = False
+    if prev is None:
+        _notify("%s OFF but still drawing power" % FC_OFF_DRAW,
+                _alert_body(FC_OFF_DRAW, "Relay OFF - Power Still Flowing", now,
+                    "The plug reports OFF but sustained load draw exceeds the OFF limit. "
+                    "Possible stuck/welded contacts or incorrect metering. Software cannot "
+                    "disconnect welded contacts; arrange safe independent isolation and inspection.",
+                    [("Actual reading", "%g W" % w),
+                     ("OFF limit", "%g W" % pg["watts_off_max"]),
+                     ("Action taken", "OFF and low draw confirmed" if confirmed else
+                      "Power removal NOT confirmed; fault latched"),
+                     ("Controller mode", _mode_now())],
+                    ["Relay contacts welded or failed to release", "Metering/configuration fault"]),
+                on_complete=lambda ok: _mark_fault_delivered(now) if ok else None)
+    return True
+
 
 def _draw_check(plug, gen=None):
     """Fault the fan if it runs outside its expected draw for long enough.
@@ -3784,6 +3875,8 @@ def _draw_check(plug, gen=None):
     commanding the wrong plug is not the same as not faulting because of
     it.
     """
+    if _off_draw_check(plug, gen):
+        return
     global _oob_since, _oob_generation, _oob_monotonic, _draw_grace
     external_stop, external_msg = False, None
     with _act_lock:
@@ -4663,7 +4756,8 @@ def _notify_fault_cleared(had):
     raised = had.get("at") or time.time()
     titles = {FC_PLUG_COMMS: "Plug Communications Fault",
               FC_UNDER_POWER: "Hard Fault - Under Power",
-              FC_OVER_POWER: "Hard Fault - Over Power"}
+              FC_OVER_POWER: "Hard Fault - Over Power",
+              FC_OFF_DRAW: "Relay OFF - Power Still Flowing"}
     _notify("%s Fault cleared - fan available again" % FC_HARD_CLEARED,
             _alert_body(
                 FC_HARD_CLEARED, "Hard Fault Cleared", time.time(),
@@ -4687,7 +4781,7 @@ def api_fault_clear():
     on every few minutes forever, which is the thing the fault exists to
     stop.
     """
-    global _oob_since
+    global _oob_since, _off_draw_since
     err = _body_error(_json_body())
     if err:
         return err
@@ -4702,6 +4796,7 @@ def api_fault_clear():
                              "has been left in place. Check the disk and "
                              "try again."), 503
     _oob_since = None
+    _off_draw_since = None
     if had:
         code = had.get("code") or "a draw fault"
         _log("%s Fault cleared \u2014 %s" % (FC_HARD_CLEARED, code))
@@ -4983,13 +5078,14 @@ def _api_config_locked(act_locked=False):
         draw_changed = (cand["plug"] != CFG["plug"] or
                         (was == "on") !=
                         (cand["control"].get("mode") == "on"))
-        global _cfg_generation, _oob_generation, _oob_since
+        global _cfg_generation, _oob_generation, _oob_since, _off_draw_since
         old_generation = _cfg_generation
         for section in cand:
             CFG[section] = cand[section]
         _cfg_generation += 1
         if draw_changed:
             _oob_since = None
+            _off_draw_since = None
             _oob_generation = _cfg_generation
         elif _oob_generation == old_generation:
             # Still reject every stale client, but do not give an unhealthy
@@ -5142,6 +5238,7 @@ def _resume_payload():
     with _state_lock:
         return {
             "v": 1,
+            "off_draw_since": _off_draw_since,
             "plug_ports": _plug_port_handover(),
             "latch": dict(STATE["latch"]),
             "ran_with": dict(STATE["ran_with"]),
@@ -5173,7 +5270,7 @@ def _apply_resume():
     clean slate is the behaviour we had before this existed; not
     starting at all is worse.
     """
-    global _oob_since, _oob_generation, START_TIME, _oob_monotonic, _draw_grace
+    global _oob_since, _oob_generation, START_TIME, _oob_monotonic, _draw_grace, _off_draw_since
     raw = os.environ.pop(RESUME_ENV, None)
     if not raw:
         return False
@@ -5224,6 +5321,8 @@ def _apply_resume():
         lease = STATE["min_run_at"] is not None or STATE["changed_at"] is not None
     _oob_since = _n(d.get("oob_since"))
     mono = time.monotonic()
+    off_since = _n(d.get("off_draw_since"))
+    _off_draw_since = off_since if off_since is not None and 0 <= off_since <= mono else None
     def clock_pair(value):
         if not isinstance(value, (list, tuple)) or len(value) != 2:
             return None

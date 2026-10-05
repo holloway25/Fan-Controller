@@ -30,6 +30,7 @@ EXPECTED = {
     "FC_OVER_POWER": "FC-004",
     "FC_FAULT_UNSAVED": "FC-005",
     "FC_RESTART_FAULT": "FC-006",
+    "FC_OFF_DRAW": "FC-007",
     "FC_SENSOR_RETURNED": "FC-100",
     "FC_EXTERNAL_CHANGE": "FC-300",
     "FC_COLD_START": "FC-301",
@@ -59,7 +60,7 @@ def test_alarms_are_0xx_and_all_clears_are_1xx():
     """A mail rule splits on the series, not on the wording."""
     C = harness.load()
     alarms = ["FC_SENSOR_COMMS", "FC_PLUG_COMMS", "FC_UNDER_POWER",
-              "FC_OVER_POWER", "FC_FAULT_UNSAVED", "FC_RESTART_FAULT"]
+              "FC_OVER_POWER", "FC_FAULT_UNSAVED", "FC_RESTART_FAULT", "FC_OFF_DRAW"]
     for name in alarms:
         n = int(getattr(C, name).split("-")[1])
         assert n < 100, "%s is not in the alarm series" % name
@@ -497,14 +498,16 @@ def test_a_confirmed_stop_still_says_so():
     C = harness.load()
     sent = E.wire(C)
     class Obedient(object):
+        on = True
         def state(self):
-            return True
+            return self.on
 
         def set(self, on):
+            self.on = on
             return None
 
         def power_w(self):
-            return 8.2
+            return 8.2 if self.on else 0
 
     _fault_with(C, Obedient())
     subject, body = sent[0]

@@ -429,6 +429,8 @@ def test_running_or_unreachable_relay_still_latches_real_draw_fault():
                 return True
             def set(self,on):
                 self.commands.append(on)
+            def power_w(self):
+                return 0
         plug = Plug()
         C._draw_check(plug,C._cfg_generation)
         assert C.STATE['fault']['code'] == C.FC_UNDER_POWER

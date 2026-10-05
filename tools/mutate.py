@@ -64,6 +64,17 @@ MODULE_TIMEOUT_SECONDS = 120
 # by hand for the right FAILURE, not merely a failure: a mutation
 # caught by an unrelated crash is not evidence.
 MUTATIONS = [
+    ("off-draw-check-skipped", "controller.py",
+     '    if _off_draw_check(plug, gen):', '    if False:',
+     "test_off_draw.py", "test_off_draw_latches_and_never_confirms_welded_stop"),
+    ("off-stop-trusts-reply-despite-power", "controller.py",
+     '                if w is None or not _finite(w) or w > CFG["plug"]["watts_off_max"]:',
+     '                if False:', "test_off_draw.py",
+     "test_fault_stop_requires_fresh_low_draw_and_invalidates_old_confirmation"),
+    ("off-timer-not-restored", "controller.py",
+     '    _off_draw_since = off_since if off_since is not None and 0 <= off_since <= mono else None',
+     '    _off_draw_since = None', "test_off_draw.py",
+     "test_unrelated_saves_and_fresh_restart_keep_off_timer"),
     ("initial-spinup-grace-follows-wall-clock", "controller.py",
      '                remaining = SETTLE_SECONDS - age',
      '                remaining = SETTLE_SECONDS - (now - since)',

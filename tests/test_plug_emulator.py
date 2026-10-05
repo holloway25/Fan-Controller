@@ -189,4 +189,4 @@ def test_emulated_meter_and_controls_report_integer_watts():
 
 
 if __name__ == "__main__":
-    harness.run(dict(globals()))
+    sys.exit(harness.run(dict(globals())))

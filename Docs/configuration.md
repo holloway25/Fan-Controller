@@ -74,6 +74,7 @@ verification only when the configured hostname matches the certificate.
 | `watts_min` | 15.0 | 1–5000 | Minimum healthy running draw |
 | `watts_max` | 25.0 | 1–5000 | Maximum healthy running draw |
 | `watts_fault_seconds` | 60 | 5–3600 | Continuous out-of-band time before fault |
+| `watts_off_max` | 1 | 0–5000 W | Maximum permitted draw while relay reports OFF |
 
 `watts_min` must be below `watts_max`. Measure the actual fan at its intended
 speeds rather than copying its nameplate rating.
@@ -82,6 +83,22 @@ Power monitoring is off by default. The dashboard still shows power and its
 relationship to the configured band. When monitoring is enabled, a missing,
 stale, low or high reading starts the fault timer while the relay is on. A
 healthy reading resets the timer.
+When the relay reports OFF, fresh readings above `watts_off_max` must persist
+for `watts_fault_seconds`, after a five-second stop-settling allowance, to raise
+FC-007. The current OFF state is checked again before faulting. Standby draw
+at or below the limit is allowed; missing/stale readings cannot establish an
+OFF-draw fault. Force on overrides this protection too. Unrelated settings
+saves and preserving restarts retain the elapsed fault timer.
+
+With monitoring enabled, a fault stop needs an OFF reply and a fresh meter
+reading at or below the OFF limit. Continued or unknown draw leaves the stop
+unconfirmed and retried; a previously confirmed stop is invalidated if draw
+returns. This checks reported power, not mechanical contact position.
+For meaningful physical detection, verify the plug meters power while OFF:
+Tasmota's [SetOption21](https://tasmota.github.io/docs/Commands/) controls this
+and is disabled by default. The controller does not change plug firmware or
+options. A welded relay cannot be isolated by repeatedly commanding that same
+relay; the alert requires independent safe isolation and inspection.
 Non-finite plug values such as NaN or infinity are treated as missing readings,
 not stored as wattage or exposed as invalid JSON to the dashboard.
 
@@ -127,6 +144,7 @@ alerts.
 | `FC-004` | Draw fault raised above the configured band |
 | `FC-005` | A fault could not be saved |
 | `FC-006` | A saved fault remained after restart |
+| `FC-007` | Relay reports OFF but sustained power draw exceeds the OFF limit |
 | `FC-100` | Readings returned after a delivered stale-reading alert |
 | `FC-101` | A draw fault was acknowledged |
 | `FC-102` | A previously unsaved fault was successfully persisted |
