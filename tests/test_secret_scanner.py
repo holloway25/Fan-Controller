@@ -58,6 +58,9 @@ def _f(template):
 # ------------------------------------------------------- must be caught
 
 CAUGHT = [
+    _f('{"{k}": "ab\\"CdEf12345!"}'),
+    _f("'{k}': 'ab\\'CdEf12345!'"),
+    _f('{k} = "ab\\\\CdEf12345!"'),
     _f('{"{k}": "abcdef123456"}'),
     _f('"{a}": "another value with spaces"'),
     _f("'{t}': 'abcdef123456'"),

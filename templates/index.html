@@ -963,6 +963,8 @@ async function saveAll(msgEl){
   const sid=$("p_sensor").value;
   if(sensorSelectionTouched||sid||!(CFG&&CFG.protect.sensor_id))body.protect.sensor_id=sid;
   const j=await post("/api/config",body);
+  if(CFG&&Object.prototype.hasOwnProperty.call(body.protect,"sensor_id"))
+    CFG.protect.sensor_id=body.protect.sensor_id;
   touched=false;
   // A cleared secret is reported so the change is never silent.
   say(msgEl, j.notice || "Saved.", j.notice ? "err" : "ok");

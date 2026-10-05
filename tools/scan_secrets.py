@@ -47,7 +47,7 @@ KEY = r"(?:password|passwd|pwd|api[_-]?key|apikey|token|secret)"
 # dashboard was reported.
 ASSIGN = re.compile(
     r"(?:\"%s\"|'%s'|%s)\s*(?<![=!<>])([:=])(?![=])\s*"
-    r"(?:\"([^\"]*)\"|'([^']*)'|([^\s,;}\)]+))" % (KEY, KEY, KEY),
+    r"(?:\"((?:\\.|[^\"\\])*)\"|'((?:\\.|[^'\\])*)'|([^\s,;}\)]+))" % (KEY, KEY, KEY),
     re.IGNORECASE)
 
 # Interpolation or templating INSIDE a quoted value: "${VAULT_PW}" is a

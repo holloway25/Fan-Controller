@@ -84,6 +84,23 @@ def setup(C, mode="on", fan=False, fault=False):
 
 # --------------------------------------------------------------- _force_on
 
+def test_force_on_failed_reassert_keeps_confirmed_off_in_api():
+    C = harness.load()
+    setup(C, fan=True)
+    C.CFG['ui']['password_hash'] = ''
+    try:
+        C._force_on(BrokenPlug(C, on=False))
+    except C.PlugError:
+        pass
+    else:
+        raise AssertionError('Expected failed ON command')
+    assert C.STATE['fan'] is False
+    assert C.app.test_client().get('/api/state').get_json()['fan'] is False
+    assert 'forced on' not in events(C)
+    plug = Plug(on=False)
+    C._force_on(plug)
+    assert C.STATE['fan'] is True and plug.calls == [True]
+
 def test_force_on_rechecks_the_mode_under_the_lock():
     """The caller checked the mode; that is not enough.
 

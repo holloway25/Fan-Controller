@@ -64,6 +64,14 @@ MODULE_TIMEOUT_SECONDS = 120
 # by hand for the right FAILURE, not merely a failure: a mutation
 # caught by an unrelated crash is not evidence.
 MUTATIONS = [
+    ("force-on-observed-off-not-adopted", "controller.py",
+     '            if actual is False:\n                STATE["fan"] = False',
+     '            if actual is False:\n                pass',
+     "test_actuation.py", "test_force_on_failed_reassert_keeps_confirmed_off_in_api"),
+    ("escaped-secret-value-truncated", "tools/scan_secrets.py",
+     'r"(?:\\\"((?:\\\\.|[^\\\"\\\\])*)\\\"',
+     'r"(?:\\\"([^\\\"]*)\\\"',
+     "test_secret_scanner.py", "test_everything_that_should_be_caught_is"),
     ("legacy-enable-type-unchecked", "controller.py",
      '        if not isinstance(ctl["enabled"], bool):',
      '        if False:', "test_config_boundaries.py",
@@ -425,8 +433,8 @@ MUTATIONS = [
     # Force on ends the physical run it interrupted. What follows is a
     # new run and is not driven by the rules at all.
     ("force-on-carries-the-interrupted-run", "controller.py",
-     '            if actual is False:\n                # The physical run ended',
-     '            if False:\n                # The physical run ended',
+     '            if actual is False:\n                STATE["fan"] = False\n                # The physical run ended',
+     '            if False:\n                STATE["fan"] = False\n                # The physical run ended',
      "test_actuation.py",
      "test_force_on_ends_the_run_it_interrupted"),
 

@@ -2326,6 +2326,7 @@ def _force_on(plug, gen=None, poll=False):
         with _state_lock:
             was_on = STATE["fan"] is True
             if actual is False:
+                STATE["fan"] = False
                 # The physical run ended, even though the fan is about
                 # to be forced back on. What follows is a NEW run and
                 # is not driven by the rules at all, so carrying the
