@@ -30,6 +30,7 @@ def with_server(check):
 def test_real_transport_switches_and_reads_adjustable_load():
     C = harness.load()
     def check(server):
+        server.state.update(dict(fan_profile=False))
         plug = C.Tasmota("127.0.0.1:%d" % server.server_port)
         assert plug.state() is False and plug.power_w() == 0
         assert plug.set(True) is True and plug.power_w() == 23
@@ -116,6 +117,58 @@ def test_delay_targets_only_selected_operations_and_browser_switches_are_protect
                 raise AssertionError("Cross-origin/DNS-rebinding request accepted")
         assert plug.state() is False
     with_server(check)
+
+
+def test_fan_profile_starts_runs_and_warms_without_restarting_on_repeated_commands():
+    C = harness.load()
+    def check(server):
+        now = [100.0]
+        server.state = E.PlugState(clock=lambda: now[0])
+        plug = C.Tasmota("127.0.0.1:%d" % server.server_port)
+        assert plug.power_w() == 0
+        assert plug.set(True) is True
+        assert plug.power_w() == 45 and server.state.snapshot()["phase"] == "startup"
+        now[0] += 3
+        assert plug.power_w() == 23 and server.state.snapshot()["phase"] == "running"
+        now[0] += 900
+        assert plug.set(True) is True  # Reasserting ON is not a new motor start.
+        server.state.update(dict(relay=True))  # Nor is saving the same relay state.
+        assert plug.power_w() == 22.5
+        now[0] += 900
+        assert plug.power_w() == 22 and server.state.snapshot()["phase"] == "warmed"
+        server.state.update(dict(on_watts=24))
+        assert server.state.snapshot()["run_seconds"] == 1803
+        server.state.update(dict(fan_profile=False))
+        assert plug.power_w() == 24
+        server.state.update(dict(fan_profile=True, startup_watts=55, startup_seconds=2,
+                                 warm_watts=21, warm_after_minutes=1))
+        assert plug.set(False) is False and plug.power_w() == 0
+        assert plug.set(True) is True and plug.power_w() == 55
+        now[0] += 2
+        assert plug.power_w() == 24
+        now[0] += 60
+        assert plug.power_w() == 21
+        server.state.update(dict(relay=False))
+        server.state.update(dict(relay=True))  # External relay start also gets the profile.
+        assert plug.power_w() == 55
+    with_server(check)
+
+
+def test_profile_settings_reject_invalid_patches_atomically():
+    state = E.PlugState()
+    before = state.snapshot()
+    for patch in (dict(relay=True, startup_seconds=61), dict(fan_profile=1),
+                  dict(warm_after_minutes=-1), dict(warm_watts=float("inf")),
+                  dict(startup_watts=10**400)):
+        try:
+            state.update(patch)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("Invalid profile accepted")
+        assert state.snapshot() == before
+    state.update(dict(relay=True, startup_seconds=0, warm_after_minutes=0))
+    assert state.snapshot()["current_watts"] == 22
 
 
 if __name__ == "__main__":

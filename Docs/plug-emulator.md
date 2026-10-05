@@ -17,7 +17,12 @@ settings separate. Remove a development plug-access interlock only after
 verifying the saved address targets the local emulator, never a real plug.
 The controller must run on the same machine as the emulator.
 
-The emulator starts OFF, reports 23 W when ON and 0 W when OFF. Settings are
+The emulator starts OFF and reports 0 W when OFF. Its default fan profile
+reports 45 W for the first three seconds after switching ON, then 23 W,
+gradually reducing to 22 W over 30 minutes. These are adjustable example
+values, not measurements of a particular fan. Disable the fan profile to
+use a fixed `on_watts` value for sustained low/high-draw fault tests.
+Settings are
 in-memory and reset whenever it restarts. Keep development in Manual with
 power monitoring off initially; change development settings deliberately when
 testing Auto, Force on or draw protection. No physical load is involved.
@@ -38,7 +43,12 @@ Alternatively, on the development machine:
 ./venv/bin/python tools/plug_emulator.py set --json '{"failure":"none","delay_seconds":0}'
 ```
 
-Settings: `relay` (Boolean), `on_watts` and `off_watts` (0–100000),
+For a sustained fault, use `{"fan_profile":false,"on_watts":100}` rather
+than changing normal running watts while the warm profile remains enabled.
+
+Settings: `relay` and `fan_profile` (Booleans), `on_watts`, `off_watts`,
+`startup_watts` and `warm_watts` (0–100000), `startup_seconds` (0–60),
+`warm_after_minutes` (0–1440, warming duration after startup),
 `delay_seconds` (0–20), `target` (`all`, `relay`, `power`, `switch`), and
 `failure` (`none`, `http_error`, `malformed`, `reject_switch`). The delay and
 failure apply only to the chosen operation. A rejected switch leaves the
@@ -46,6 +56,9 @@ relay unchanged. A delay beyond the controller's timeout simulates a slow
 HTTP reply, **not** a TCP connection timeout. Request counts contain no
 credentials. The control API accepts JSON and rejects cross-origin browser
 writes. Tasmota credential parameters are ignored and never logged.
+The control page's live status includes current watts, phase and run duration.
+Repeated ON commands or settings saves do not restart the motor profile;
+only an OFF-to-ON transition does. Timing uses an elapsed clock, not wall time.
 
 Run its isolated checks on development:
 

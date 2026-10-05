@@ -12,42 +12,74 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
 DEFAULTS = dict(relay=False, on_watts=23.0, off_watts=0.0,
+                fan_profile=True, startup_watts=45.0, startup_seconds=3.0,
+                warm_watts=22.0, warm_after_minutes=30.0,
                 failure="none", target="all", delay_seconds=0.0)
 PAGE = b'''<!doctype html><meta name="viewport" content="width=device-width">
 <title>Test plug</title><h1>Emulated plug (no hardware)</h1>
-<p>Settings reset to OFF and 23 W on emulator restart.</p>
+<p>Simulated fan: brief startup surge, normal running draw, then a gradual reduction as it warms. Settings reset on emulator restart.</p>
 <form id="form">
 <label>Relay <select id="relay"><option value="false">OFF</option><option value="true">ON</option></select></label><br>
-<label>ON watts <input id="on_watts" type="number" min="0" max="100000" step="any" value="23"></label><br>
+<label>Fan profile <select id="fan_profile"><option value="true">Enabled</option><option value="false">Disabled (fixed ON watts)</option></select></label><br>
+<label>Startup watts <input id="startup_watts" type="number" min="0" max="100000" step="any" value="45"></label><br>
+<label>Startup seconds <input id="startup_seconds" type="number" min="0" max="60" step="any" value="3"></label><br>
+<label>Running / fixed ON watts <input id="on_watts" type="number" min="0" max="100000" step="any" value="23"></label><br>
+<label>Warm running watts <input id="warm_watts" type="number" min="0" max="100000" step="any" value="22"></label><br>
+<label>Minutes to warm after startup <input id="warm_after_minutes" type="number" min="0" max="1440" step="any" value="30"></label><br>
 <label>OFF watts <input id="off_watts" type="number" min="0" max="100000" step="any" value="0"></label><br>
 <label>Failure <select id="failure"><option>none</option><option>http_error</option><option>malformed</option><option>reject_switch</option></select></label><br>
 <label>Target <select id="target"><option>all</option><option>relay</option><option>power</option><option>switch</option></select></label><br>
 <label>Reply delay, seconds <input id="delay_seconds" type="number" min="0" max="20" step="any" value="0"></label><br>
 <button>Apply</button></form><pre id="status"></pre>
 <script>
-const ids=['relay','on_watts','off_watts','failure','target','delay_seconds'];
+const ids=['relay','fan_profile','startup_watts','startup_seconds','on_watts','warm_watts','warm_after_minutes','off_watts','failure','target','delay_seconds'];
 async function load(){const r=await fetch('/api/emulator');if(!r.ok)throw Error('Read failed');const s=await r.json();for(const id of ids)document.getElementById(id).value=String(s[id]);document.getElementById('status').textContent=JSON.stringify(s,null,2);}
-document.getElementById('form').onsubmit=async e=>{e.preventDefault();try{const b={};for(const id of ids){let v=document.getElementById(id).value;b[id]=id==='relay'?v==='true':['on_watts','off_watts','delay_seconds'].includes(id)?Number(v):v;}const r=await fetch('/api/emulator',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});if(!r.ok)throw Error('Settings rejected');await load();}catch(err){document.getElementById('status').textContent=err.message;}};
+document.getElementById('form').onsubmit=async e=>{e.preventDefault();try{const b={};for(const id of ids){let v=document.getElementById(id).value;b[id]=['relay','fan_profile'].includes(id)?v==='true':['failure','target'].includes(id)?v:Number(v);}const r=await fetch('/api/emulator',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});if(!r.ok)throw Error('Settings rejected');await load();}catch(err){document.getElementById('status').textContent=err.message;}};
 load().catch(e=>document.getElementById('status').textContent=e.message);
+setInterval(async()=>{try{const r=await fetch('/api/emulator');if(!r.ok)throw Error('Read failed');document.getElementById('status').textContent=JSON.stringify(await r.json(),null,2);}catch(e){document.getElementById('status').textContent=e.message;}},2000);
 </script>'''
 
 
 class PlugState:
-    def __init__(self):
+    def __init__(self, clock=None):
         self.lock = threading.Lock()
         self.values = dict(DEFAULTS)
         self.counts = dict(relay=0, power=0, switch=0)
+        self.clock = clock or time.monotonic
+        self.started_at = None
+
+    def _set_relay_locked(self, on):
+        if on != self.values["relay"]:
+            self.started_at = self.clock() if on else None
+            self.values["relay"] = on
+
+    def _load_locked(self):
+        values = self.values
+        if not values["relay"]:
+            return values["off_watts"], "off", 0.0
+        elapsed = max(0.0, self.clock() - self.started_at)
+        if not values["fan_profile"]:
+            return values["on_watts"], "fixed", elapsed
+        if elapsed < values["startup_seconds"]:
+            return values["startup_watts"], "startup", elapsed
+        running = elapsed - values["startup_seconds"]
+        duration = values["warm_after_minutes"] * 60
+        fraction = min(1.0, running / duration) if duration else 1.0
+        watts = values["on_watts"] + fraction * (values["warm_watts"] - values["on_watts"])
+        return round(watts, 2), "warmed" if fraction == 1 else "running", elapsed
 
     def snapshot(self):
         with self.lock:
-            return dict(self.values, requests=dict(self.counts))
+            watts, phase, elapsed = self._load_locked()
+            return dict(self.values, requests=dict(self.counts), current_watts=watts,
+                        phase=phase, run_seconds=round(elapsed, 2))
 
     def update(self, body):
         if not isinstance(body, dict) or set(body) - set(DEFAULTS):
             raise ValueError("Unknown setting or non-object body")
         # Validate the whole patch before mutating any setting.
         for key, value in body.items():
-            if key == "relay":
+            if key in ("relay", "fan_profile"):
                 valid = type(value) is bool
             elif key == "failure":
                 valid = value in ("none", "http_error", "malformed", "reject_switch")
@@ -56,13 +88,16 @@ class PlugState:
             else:
                 try:
                     valid = (type(value) in (int, float) and math.isfinite(value)
-                             and 0 <= value <= (20 if key == "delay_seconds" else 100000))
+                             and 0 <= value <= {"delay_seconds":20, "startup_seconds":60,
+                                                 "warm_after_minutes":1440}.get(key, 100000))
                 except OverflowError:
                     valid = False
             if not valid:
                 raise ValueError("Invalid " + key)
         with self.lock:
-            self.values.update(body)
+            if "relay" in body:
+                self._set_relay_locked(body["relay"])
+            self.values.update({key:value for key,value in body.items() if key != "relay"})
 
 
 class EmulatorServer(ThreadingHTTPServer):
@@ -148,9 +183,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(200, b"not JSON")
         with state.lock:
             if operation == "switch" and not (selected and settings["failure"] == "reject_switch"):
-                state.values["relay"] = command == "POWER ON"
+                state._set_relay_locked(command == "POWER ON")
             relay = state.values["relay"]
-            watts = state.values["on_watts" if relay else "off_watts"]
+            watts, _, _ = state._load_locked()
         if operation == "power":
             return self.reply(200, {"StatusSNS": {"ENERGY": {"Power": watts}}})
         return self.reply(200, {"POWER": "ON" if relay else "OFF"})
