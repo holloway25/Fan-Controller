@@ -393,6 +393,7 @@ _PROC_START = time.time()
 # survives a JSON round trip through the browser and back as a query
 # parameter without float formatting getting a vote.
 PROC_GENERATION = "%.6f" % _PROC_START
+_PROC_MONO = time.monotonic()
 RESTART_POLL_SECONDS = 2
 
 
@@ -3844,7 +3845,9 @@ def _draw_check(plug, gen=None):
             since = changed if changed is not None else START_TIME
             mono = time.monotonic()
             if _draw_grace is None or _draw_grace[0] != since:
-                remaining = min(SETTLE_SECONDS, SETTLE_SECONDS - (now - since))
+                with _state_lock:
+                    age = _elapsed_age_locked("changed_at", startup=True)
+                remaining = SETTLE_SECONDS - age
                 _draw_grace = (since, mono + remaining)
             if fan is not True or mono <= _draw_grace[1]:
                 _oob_since = None
@@ -4048,7 +4051,7 @@ def watts_loop():
         if PLUG_ACCESS_DISABLED:
             # Keep the service heartbeat, not fictional meter/relay readings.
             with _state_lock:
-                STATE["draw_loop_at"] = time.time()
+                _stamp_elapsed_locked("draw_loop_at")
                 STATE["draw_loop_error"] = None
             time.sleep(WATTS_SECONDS)
             continue
@@ -4116,7 +4119,7 @@ def watts_loop():
         except Exception as e:
             issue = issue or "draw check: %s" % _plug_issue(e)
         with _state_lock:
-            STATE["draw_loop_at"] = time.time()
+            _stamp_elapsed_locked("draw_loop_at")
             STATE["draw_loop_error"] = issue
         if issue != last_issue:
             if issue:
@@ -4154,7 +4157,7 @@ def _wait_for_dns(timeout=30, interval=3):
     Bounded, not infinite: a genuinely wrong hostname must still reach the
     normal error path so the UI can report it. True if it resolved.
     """
-    deadline = time.time() + timeout
+    deadline = time.monotonic() + timeout
     waited = False
     while True:
         host = (CFG.get("protect") or {}).get("host")
@@ -4174,7 +4177,7 @@ def _wait_for_dns(timeout=30, interval=3):
             return True
         except socket.gaierror:
             pass
-        if time.time() >= deadline:
+        if time.monotonic() >= deadline:
             _log("%s Could not resolve %s after %ds, starting anyway"
                  % (FC_STARTUP, host, timeout))
             return False
@@ -4617,6 +4620,9 @@ def api_state():
                            if k not in ("history", "daily")})
         watt_age = _elapsed_age_locked("watts_at")
         s["sensor_age"] = _elapsed_age_locked("reading_at")
+        draw_age = _elapsed_age_locked("draw_loop_at")
+        s["draw_loop_age"] = draw_age if draw_age is not None else max(0,time.monotonic()-_PROC_MONO)
+        s["switch_age"] = _elapsed_age_locked("changed_at")
         lease_key = "min_run_at" if STATE["min_run_at"] is not None else "changed_at"
         age = _elapsed_age_locked(lease_key)
         s["min_run_remaining"] = max(0, CFG["control"]["min_run_minutes"]*60-age) if age is not None else 0

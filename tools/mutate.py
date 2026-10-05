@@ -64,6 +64,22 @@ MODULE_TIMEOUT_SECONDS = 120
 # by hand for the right FAILURE, not merely a failure: a mutation
 # caught by an unrelated crash is not evidence.
 MUTATIONS = [
+    ("initial-spinup-grace-follows-wall-clock", "controller.py",
+     '                remaining = SETTLE_SECONDS - age',
+     '                remaining = SETTLE_SECONDS - (now - since)',
+     "test_clock_rollback.py", "test_forward_step_before_first_draw_check_preserves_full_grace"),
+    ("dns-deadline-follows-wall-clock", "controller.py",
+     '    deadline = time.monotonic() + timeout',
+     '    deadline = time.time() + timeout',
+     "test_clock_rollback.py", "test_dns_startup_wait_is_bounded_after_clock_rollback"),
+    ("dns-comparison-follows-wall-clock", "controller.py",
+     '        if time.monotonic() >= deadline:',
+     '        if time.time() >= deadline:',
+     "test_clock_rollback.py", "test_dns_startup_wait_is_bounded_after_clock_rollback"),
+    ("restart-elapsed-clocks-not-restored", "controller.py",
+     '                _elapsed_clocks[key] = pair',
+     '                pass', "test_clock_rollback.py",
+     "test_failsafe_and_lease_use_elapsed_time_across_clock_steps"),
     ("force-auto-discards-physical-grace", "controller.py",
      '                expired = time.time() - CFG["control"]["min_run_minutes"]*60 - 1',
      '                STATE["changed_at"] = None\n                expired = time.time() - CFG["control"]["min_run_minutes"]*60 - 1',

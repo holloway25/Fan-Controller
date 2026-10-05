@@ -115,7 +115,10 @@ periods. The API's `process_started_at` is a separate, fresh process-generation
 marker used to verify replacement. Draw-fault elapsed time and the active
 draw spin-up grace use monotonic clocks, carried through requested restart;
 successful power/sensor acquisition ages, startup age and minimum-run leases
-also use monotonic clocks. Physical switching time is retained when leaving
+also use monotonic clocks. Initial spin-up grace is calculated from elapsed physical-start age,
+including before the first draw check. Startup DNS waiting uses a monotonic
+deadline; dashboard heartbeat and refresh indicators use elapsed API ages.
+Physical switching time is retained when leaving
 Force on; only its lease is cancelled. Restart triggers are compared with the
 file observed at startup, not with adjustable wall-clock timestamps;
 wall timestamps remain available for logs. A crash or systemd restart starts with clean

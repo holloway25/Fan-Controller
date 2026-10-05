@@ -98,6 +98,12 @@ preserves the stored value. Public error text is redacted before it reaches
 
 ## Events
 
+`/api/state` also reports elapsed seconds as `sensor_age`, `draw_loop_age`
+and `switch_age`, plus `min_run_remaining`. Use these for freshness and
+countdowns; wall timestamps are for display, not comparison with a client's
+clock. The refresh countdown is `poll_seconds - sensor_age`, reduced by
+elapsed local time since receiving the response.
+
 Each event in `/api/state` includes a server-selected `cls` value:
 
 | `cls` | Meaning |

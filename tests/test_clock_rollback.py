@@ -1,10 +1,21 @@
 """Clock corrections must not postpone protection or lose chart points."""
 import json
+import copy
 import os
 import sys
 from unittest.mock import patch
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import harness
+
+
+def fresh_resume(original, payload):
+    replacement = harness.load()
+    replacement.CFG = copy.deepcopy(original.CFG)
+    replacement._notify = lambda *a, **k: None
+    assert replacement._elapsed_clocks is not original._elapsed_clocks
+    with patch.dict(os.environ, {replacement.RESUME_ENV: json.dumps(payload)}):
+        assert replacement._apply_resume()
+    return replacement
 
 
 def test_failsafe_and_lease_use_elapsed_time_across_clock_steps():
@@ -35,8 +46,11 @@ def test_failsafe_and_lease_use_elapsed_time_across_clock_steps():
         mono[0] += 30
         assert C._failsafe_cap(100) == 30
         payload = C._resume_payload()
-        with patch.dict(os.environ,{C.RESUME_ENV:json.dumps(payload)}):
-            assert C._apply_resume()
+        C = fresh_resume(C, payload)
+        C._client_snapshot = lambda:(Sensor(),plug,C._cfg_generation)
+        assert C._failsafe_cap(100) == 30
+        assert C._elapsed_age_locked('reading_at') == 30
+        assert C._elapsed_age_locked('changed_at') == 35
         plug.on = False
         mono[0] += 30
         C._failsafe()
@@ -94,6 +108,7 @@ def test_meter_failures_after_rollback_expire_last_successful_acquisition():
         except StopIteration: pass
         assert C.STATE['fault'] and p.commands == [False]
         assert C.app.test_client().get('/api/state').get_json()['watts'] is None
+        assert C.app.test_client().get('/api/state').get_json()['draw_loop_age'] == 5
 
 
 def test_never_read_startup_age_survives_rollback_and_restart():
@@ -112,8 +127,8 @@ def test_never_read_startup_age_survives_rollback_and_restart():
     with patch.object(C.time,'time',lambda:wall[0]), patch.object(C.time,'monotonic',lambda:mono[0]):
         wall[0] -= 600; mono[0] += 30
         payload = C._resume_payload()
-        with patch.dict(os.environ,{C.RESUME_ENV:json.dumps(payload)}):
-            assert C._apply_resume()
+        C = fresh_resume(C, payload)
+        C._client_snapshot = lambda:(None,p,C._cfg_generation)
         assert C._failsafe_cap(100) == 30
         mono[0] += 30
         C._failsafe()
@@ -176,9 +191,8 @@ def test_draw_fault_uses_elapsed_time_through_rollback_and_restart():
             mono[0] += 30
             if restart:
                 payload = C._resume_payload()
-                C._oob_since = C._oob_monotonic = C._draw_grace = None
-                with patch.dict(os.environ, {C.RESUME_ENV: json.dumps(payload)}):
-                    assert C._apply_resume()
+                C = fresh_resume(C, payload)
+                C.STATE.update(fan=True, watts=100)
             C.STATE['watts_at'] = wall[0]
             C._draw_check(plug)
             assert C.STATE['fault'] is None
@@ -189,6 +203,51 @@ def test_draw_fault_uses_elapsed_time_through_rollback_and_restart():
             assert C.STATE['fault'] and plug.commands == [False]
             assert 'for 60s' in C.STATE['fault']['msg']
             assert C.STATE['fault']['at'] == wall[0]
+
+
+def test_forward_step_before_first_draw_check_preserves_full_grace():
+    C = harness.load()
+    wall, mono = [10000.0], [1000.0]
+    C.CFG['control']['mode'] = 'on'
+    C.CFG['plug'].update(watts_enabled=True,watts_min=10,watts_max=25,watts_fault_seconds=5)
+    C._notify = lambda *a, **k: None
+    class Plug:
+        on = False
+        commands = []
+        def state(self): return self.on
+        def set(self,on): self.on = on; self.commands.append(on)
+    p = Plug()
+    with patch.object(C.time,'time',lambda:wall[0]), patch.object(C.time,'monotonic',lambda:mono[0]):
+        C._force_on(p)
+        C.CFG['control']['mode'] = 'auto'
+        wall[0] += 600
+        for elapsed in (5,10,19,20):
+            mono[0] = 1000+elapsed
+            C.STATE['watts'] = 0
+            C._stamp_elapsed_locked('watts_at')
+            C._draw_check(p)
+            assert C.STATE['fault'] is None and p.commands == [True]
+        for elapsed in (21,26):
+            mono[0] = 1000+elapsed
+            C._stamp_elapsed_locked('watts_at')
+            C._draw_check(p)
+        assert C.STATE['fault'] and p.commands == [True,False]
+
+
+def test_dns_startup_wait_is_bounded_after_clock_rollback():
+    C = harness.load()
+    wall, mono = [10000.0], [1000.0]
+    C.CFG['protect']['host'] = 'console.invalid'
+    def unavailable(*a, **k): raise C.socket.gaierror('simulated unavailable DNS')
+    def wait(seconds):
+        wall[0] -= 600
+        mono[0] += seconds
+        assert mono[0] <= 1030, 'DNS wait exceeded 30 elapsed seconds'
+        return False
+    with patch.object(C.time,'time',lambda:wall[0]),patch.object(C.time,'monotonic',lambda:mono[0]), \
+         patch.object(C.socket,'getaddrinfo',unavailable),patch.object(C._wake,'wait',wait):
+        assert C._wait_for_dns(timeout=30,interval=3) is False
+        assert mono[0] == 1030
 
 
 def test_actual_poll_rollback_forces_full_sorted_history_reconciliation():

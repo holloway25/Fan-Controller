@@ -405,7 +405,9 @@ function paintHold(){
 function paintSub(){
   paintHold();
   if(!SUB.read){$("sub").textContent="Waiting for a reading";return}
-  const left=Math.ceil(SUB.read+SUB.poll-Date.now()/1000);
+  const left=SUB.remaining!=null
+    ?Math.ceil(SUB.remaining-(performance.now()-SUB.received)/1000)
+    :Math.ceil(SUB.read+SUB.poll-Date.now()/1000);
   // A read that is overdue must not show a negative or stuck countdown.
   let t=left>0?"Refresh in "+left+"s":"Refresh due";
   if(SUB.changed)t+=" \u00b7 last switched "+fmtAgo(SUB.changed);
@@ -639,7 +641,7 @@ function render(s){
   // Absent changed_at means the fan was already running at startup, so it
   // is certainly settled; requiring the timestamp meant a relay left on
   // through a restart could never be flagged.
-  const settled=!s.changed_at || (Date.now()/1000-s.changed_at)>20;
+  const settled=!s.changed_at || (s.switch_age??(Date.now()/1000-s.changed_at))>20;
   const dead=s.fan===true && settled && s.watts!=null && s.watts<NO_DRAW_W;
   // A fault outranks the normal labels either way: off because it was
   // stopped, or on because Force on is overriding it. Both are red.
@@ -658,7 +660,7 @@ function render(s){
   // acquisition failure or an old timestamp makes these values stale.
   const liveReading=!s.sensor_error&&Number.isFinite(s.reading_at)&&s.reading_at>0
     &&(s.sensor_age??(Date.now()/1000-s.reading_at))<=Math.max(30,2*(Number(c.poll_seconds)||30));
-  const drawLate=(Date.now()/1000-(s.draw_loop_at||s.process_started_at))>30;
+  const drawLate=(s.draw_loop_age??(Date.now()/1000-(s.draw_loop_at||s.process_started_at)))>30;
   $("dot").className="dot "+(s.error||s.draw_loop_error||drawLate
     ||(anyReading&&!liveReading)?"bad":(anyReading?"live":""));
   // Force on deliberately overrides fault-stop enforcement; do not promise
@@ -693,6 +695,8 @@ function render(s){
     &&s.cold_start_remaining>0;
   const leaseAt=s.min_run_at??s.changed_at;
   SUB={read:s.reading_at,poll:Number(c.poll_seconds)||30,
+       received:performance.now(),remaining:s.sensor_age!=null
+         ?(Number(c.poll_seconds)||30)-s.sensor_age:null,
        changed:s.changed_at, mins:(+c.min_run_minutes||0)+"m",
        cold, hold:cold?Date.now()/1000+s.cold_start_remaining:
          (idle&&mr>0&&leaseAt)?(s.min_run_remaining!=null
