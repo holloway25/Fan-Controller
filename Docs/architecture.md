@@ -115,7 +115,7 @@ periods. The API's `process_started_at` is a separate, fresh process-generation
 marker used to verify replacement. A crash or systemd restart starts with clean
 transient state and logs `FC-301 Started cold`; a saved fault and durable pending
 Manual stop are still loaded from disk. A fault-free Auto cold start may hold
-an already-ON relay for `cold_start_minutes` (default 10, 0 disables). Only the
+an already-ON relay for `cold_start_minutes` (default 15, 0 disables). Only the
 first confirmed observation qualifies; it does not turn an OFF relay ON. The
 hold uses a monotonic deadline and never delays fault-stop enforcement. Fresh
 trigger demand takes over with a new normal minimum-run lease. A preserving

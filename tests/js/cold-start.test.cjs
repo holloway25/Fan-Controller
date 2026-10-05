@@ -27,7 +27,7 @@ module.exports = {
   },
   async test_older_state_payload_shows_default_cold_start_duration() {
     const page = await H.open();
-    assert.strictEqual(page.document.getElementById('cold_start_minutes').value,'10');
+    assert.strictEqual(page.document.getElementById('cold_start_minutes').value,'15');
   },
   async test_cold_start_countdown_is_distinguished_from_normal_minimum_run() {
     const state = H.baseState({fan:true,cold_start_remaining:600});

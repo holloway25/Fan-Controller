@@ -18,6 +18,20 @@ class Plug:
         self.commands.append(on)
 
 
+def test_upgrade_default_is_fifteen_and_explicit_saved_duration_is_preserved():
+    C = harness.load()
+    with open(C.CFG_PATH) as stream:
+        config = json.load(stream)
+    config['control'].pop('cold_start_minutes',None)
+    with open(C.CFG_PATH,'w') as stream:
+        json.dump(config,stream)
+    assert C.load_cfg()['control']['cold_start_minutes'] == 15
+    config['control']['cold_start_minutes'] = 10
+    with open(C.CFG_PATH,'w') as stream:
+        json.dump(config,stream)
+    assert C.load_cfg()['control']['cold_start_minutes'] == 10
+
+
 @contextmanager
 def boot(minutes=10, mode='auto', fault=None, interlocked=False):
     C = harness.load(plug_access_disabled=interlocked)

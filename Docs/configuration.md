@@ -35,7 +35,7 @@ may be stored while disabled, but must be corrected before enabling.
 | `off_at` | 800 | 300–10000 | CO2 ppm that releases |
 | `poll_seconds` | 30 | 5–3600 | Sensor polling interval |
 | `min_run_minutes` | 5 | 0–240 | Minimum automatic run |
-| `cold_start_minutes` | 10 | 0–240 | Hold an already-ON relay after a fault-free Auto cold start; 0 disables |
+| `cold_start_minutes` | 15 | 0–240 | Hold an already-ON relay after a fault-free Auto cold start; 0 disables |
 | `co2_enabled` | true | Boolean | Enable CO2 trigger |
 | `temp_enabled` | false | Boolean | Enable temperature trigger |
 | `temp_on` | 26.0 | -20–60 | Temperature latch-on point |
@@ -169,7 +169,7 @@ start, a crash, or a loss of power. Those starts deliberately begin with no
 rule latch and no restored minimum-run lease. The compact entry is
 `FC-301 Started cold`. A saved fault is named separately and still blocks Auto.
 If the first confirmed relay observation is ON in fault-free Auto, the
-controller logs `FC-302 Latched on — Fan on (10 min)` (using the configured duration)
+controller logs `FC-302 Latched on — Fan on (15 min)` (using the configured duration)
 and holds it for `cold_start_minutes`. OFF or unknown is not assumed ON.
 After the hold, fresh readings decide normally; missing enabled measurements
 do not prove demand has cleared. Fresh trigger demand takes over with the

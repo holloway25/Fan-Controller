@@ -49,7 +49,7 @@ DEFAULTS = {
               "recipients": ""},
     "control": {"mode": "auto", "on_at": 1000, "off_at": 800,
                 "poll_seconds": 30, "min_run_minutes": 5,
-                "cold_start_minutes": 10,
+                "cold_start_minutes": 15,
                 # Must stay True: load_cfg fills missing keys from
                 # here, so this is what a config.json written before
                 # the flag existed picks up. False would stop every

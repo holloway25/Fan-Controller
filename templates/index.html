@@ -876,7 +876,7 @@ function render(s){
   CFG=s.config;
   ["on_at","off_at","min_run_minutes","cold_start_minutes","poll_seconds","temp_on","temp_off",
    "humidity_on","humidity_off","stale_minutes"]
-    .forEach(k=>$(k).value=k==="cold_start_minutes"?(c[k]??10):c[k]);
+    .forEach(k=>$(k).value=k==="cold_start_minutes"?(c[k]??15):c[k]);
   // Absent means enabled, matching the backend default, so a config
   // written before the flag existed does not show as switched off.
   $("co2_enabled").checked=c.co2_enabled!==false;
