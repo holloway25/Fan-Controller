@@ -1,5 +1,8 @@
 # Operations and upgrades
 
+For software-only development against a fake Tasmota plug, see the
+[development plug emulator](plug-emulator.md).
+
 ## Check the running service
 
 ### Temporary plug-request diagnostics
