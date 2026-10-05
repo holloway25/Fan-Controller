@@ -84,6 +84,32 @@ def setup(C, mode="on", fan=False, fault=False):
 
 # --------------------------------------------------------------- _force_on
 
+def test_failed_stops_keep_fresh_on_and_invalidate_stop_confirmation():
+    for manual in (True, False):
+        C = harness.load()
+        setup(C, mode='manual' if manual else 'auto', fan=False, fault=True)
+        C.CFG['ui']['password_hash'] = ''
+        C.STATE['fault']['stopped'] = True
+        C.STATE['manual_off_pending'] = True
+        plug = BrokenPlug(C, on=True)
+        if manual:
+            try:
+                C._manual_off(plug)
+            except C.PlugError:
+                pass
+            else:
+                raise AssertionError('Expected failed stop')
+            assert C.STATE['manual_off_pending']
+        else:
+            assert C._enforce_stop(plug) is False
+        assert C.STATE['fan'] is True and C.STATE['fault']['stopped'] is False
+        assert C.STATE['fault_unsaved']
+        assert C.app.test_client().get('/api/state').get_json()['fan'] is True
+        assert 'not currently confirmed' in C._fault_stop_status(
+            C.STATE['fault'], C.CFG['control']['mode'], True)[0]
+        assert C._retry_fault_persist()
+        assert C.load_fault()['stopped'] is False
+
 def test_force_on_failed_reassert_keeps_confirmed_off_in_api():
     C = harness.load()
     setup(C, fan=True)

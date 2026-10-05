@@ -10,9 +10,50 @@ import json
 import os
 import sys
 import time
+import threading
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import harness
+
+
+def test_overlapping_flushes_cannot_overwrite_newer_daily_samples():
+    C = harness.load()
+    now = time.time()
+    C._daily_note(now, 1000, 20, 40)
+    entered, release, second_started = threading.Event(), threading.Event(), threading.Event()
+    real = C.write_json_durable
+    calls, results = [], []
+    def delayed(path, data):
+        calls.append(data[0]['n'])
+        if data[0]['n'] == 1:
+            entered.set()
+            assert release.wait(5)
+        return real(path, data)
+    C.write_json_durable = delayed
+    first = threading.Thread(target=lambda: results.append(C.save_daily(force=True)))
+    def flush_second():
+        second_started.set()
+        results.append(C.save_daily(force=True))
+    second = threading.Thread(target=flush_second)
+    first.start()
+    try:
+        assert entered.wait(5)
+        C._daily_note(now, 2000, 25, 50)
+        second.start()
+        assert second_started.wait(5)
+        # No second snapshot may reach disk while the first write is pending.
+        second.join(0.1)
+        assert calls == [1]
+    finally:
+        release.set()
+        first.join(5)
+        if second.ident is not None:
+            second.join(5)
+    assert not first.is_alive() and not second.is_alive()
+    assert results == [True, True] and calls == [1, 2]
+    rows = C.load_daily()
+    assert rows[0]['n'] == 2 and rows[0]['v']['hi'] == 2000
+    assert not C._daily_dirty
 
 
 def test_backward_date_updates_existing_row_and_survives_reload():

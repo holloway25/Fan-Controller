@@ -755,6 +755,7 @@ DAILY_PATH = os.path.join(DIR, "daily.json")
 # expensive way to buy the same answer.
 DAILY_KEEP_DAYS = 730
 _daily_lock = threading.Lock()
+_daily_write_lock = threading.Lock()
 _daily_dirty = False
 
 
@@ -883,6 +884,13 @@ def reset_daily():
 
 
 def save_daily(force=False, report_error=True):
+    # Serialize snapshot capture AND replacement, while allowing new samples
+    # to accumulate under the independent data lock during disk I/O.
+    with _daily_write_lock:
+        return _save_daily_locked(force, report_error)
+
+
+def _save_daily_locked(force=False, report_error=True):
     """Write only when something changed. Shares the history cadence.
 
     report_error IS FALSE FROM A SIGNAL HANDLER. _log takes
@@ -2265,7 +2273,9 @@ def _manual_off_locked(plug):
     if not pending:
         return
     try:
-        already_off = plug.state() is False
+        actual = plug.state()
+        _record_relay_observation(actual)
+        already_off = actual is False
     except PlugError:
         already_off = False          # unknown: switch anyway
     if not already_off:
@@ -2654,8 +2664,13 @@ def _failsafe():
         if time.time() - since < mins * 60:
             return
         already_on = False
+        actual = None
+        with _state_lock:
+            was_on = STATE["fan"] is True
         try:
-            already_on = h.state() is True
+            actual = h.state()
+            _record_relay_observation(actual)
+            already_on = actual is True
         except PlugError:
             pass                 # unreadable: assert ON anyway
         if not already_on:
@@ -2667,7 +2682,7 @@ def _failsafe():
         # check, which only runs when STATE says the fan is on, stayed
         # asleep over a running fan.
         with _state_lock:
-            if STATE["fan"] is not True:
+            if actual is False or not was_on:
                 STATE["fan"] = True
                 STATE["changed_at"] = time.time()
                 STATE["min_run_at"] = None
@@ -3632,6 +3647,23 @@ def _confirm_fault_stopped():
     return True
 
 
+def _record_relay_observation(actual):
+    """Keep confirmed observations even if the next command fails.
+
+    A newly observed ON invalidates an earlier fault-stop confirmation;
+    mark that revision for the existing durable fault retry path.
+    """
+    if actual is not True and actual is not False:
+        return
+    with _fault_lock:
+        with _state_lock:
+            STATE["fan"] = actual
+            fault = STATE["fault"]
+            if actual is True and fault and fault.get("stopped"):
+                fault["stopped"] = False
+                STATE["fault_unsaved"] = True
+
+
 def _enforce_stop(plug, gen=None):
     """Keep a faulted fan off until the fault is acknowledged.
 
@@ -3673,7 +3705,9 @@ def _enforce_stop(plug, gen=None):
                 # check and the command below.
                 return False
         try:
-            if plug.state() is not False:
+            actual = plug.state()
+            _record_relay_observation(actual)
+            if actual is not False:
                 plug.set(False)
             _remember_relay(plug, False)
         except PlugError:

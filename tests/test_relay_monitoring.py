@@ -33,6 +33,35 @@ def setup():
     return C
 
 
+def test_failsafe_restart_renews_physical_spin_up_grace():
+    C = setup()
+    clock = [1000.0]
+    real_time = C.time.time
+    C.time.time = lambda: clock[0]
+    C.CFG['control'].update(stale_minutes=1)
+    C.CFG['plug']['watts_fault_seconds'] = 5
+    C.STATE.update(fan=True, changed_at=1, reading_at=1)
+    plug = Plug(on=False, watts=100)
+    C._client_snapshot = lambda: (None, plug, C._cfg_generation)
+    try:
+        C._failsafe()
+        assert plug.commands == [True] and C.STATE['changed_at'] == 1000
+        for t in (1000, 1005, 1010, 1020):
+            clock[0] = t
+            C.STATE.update(watts=100, watts_at=t)
+            C._draw_check(plug)
+            assert C.STATE['fault'] is None
+        clock[0] = 1021
+        C.STATE.update(watts=100, watts_at=clock[0])
+        C._draw_check(plug)
+        clock[0] = 1026
+        C.STATE.update(watts=100, watts_at=clock[0])
+        C._draw_check(plug)
+        assert C.STATE['fault'] and plug.commands[-1] is False
+    finally:
+        C.time.time = real_time
+
+
 def test_running_fan_is_protected_during_disconnected_sensor_startup():
     C = setup()
     clock = [1000.0]

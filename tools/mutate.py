@@ -64,6 +64,22 @@ MODULE_TIMEOUT_SECONDS = 120
 # by hand for the right FAILURE, not merely a failure: a mutation
 # caught by an unrelated crash is not evidence.
 MUTATIONS = [
+    ("failsafe-confirmed-restart-keeps-old-grace", "controller.py",
+     '            if actual is False or not was_on:',
+     '            if not was_on:', "test_relay_monitoring.py",
+     "test_failsafe_restart_renews_physical_spin_up_grace"),
+    ("stop-fresh-relay-observation-discarded", "controller.py",
+     '            STATE["fan"] = actual\n            fault = STATE["fault"]',
+     '            pass\n            fault = STATE["fault"]', "test_actuation.py",
+     "test_failed_stops_keep_fresh_on_and_invalidate_stop_confirmation"),
+    ("stop-old-confirmation-retained", "controller.py",
+     '                fault["stopped"] = False',
+     '                fault["stopped"] = True', "test_actuation.py",
+     "test_failed_stops_keep_fresh_on_and_invalidate_stop_confirmation"),
+    ("daily-flush-writers-overlap", "controller.py",
+     '    with _daily_write_lock:\n        return _save_daily_locked(force, report_error)',
+     '    if True:\n        return _save_daily_locked(force, report_error)', "test_daily.py",
+     "test_overlapping_flushes_cannot_overwrite_newer_daily_samples"),
     ("force-on-observed-off-not-adopted", "controller.py",
      '            if actual is False:\n                STATE["fan"] = False',
      '            if actual is False:\n                pass',
