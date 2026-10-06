@@ -141,6 +141,12 @@ FC-009 means the initial Manual OFF command failed; its first retry waits
 with normal running watts. It does not assert welded contacts. The original
 Manual promise cannot make extra attempts after the fault budget is exhausted.
 
+If email was unavailable, the latest unsent OFF-fault notice retries about once
+a minute after email becomes ready. Look for FC-203 for delivery errors. These
+email retries do not command the relay or renew its six-attempt allowance.
+Newer stages supersede outdated unsent notices; acknowledgement cancels pending
+stage mail. SMTP acceptance is not proof the message reached an inbox.
+
 ## Dashboard problems
 
 ### Power monitoring loop warning

@@ -113,6 +113,15 @@ before commands; preserving restarts retain elapsed deadlines, while a cold
 start retains the count and conservatively waits 30 or 60 seconds before
 the next remaining attempt. A storage failure pauses commands until saved.
 Other draw faults retain their existing stop-enforcement behaviour.
+Failed OFF-retry warning, hard-fault and recovery emails remain pending and
+retry roughly every 60 seconds while email is configured and enabled. Only
+the latest stage is retained: a newer hard-fault or recovery notice supersedes
+an older undelivered warning. Accepted messages are not repeatedly sent.
+Pending/delivered stage bookkeeping is stored in `fault.json` and survives
+restart without renewing the hardware retry budget. Acknowledgement cancels
+pending stage mail. A recovery notice is not retried while a newer observation
+leaves the stop unconfirmed. Delivery is at-least-once: a crash or write failure
+after SMTP acceptance can cause a duplicate, not guaranteed inbox delivery.
 For meaningful physical detection, verify the plug meters power while OFF:
 Tasmota's [SetOption21](https://tasmota.github.io/docs/Commands/) controls this
 and is disabled by default. The controller does not change plug firmware or

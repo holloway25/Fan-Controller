@@ -452,7 +452,7 @@ def _valid_fault_record(value):
     if not isinstance(value, dict):
         return False
     if set(value) - {"at", "msg", "code", "stopped",
-                     "attempted_at", "delivered_at", "relay_retry"}:
+                     "attempted_at", "delivered_at", "relay_retry", "relay_notice"}:
         return False
     if not isinstance(value.get("msg"), str) or not value["msg"].strip():
         return False
@@ -483,6 +483,13 @@ def _valid_fault_record(value):
                 or (phase == "recovered" and n >= 0))):
             return False
         if phase in ("wait", "final", "exhausted") and value["code"] != "FC-008":
+            return False
+    if "relay_notice" in value:
+        notice = value["relay_notice"]
+        if (retry is None or not isinstance(notice, dict)
+                or set(notice) != {"stage", "delivered"}
+                or notice["stage"] not in ("warning", "hard", "exhausted", "recovered")
+                or type(notice["delivered"]) is not bool):
             return False
     return True
 
@@ -3871,14 +3878,72 @@ def _short_relay_activity(msg):
     return msg
 
 
+RELAY_NOTICE_RETRY_SECONDS = 60
+_relay_notice_inflight = set()
+_relay_notice_due = {}
+
+
 def _relay_retry_notice(f, stage):
-    """One notice per retry-stage transition, never a claim of welded contacts."""
+    """Record the latest stage durably; failed mail never consumes OFF retries."""
+    with _fault_lock:
+        with _state_lock:
+            current = copy.deepcopy(STATE["fault"])
+            if not current or current.get("at") != f["at"]:
+                return
+            current["relay_notice"] = {"stage": stage, "delivered": False}
+            STATE["fault"] = current
+            _relay_notice_due.clear()
+        _save_annotation(current)
+    _unsaved_edge()
+    code = FC_RELAY_RECOVERED if stage == "recovered" else f["code"]
+    _log("%s %s" % (code, _RELAY_ACTIVITY_MESSAGES[stage]))
+    _retry_relay_notice()
+
+
+def _relay_notice_completed(token, ok):
+    """Late callbacks cannot acknowledge a newer stage or another fault."""
+    with _fault_lock:
+        with _state_lock:
+            _relay_notice_inflight.discard(token)
+            f = copy.deepcopy(STATE["fault"])
+            notice = (f or {}).get("relay_notice")
+            if not notice or (f["at"], notice["stage"]) != token:
+                _relay_notice_due.pop(token, None)
+                return
+            if not ok:
+                _relay_notice_due[token] = time.monotonic() + RELAY_NOTICE_RETRY_SECONDS
+                return
+            notice["delivered"] = True
+            f["delivered_at"] = time.time()
+            STATE["fault"] = f
+            _relay_notice_due.pop(token, None)
+        _save_annotation(f)
+    _unsaved_edge()
+
+
+def _retry_relay_notice():
+    """Retry only current undelivered mail, outside all control locks."""
+    if not _email_ready():
+        return
+    with _fault_lock, _state_lock:
+        f = copy.deepcopy(STATE["fault"])
+        notice = (f or {}).get("relay_notice")
+        if not notice or notice["delivered"]:
+            return
+        stage = notice["stage"]
+        if stage == "recovered" and not f.get("stopped"):
+            return  # A subsequent ON/draw observation superseded the recovery.
+        token = (f["at"], stage)
+        if token in _relay_notice_inflight or time.monotonic() < _relay_notice_due.get(token, 0):
+            return
+        _relay_notice_inflight.add(token)
     code = FC_RELAY_RECOVERED if stage == "recovered" else f["code"]
     descriptions = {
-        "warning": "OFF retry started. Three attempts are allowed, 30 seconds apart.",
+        "warning": "OFF retry started. Three attempts are allowed, 30 seconds apart. "
+                   "The bounded schedule continues independently of email delivery.",
         "hard": "The first three OFF attempts did not confirm power removal. "
-                "A hard fault is latched. After 60 seconds, three final attempts "
-                "will be made, 30 seconds apart.",
+                "A hard fault is latched. The bounded schedule allows a 60-second "
+                "wait followed by three final attempts, 30 seconds apart; email retries do not restart it.",
         "exhausted": "All six OFF retries are exhausted. Automatic OFF retries have stopped.",
         "recovered": "The relay reports OFF and fresh measured draw is within the OFF limit. "
                      "Stop confirmed. The fault remains latched until acknowledged.",
@@ -3888,7 +3953,6 @@ def _relay_retry_notice(f, stage):
         text = "A Manual OFF command could not be confirmed. " + text
     title = "Stop confirmed" if stage == "recovered" else (
         "OFF retry warning" if stage == "warning" else "Unable to stop - hard fault")
-    _log("%s %s" % (code, _RELAY_ACTIVITY_MESSAGES[stage]))
     _notify("%s %s" % (code, title),
             _alert_body(code, title, time.time(), text + "\nAuto remains blocked. "
                 "Force on overrides the stop without clearing the fault. "
@@ -3899,7 +3963,7 @@ def _relay_retry_notice(f, stage):
                 [("OFF retries consumed", str(f["relay_retry"]["attempts"])),
                  ("Power removal", "Confirmed" if f.get("stopped") else "NOT confirmed"),
                  ("Controller mode", _mode_now())]),
-            on_complete=lambda ok: _mark_fault_delivered(f["at"]) if ok else None)
+            on_complete=lambda ok: _relay_notice_completed(token, ok))
 
 
 def _relay_release_step(plug, gen=None):
@@ -4433,6 +4497,10 @@ def watts_loop():
     last_issue = None
     relay_issue = None
     while True:
+        try:
+            _retry_relay_notice()
+        except Exception as e:
+            _log("%s OFF-fault notification retry failed: %s" % (FC_ALERT_FAILED, type(e).__name__))
         if PLUG_ACCESS_DISABLED:
             # Keep the service heartbeat, not fictional meter/relay readings.
             with _state_lock:

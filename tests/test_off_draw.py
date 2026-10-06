@@ -34,7 +34,12 @@ def setup(mode='auto'):
     C.STATE.update(fan=False, watts=23, watts_at=clock[0], changed_at=clock[0]-100,
                    fault=None, fault_unsaved=False)
     notices = []
-    C._notify = lambda *a, **kw: notices.append(a)
+    C.CFG['email'].update(enabled=True, host='relay.invalid', sender='fan@invalid', recipients='test@invalid')
+    def notify(*args, **kwargs):
+        notices.append(args)
+        if kwargs.get('on_complete'):
+            kwargs['on_complete'](True)
+    C._notify = notify
     return C, clock, notices, Plug(C)
 
 

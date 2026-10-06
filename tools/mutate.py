@@ -64,6 +64,23 @@ MODULE_TIMEOUT_SECONDS = 120
 # by hand for the right FAILURE, not merely a failure: a mutation
 # caught by an unrelated crash is not evidence.
 MUTATIONS = [
+    ("relay-mail-pending-stage-not-persisted", "controller.py",
+     '        _save_annotation(current)', '        pass',
+     "test_relay_notice_retry.py", "test_pending_notice_survives_cold_restart_without_replenishing_budget"),
+    ("relay-mail-loop-retry-skipped", "controller.py",
+     '            _retry_relay_notice()\n        except Exception as e:',
+     '            pass\n        except Exception as e:',
+     "test_relay_notice_retry.py", "test_real_meter_loop_retries_pending_mail_after_hardware_exhaustion"),
+    ("relay-mail-retry-delay-dropped", "controller.py",
+     'time.monotonic() < _relay_notice_due.get(token, 0)', 'False',
+     "test_relay_notice_retry.py", "test_failed_terminal_email_retries_once_after_delay_without_hardware"),
+    ("relay-mail-late-callback-accepted", "controller.py",
+     '            if not notice or (f["at"], notice["stage"]) != token:',
+     '            if not notice:',
+     "test_relay_notice_retry.py", "test_inflight_and_old_callbacks_cannot_deliver_a_newer_stage_or_episode"),
+    ("relay-mail-delivery-not-recorded", "controller.py",
+     '            notice["delivered"] = True', '            notice["delivered"] = False',
+     "test_relay_notice_retry.py", "test_failed_terminal_email_retries_once_after_delay_without_hardware"),
     ("stale-stop-confirmation-accepted", "controller.py",
      '            if (\n                    not cur or cur.get("at") != expected_at',
      '            if False and (\n                    not cur or cur.get("at") != expected_at',
