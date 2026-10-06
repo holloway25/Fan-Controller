@@ -30,16 +30,24 @@ module.exports = {
     assert.strictEqual(page.document.getElementById('cold_start_minutes').value,'15');
   },
   async test_cold_start_countdown_is_distinguished_from_normal_minimum_run() {
+    const now = H.now();
     const state = H.baseState({fan:true,cold_start_remaining:600});
-    const page = await H.open({state});
+    const page = await H.open({state,beforeParse(w) {
+      w.Date.now = () => now * 1000;
+    }});
     assert(page.document.getElementById('minrun').textContent.startsWith('Cold start 10m'));
     state.cold_start_remaining = 0;
     await H.poll(page.window);
     assert(page.document.getElementById('minrun').textContent.startsWith('Min run'));
   },
   async test_minimum_run_countdown_uses_demand_lease_not_physical_switch_time() {
-    const state = H.baseState({fan:true,changed_at:H.now()-3600,min_run_at:H.now()-60});
-    const page = await H.open({state});
+    const now = H.now();
+    const state = H.baseState({fan:true,reading_at:now,changed_at:now-3600,min_run_at:now-60});
+    // Both clocks share this fixed instant: render speed must not subtract
+    // a second from the exact nine-minute lease this test is checking.
+    const page = await H.open({state,beforeParse(w) {
+      w.Date.now = () => now * 1000;
+    }});
     const pill = page.document.getElementById('minrun');
     assert(pill.classList.contains('on'),'renewed lease not shown');
     assert(pill.textContent.startsWith('Min run 9m'),'countdown used physical switch time');
