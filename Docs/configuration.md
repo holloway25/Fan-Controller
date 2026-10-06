@@ -118,7 +118,10 @@ retry roughly every 60 seconds while email is configured and enabled. Only
 the latest stage is retained: a newer hard-fault or recovery notice supersedes
 an older undelivered warning. Accepted messages are not repeatedly sent.
 Pending/delivered stage bookkeeping is stored in `fault.json` and survives
-restart without renewing the hardware retry budget. Acknowledgement cancels
+restart without renewing the hardware retry budget. Phase changes and their
+pending notice are saved together. Failed delivery-bookkeeping writes are
+retried separately from safety-state write failures, including at shutdown.
+Acknowledgement cancels
 pending stage mail. A recovery notice is not retried while a newer observation
 leaves the stop unconfirmed. Delivery is at-least-once: a crash or write failure
 after SMTP acceptance can cause a duplicate, not guaranteed inbox delivery.

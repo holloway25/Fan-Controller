@@ -468,7 +468,7 @@ def _valid_fault_record(value):
         if stamp is not None and not _valid_fault_timestamp(stamp):
             return False
     retry = value.get("relay_retry")
-    if retry is not None:
+    if "relay_retry" in value:
         if (value.get("code") not in ("FC-007", "FC-008", "FC-009")
                 or not isinstance(retry, dict)
                 or set(retry) != {"attempts", "phase"}
@@ -1038,7 +1038,11 @@ def _persist_fault_locked():
         # so a reference could be changed underneath the write.
         fault = copy.deepcopy(STATE["fault"])
         owed = STATE["fault_unsaved"]
-    if not owed or fault is None:
+    if not owed:
+        if fault and _fault_annotation_dirty == fault["at"]:
+            return _save_annotation(fault)
+        return False
+    if fault is None:
         return False
     try:
         save_fault(fault)
@@ -3264,28 +3268,53 @@ def _mark_fault_attempted(expected_at):
     return True
 
 
+_fault_annotation_dirty = None
+
+
 def _save_annotation(fault):
     """Persist a fault whose SAFETY content has not changed.
 
     CALLERS MUST HOLD _fault_lock. Only the alert bookkeeping -
-    attempted_at, delivered_at - differs from what is already on disk,
+    attempted_at, delivered_at, relay_notice delivery status - differs from disk,
     so a write failure here must NOT raise fault_unsaved: that flag
     means "this fault would be lost on restart", it produces an alarming
     alert of its own, and it blocks requested restarts. Losing a
-    timestamp costs at most one duplicate notice.
+    delivery annotation can cause a duplicate notice after restart. Failed
+    annotation writes are retried independently of the safety flag.
 
     A fault that was ALREADY unsaved stays unsaved: the previous value
     is restored rather than cleared, so this cannot mask a real problem.
     """
+    global _fault_annotation_dirty
     with _state_lock:
         was_unsaved = STATE["fault_unsaved"]
     try:
         save_fault(fault)
         with _state_lock:
             STATE["fault_unsaved"] = False
+        _fault_annotation_dirty = None
+        return True
     except OSError:
+        _fault_annotation_dirty = fault["at"]
         with _state_lock:
             STATE["fault_unsaved"] = was_unsaved
+        return False
+
+
+def _retry_fault_annotation():
+    """Repair notification writes using the latest record, not a stale copy."""
+    global _fault_annotation_dirty
+    with _fault_lock:
+        with _state_lock:
+            current = copy.deepcopy(STATE["fault"])
+        if _fault_annotation_dirty is None:
+            return False
+        if not current or current["at"] != _fault_annotation_dirty:
+            _fault_annotation_dirty = None
+            return False
+        saved = _save_annotation(current)
+    _unsaved_edge()
+    return saved
 
 
 def _mark_fault_delivered(expected_at):
@@ -3828,7 +3857,15 @@ def _relay_retry_update(**changes):
             f = copy.deepcopy(STATE["fault"])
         if not f or f.get("code") not in _RELAY_FAULT_CODES:
             return None, False
+        previous_retry = f.get("relay_retry")
         f.update(changes)
+        retry = changes.get("relay_retry")
+        if retry and retry != previous_retry:
+            stage = ({"wait": "hard", "exhausted": "exhausted",
+                      "recovered": "recovered"}.get(retry["phase"])
+                     or ("warning" if retry["attempts"] == 1 else None))
+            if stage:
+                f["relay_notice"] = {"stage": stage, "delivered": False}
         try:
             save_fault(f)
             saved = True
@@ -3890,10 +3927,9 @@ def _relay_retry_notice(f, stage):
             current = copy.deepcopy(STATE["fault"])
             if not current or current.get("at") != f["at"]:
                 return
-            current["relay_notice"] = {"stage": stage, "delivered": False}
-            STATE["fault"] = current
+            if current.get("relay_notice", {}).get("stage") != stage:
+                return  # A later phase already superseded this announcement.
             _relay_notice_due.clear()
-        _save_annotation(current)
     _unsaved_edge()
     code = FC_RELAY_RECOVERED if stage == "recovered" else f["code"]
     _log("%s %s" % (code, _RELAY_ACTIVITY_MESSAGES[stage]))
@@ -3923,6 +3959,7 @@ def _relay_notice_completed(token, ok):
 
 def _retry_relay_notice():
     """Retry only current undelivered mail, outside all control locks."""
+    _retry_fault_annotation()
     if not _email_ready():
         return
     with _fault_lock, _state_lock:
@@ -6000,6 +6037,7 @@ if __name__ == "__main__":
     # cannot race the first draw cycle.
     _notify_restart_fault()
     atexit.register(flush_hist)
+    atexit.register(_persist_fault_on_exit)
     for _sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(_sig, flush_hist)
     threading.Thread(target=loop, daemon=True).start()

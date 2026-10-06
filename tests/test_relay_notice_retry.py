@@ -161,5 +161,83 @@ def test_real_meter_loop_retries_pending_mail_after_hardware_exhaustion():
         assert len(plug.commands) == 6
 
 
+def test_null_retry_record_fails_closed_but_omitted_legacy_record_enforces_stop():
+    C, clock, plug = exhausted()
+    original = C.load_fault()
+    for invalid in (None, [], "bad", 1):
+        with open(C.FAULT_PATH, 'w') as stream:
+            json.dump(dict(original, relay_retry=invalid, relay_notice=None), stream)
+        assert C.load_fault()['code'] == 'FC-206'
+    # Null must also be rejected without a notice (the original bypass).
+    damaged = dict(original)
+    damaged.pop('relay_notice')
+    damaged['relay_retry'] = None
+    with open(C.FAULT_PATH, 'w') as stream:
+        json.dump(damaged, stream)
+    C.STATE['fault'] = C.load_fault()
+    assert C.STATE['fault']['code'] == 'FC-206'
+    plug.watts = 0
+    plug.relay = True
+    before = len(plug.commands)
+    C._enforce_stop(plug)
+    assert plug.commands[before:] == [False] and plug.relay is False
+    legacy = dict(original)
+    legacy.pop('relay_retry')
+    legacy.pop('relay_notice')
+    C.save_fault(legacy)
+    C.STATE['fault'] = C.load_fault()
+    assert C.STATE['fault']['code'] == 'FC-008'
+    assert 'relay_retry' not in C.STATE['fault']
+    C._enforce_stop(plug)
+    assert 'relay_retry' in C.STATE['fault']
+
+
+def test_phase_and_pending_notice_are_written_atomically_before_email():
+    C, clock, _, plug = setup()
+    E.wire_failing(C)
+    observed = []
+    save = C.save_fault
+    def recording(f):
+        save(f)
+        if f and f.get('relay_retry', {}).get('phase') == 'exhausted':
+            observed.append(copy.deepcopy(f))
+    C.save_fault = recording
+    check(C, clock, plug)
+    check(C, clock, plug, 30)
+    for delay in (30, 30, 60, 30, 30):
+        check(C, clock, plug, delay)
+    assert observed
+    assert all(f['relay_notice'] == dict(stage='exhausted', delivered=False)
+               for f in observed)
+    assert len(plug.commands) == 6
+
+
+def test_failed_notification_writes_repair_even_when_email_disabled_or_on_shutdown():
+    for shutdown in (False, True):
+        C, clock, plug = exhausted()
+        save = C.save_fault
+        C.save_fault = lambda _: (_ for _ in ()).throw(OSError('annotation failure'))
+        C._relay_notice_completed((C.STATE['fault']['at'], 'exhausted'), True)
+        assert C.STATE['fault']['relay_notice']['delivered']
+        assert not C.load_fault()['relay_notice']['delivered']
+        assert not C.STATE['fault_unsaved']
+        C.save_fault = save
+        C.CFG['email']['enabled'] = False
+        if shutdown:
+            C._persist_fault_on_exit()
+        else:
+            C._retry_relay_notice()
+        assert C.load_fault()['relay_notice']['delivered']
+        assert C._fault_annotation_dirty is None
+        assert len(plug.commands) == 6
+        D = harness.load()
+        D.CFG = copy.deepcopy(C.CFG)
+        D.save_fault(C.load_fault())
+        D.STATE['fault'] = D.load_fault()
+        sent = E.wire(D)
+        D._retry_relay_notice()
+        assert not sent
+
+
 if __name__ == '__main__':
     sys.exit(harness.run(dict(globals())))

@@ -145,7 +145,9 @@ If email was unavailable, the latest unsent OFF-fault notice retries about once
 a minute after email becomes ready. Look for FC-203 for delivery errors. These
 email retries do not command the relay or renew its six-attempt allowance.
 Newer stages supersede outdated unsent notices; acknowledgement cancels pending
-stage mail. SMTP acceptance is not proof the message reached an inbox.
+stage mail. Failed notification-bookkeeping writes are retried independently
+of the safety-storage flag. Phase changes include the pending notice in the
+same saved record. SMTP acceptance is not proof the message reached an inbox.
 
 ## Dashboard problems
 

@@ -65,8 +65,15 @@ MODULE_TIMEOUT_SECONDS = 120
 # caught by an unrelated crash is not evidence.
 MUTATIONS = [
     ("relay-mail-pending-stage-not-persisted", "controller.py",
-     '        _save_annotation(current)', '        pass',
+     '                f["relay_notice"] = {"stage": stage, "delivered": False}',
+     '                pass',
      "test_relay_notice_retry.py", "test_pending_notice_survives_cold_restart_without_replenishing_budget"),
+    ("relay-retry-null-accepted", "controller.py",
+     '    if "relay_retry" in value:', '    if retry is not None:',
+     "test_relay_notice_retry.py", "test_null_retry_record_fails_closed_but_omitted_legacy_record_enforces_stop"),
+    ("relay-mail-annotation-repair-skipped", "controller.py",
+     '        saved = _save_annotation(current)', '        saved = False',
+     "test_relay_notice_retry.py", "test_failed_notification_writes_repair_even_when_email_disabled_or_on_shutdown"),
     ("relay-mail-loop-retry-skipped", "controller.py",
      '            _retry_relay_notice()\n        except Exception as e:',
      '            pass\n        except Exception as e:',
