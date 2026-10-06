@@ -61,7 +61,20 @@ visible alongside the email result, whether the send succeeds or fails. A
 successful test does not resolve a disk-durability or cleared-password warning.
 
 A fault banner adds **stop unconfirmed, retrying** when the plug has not
-confirmed the stop. A separate warning reports an unsaved fault; requested
+confirmed the stop for ordinary draw faults. FC-007/FC-008/FC-009 instead show the
+retry group, the wait before final retries, or **automatic retries stopped**.
+Confirmed recovery shows **stop confirmed; acknowledge fault**; Force on
+shows the override instead of promising retries. The existing **Fan off**
+wording is retained: its pill and the watts pill turn red when an OFF relay
+still reports draw above the configured OFF limit, after settling.
+During a standing fault outside Force on, continued draw above that limit
+also keeps watts red when the relay reports ON or unknown. Force on retains
+normal running-draw colours because the stop is deliberately overridden.
+Retry activity uses compact messages and numbered attempts; the start event
+is recorded before attempt 1. Activity remains newest-first. Older verbose
+relay-retry entries are shortened for display without rewriting saved history;
+alert emails retain their full explanations.
+A separate warning reports an unsaved fault; requested
 restarts are blocked until it is persisted or safely cleared.
 
 The status dot turns red for a polling error, a draw-loop exception or a

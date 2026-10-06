@@ -93,15 +93,10 @@ def test_failed_stops_keep_fresh_on_and_invalidate_stop_confirmation():
         C.STATE['manual_off_pending'] = True
         plug = BrokenPlug(C, on=True)
         if manual:
-            try:
-                C._manual_off(plug)
-            except C.PlugError:
-                pass
-            else:
-                raise AssertionError('Expected failed stop')
+            C._manual_off(plug)
+            assert plug.calls == []  # Standing fault owns the stop, not Manual.
             assert C.STATE['manual_off_pending']
-        else:
-            assert C._enforce_stop(plug) is False
+        assert C._enforce_stop(plug) is False
         assert C.STATE['fan'] is True and C.STATE['fault']['stopped'] is False
         assert C.STATE['fault_unsaved']
         assert C.app.test_client().get('/api/state').get_json()['fan'] is True

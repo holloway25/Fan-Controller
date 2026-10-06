@@ -92,8 +92,27 @@ saves and preserving restarts retain the elapsed fault timer.
 
 With monitoring enabled, a fault stop needs an OFF reply and a fresh meter
 reading at or below the OFF limit. Continued or unknown draw leaves the stop
-unconfirmed and retried; a previously confirmed stop is invalidated if draw
+unconfirmed; a previously confirmed stop is invalidated if draw
 returns. This checks reported power, not mechanical contact position.
+If the initial Manual OFF command fails, FC-009 latches even when running
+watts are normal or power monitoring is disabled. The observed relay remains
+ON or unknown; this is an unconfirmed stop, not proof of welded contacts.
+The original Manual stop promise remains owed, but cannot bypass the retry
+budget. Its first OFF retry waits 30 seconds after the failed command.
+For FC-007, the first OFF retry starts immediately. In both cases three retries are spaced
+30 seconds apart. If power removal remains unconfirmed, FC-008 latches and
+sends a hard-fault alert. After a 60-second wait, three final retries are
+spaced 30 seconds apart. Failure of the final group sends another hard-fault
+alert and ends automatic OFF commands. Read-only monitoring continues.
+The first retry sends one warning; confirmed OFF with fresh low draw sends
+one FC-103 recovery alert and completes any outstanding Manual stop promise.
+Recovery never clears the standing fault: Auto
+remains blocked until acknowledgement. Force on overrides stopping without
+clearing the fault or renewing the retry budget. Retry counts are saved
+before commands; preserving restarts retain elapsed deadlines, while a cold
+start retains the count and conservatively waits 30 or 60 seconds before
+the next remaining attempt. A storage failure pauses commands until saved.
+Other draw faults retain their existing stop-enforcement behaviour.
 For meaningful physical detection, verify the plug meters power while OFF:
 Tasmota's [SetOption21](https://tasmota.github.io/docs/Commands/) controls this
 and is disabled by default. The controller does not change plug firmware or
@@ -138,16 +157,19 @@ alerts.
 
 | Code | Meaning |
 |---|---|
-| `FC-001` | Readings stopped and the Auto fail-safe activated |
+| `FC-001` | Readings stopped and Auto fail-safe ventilation was attempted or already running |
 | `FC-002` | Draw fault raised with no plug reading |
 | `FC-003` | Draw fault raised below the configured band |
 | `FC-004` | Draw fault raised above the configured band |
 | `FC-005` | A fault could not be saved |
 | `FC-006` | A saved fault remained after restart |
 | `FC-007` | Relay reports OFF but sustained power draw exceeds the OFF limit |
+| `FC-008` | OFF retries failed; hard fault, with bounded final attempts |
+| `FC-009` | Manual OFF failed; relay remains ON or unknown, with bounded retries |
 | `FC-100` | Readings returned after a delivered stale-reading alert |
 | `FC-101` | A draw fault was acknowledged |
 | `FC-102` | A previously unsaved fault was successfully persisted |
+| `FC-103` | OFF and low draw confirmed after a relay-release fault; acknowledgement still required |
 | `FC-200` | Unclassified polling failure |
 | `FC-201` | Protect communication failure or recovery |
 | `FC-202` | Plug communication or command failure |
@@ -181,6 +203,12 @@ delivery failures (`FC-203`) and the mail system separately.
 Alerts are sent once when entering the relevant state. All-clear messages send
 only when the matching original warning was successfully delivered. Normal
 switching, settings changes and mode changes are logged but not emailed.
+The sensor-outage warning is still sent if its fail-safe ON command fails.
+Its subject/body then say ventilation is unconfirmed, not that the fan is
+running, and advise checking the plug/fan. Command errors retain the normal
+failure log and retry/backoff. A delivered warning is not repeated every
+failed ON attempt; a failed email remains retryable. The later FC-100 reports
+sensor readings returning, not proof that an earlier ON command succeeded.
 
 `FC-301` records a start that did not come through `./restart.sh`: a systemd
 start, a crash, or a loss of power. Those starts deliberately begin with no

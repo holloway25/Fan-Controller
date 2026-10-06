@@ -31,6 +31,10 @@ they can refresh `reading_at`, so the configured stale-reading fail-safe still
 operates. Payloads without connectivity metadata remain supported. Raw sensor
 diagnostics remain available even while the sensor is disconnected.
 
+A partial payload is also unhealthy if any enabled trigger lacks its
+measurement. Other valid metrics cannot refresh `reading_at` or end that
+outage; the existing stale-reading deadline, alert and recovery rules apply.
+
 Protect and plug clients are cached and rebuilt when their relevant settings
 change. An expired Protect session is retried after authentication.
 

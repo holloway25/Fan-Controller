@@ -163,7 +163,12 @@ def test_missing_enabled_reading_does_not_end_expired_hold():
             def readings(self,sid):
                 return {'co2':None,'temperature':22},'temperature'
         C._client_snapshot = lambda:(PartialSensor(),p,C._cfg_generation)
-        C.tick()
+        try:
+            C.tick()
+        except C.ProtectError as exc:
+            assert 'co2' in str(exc)
+        else:
+            raise AssertionError('Partial enabled readings accepted')
         assert p.commands == [] and C.STATE['cold_start_hold_until'] == 10600
 
 

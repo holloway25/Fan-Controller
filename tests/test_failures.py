@@ -415,7 +415,7 @@ def test_readings_survive_a_payload_without_co2():
     return "humidity drives it with no CO2 present"
 
 
-def test_poll_fails_only_when_no_enabled_trigger_has_a_reading():
+def test_poll_requires_every_enabled_trigger_reading():
     C = harness.load()
     c = dict(C.CFG["control"])
 
@@ -424,13 +424,13 @@ def test_poll_fails_only_when_no_enabled_trigger_has_a_reading():
         c.update(flags)
         live = C.active_rules(c)
         if live:
-            return any(vals.get(r["reading"]) is not None for r in live)
+            return all(vals.get(r["reading"]) is not None for r in live)
         return any(vals.get(k) is not None
                    for k in ("co2", "temperature", "humidity", "pm25"))
 
     no_co2 = {"co2": None, "temperature": 21.5, "humidity": 72.0}
-    assert usable(no_co2, co2_enabled=True, temp_enabled=True,
-                  humidity_enabled=False), "temperature alone is enough"
+    assert not usable(no_co2, co2_enabled=True, temp_enabled=True,
+                      humidity_enabled=False), "temperature must not hide missing CO2"
     assert not usable({"co2": None}, co2_enabled=True, temp_enabled=False,
                       humidity_enabled=False), "nothing live had a reading"
     # With NOTHING enabled the fail-safe is the only automatic action

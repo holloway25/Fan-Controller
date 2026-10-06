@@ -56,9 +56,9 @@ def test_off_draw_latches_and_never_confirms_welded_stop():
         assert C.STATE['fault']['code'] == C.FC_OFF_DRAW
         assert C.STATE['fault']['stopped'] is False
         assert plug.commands == [False] and len(notices) == 1
-        assert 'Power removal NOT confirmed' in notices[0][1]
+        assert 'NOT confirmed' in notices[0][1]
         check(C, clock, plug, 5)
-        assert plug.commands == [False, False] and len(notices) == 1
+        assert plug.commands == [False] and len(notices) == 1
         assert json.load(open(C.FAULT_PATH))['stopped'] is False
         plug.watts = 0
         check(C, clock, plug, 5, watts=0)

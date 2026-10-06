@@ -448,7 +448,7 @@ def _valid_fault_record(value):
     if not isinstance(value, dict):
         return False
     if set(value) - {"at", "msg", "code", "stopped",
-                     "attempted_at", "delivered_at"}:
+                     "attempted_at", "delivered_at", "relay_retry"}:
         return False
     if not isinstance(value.get("msg"), str) or not value["msg"].strip():
         return False
@@ -462,6 +462,23 @@ def _valid_fault_record(value):
     for key in ("attempted_at", "delivered_at"):
         stamp = value.get(key)
         if stamp is not None and not _valid_fault_timestamp(stamp):
+            return False
+    retry = value.get("relay_retry")
+    if retry is not None:
+        if (value.get("code") not in ("FC-007", "FC-008", "FC-009")
+                or not isinstance(retry, dict)
+                or set(retry) != {"attempts", "phase"}
+                or type(retry["attempts"]) is not int):
+            return False
+        n, phase = retry["attempts"], retry["phase"]
+        if not (0 <= n <= 6 and (
+                (phase == "first" and n < 3)
+                or (phase == "wait" and n == 3)
+                or (phase == "final" and 3 < n < 6)
+                or (phase == "exhausted" and n == 6)
+                or (phase == "recovered" and n >= 0))):
+            return False
+        if phase in ("wait", "final", "exhausted") and value["code"] != "FC-008":
             return False
     return True
 
@@ -541,6 +558,7 @@ def save_fault(f):
 
 _oob_since = None
 _off_draw_since = None  # monotonic: sustained draw while relay reports OFF
+_relay_retry_clock = None  # (fault identity, consumed attempts, monotonic deadline)
 _oob_monotonic = None  # (wall start, monotonic start); wall start is for diagnostics
 _draw_grace = None  # (physical wall timestamp, monotonic grace deadline)
 # Which config the out-of-band timer belongs to. A timer accumulated
@@ -2304,18 +2322,39 @@ def _manual_off(plug, gen=None):
 
 def _manual_off_locked(plug):
     """The body of _manual_off, with _act_lock already held."""
+    global _relay_retry_clock
     with _state_lock:
         pending = STATE.get("manual_off_pending")
+        fault = STATE["fault"]
     if not pending:
+        return
+    if fault:
+        # Fault enforcement owns any outstanding stop. Never let the
+        # one-time Manual promise bypass its bounded budget or spacing.
         return
     try:
         actual = plug.state()
         _record_relay_observation(actual)
         already_off = actual is False
     except PlugError:
+        actual = None
         already_off = False          # unknown: switch anyway
     if not already_off:
-        plug.set(False)              # raises: flag stays set, retried
+        try:
+            plug.set(False)
+        except PlugError:
+            # A healthy running wattage cannot diagnose a rejected OFF.
+            # Latch the failed stop independently of power-monitor settings;
+            # unknown connectivity is NOT proof of mechanical contact failure.
+            now = time.time()
+            msg = "%s Manual OFF unconfirmed — relay %s" % (
+                FC_MANUAL_STOP, "ON" if actual is True else "unknown")
+            _store_fault(dict(at=now, msg=msg, code=FC_MANUAL_STOP,
+                stopped=False, attempted_at=None, delivered_at=None,
+                relay_retry={"attempts": 0, "phase": "first"}))
+            _relay_retry_clock = (now, 0, time.monotonic()+30)
+            _log(msg)
+            raise  # Keep the original stop promise and diagnostic error.
     _remember_relay(plug, False)
     with _state_lock:
         STATE["manual_off_pending"] = False
@@ -2433,13 +2472,15 @@ def tick():
     co2 = vals.get('co2')
     # Judged against the rules that are ENABLED, not against CO2. With
     # CO2 disabled and humidity driving the fan, a payload carrying no
-    # CO2 field is perfectly usable. Nothing for any live rule means
-    # this poll told us nothing we act on, so it is an error and
-    # reading_at stays put - which is what arms the fail-safe.
+    # CO2 field is perfectly usable. Every enabled rule must have a
+    # reading: another metric must not hide a partial sensor outage.
+    # Reject incomplete polls without refreshing the fail-safe timer,
+    # releasing latches, or announcing recovery.
     live = active_rules(CFG["control"])
     if live:
-        usable = any(vals.get(r["reading"]) is not None for r in live)
-        why = "any enabled trigger (%s)" % ", ".join(r["key"] for r in live)
+        usable = all(vals.get(r["reading"]) is not None for r in live)
+        why = "enabled trigger(s): %s" % ", ".join(
+            r["key"] for r in live if vals.get(r["reading"]) is None)
     else:
         # Nothing enabled, so the fail-safe is the only automatic action
         # left - and it is armed by reading_at going stale. Accepting an
@@ -2683,6 +2724,7 @@ def _failsafe():
     # Ask the plug rather than trusting cached state: it may have rebooted
     # off, or been switched off while Protect was unreachable.
     _, h, gen = _client_snapshot()
+    switch_error = None
     # Re-checked under _act_lock: the plug read below can take up to its
     # 12s timeout, and a mode change landing in that window could leave
     # this switching the fan on just after Manual ran its one-time stop -
@@ -2718,19 +2760,23 @@ def _failsafe():
         except PlugError:
             pass                 # unreadable: assert ON anyway
         if not already_on:
-            h.set(True)
-        _remember_relay(h, True)
+            try:
+                h.set(True)
+            except PlugError as exc:
+                switch_error = exc
+        if switch_error is None:
+            _remember_relay(h, True)
         # Recorded either way. When the plug was ALREADY on this used to
         # return without touching STATE, so the relay could be on while
         # /api/state and the dashboard both said off - and the draw
         # check, which only runs when STATE says the fan is on, stayed
         # asleep over a running fan.
         with _state_lock:
-            if actual is False or not was_on:
+            if switch_error is None and (actual is False or not was_on):
                 STATE["fan"] = True
                 _stamp_elapsed_locked("changed_at")
                 STATE["min_run_at"] = None
-    if not already_on:
+    if not already_on and switch_error is None:
         _log("%s Fan on \u2014 no reading for %s"
              % (FC_SENSOR_COMMS, _plural(mins, "min")))
     # OUTSIDE the already_on check, deliberately. This alert is about the
@@ -2740,7 +2786,11 @@ def _failsafe():
     # high CO2 starts the fan and the fan is then on when the sensor goes
     # quiet. Found in review, not by the tests, which is why there is now
     # a test for exactly this.
-    _notify_stale(mins, already_on)
+    _notify_stale(mins, already_on, fan_confirmed=switch_error is None)
+    if switch_error is not None:
+        # Preserve the existing failure log/backoff, but only AFTER queuing
+        # the outage alert. Never claim ventilation or renew start timing.
+        raise switch_error
 
 
 
@@ -2955,7 +3005,7 @@ def _notify(subject, body, on_complete=None):
             pass
 
 
-def _notify_stale(mins, already_on):
+def _notify_stale(mins, already_on, fan_confirmed=True):
     """Say once that readings have stopped. Not about the plug.
 
     Fires whether or not the fail-safe had to switch anything: the news
@@ -2991,8 +3041,8 @@ def _notify_stale(mins, already_on):
             if ok:
                 _stale_delivered = True
             _stale_inflight = False
-    _notify("%s Sensor readings stopped - fan on as a precaution"
-            % FC_SENSOR_COMMS,
+    _notify("%s Sensor readings stopped - %s"
+            % (FC_SENSOR_COMMS, "fan on as a precaution" if fan_confirmed else "fan ON unconfirmed"),
             _alert_body(
                 FC_SENSOR_COMMS, "Sensor Communications Fault",
                 time.time(),
@@ -3001,12 +3051,17 @@ def _notify_stale(mins, already_on):
                 "own once readings come back, and there will be an "
                 "all-clear when it does."
                 % (_plural(mins, "minute"),
+                   "The fail-safe ON command failed. Ventilation is NOT confirmed; "
+                   "the fan may still be off. The controller will retry while "
+                   "the outage remains eligible for fail-safe ventilation."
+                   if not fan_confirmed else
                    "The fan was already running and will stay on."
                    if already_on else
                    "The fan has been switched on as a precaution and "
                    "will stay on until readings return."),
-                [("Action taken", "Fail-safe ventilation"),
-                 ("Manual action", "No"),
+                [("Action taken", "Fail-safe ventilation" if fan_confirmed else
+                  "Fail-safe ON attempted, NOT confirmed"),
+                 ("Manual action", "No" if fan_confirmed else "Yes - check plug and fan"),
                  ("Controller mode", _mode_now())],
                 ["Sensor offline or unpowered",
                  "UniFi Protect unavailable",
@@ -3346,6 +3401,10 @@ FC_OVER_POWER = "FC-004"
 FC_FAULT_UNSAVED = "FC-005"
 FC_RESTART_FAULT = "FC-006"
 FC_OFF_DRAW = "FC-007"  # Relay reports OFF but the load still draws power.
+FC_RELAY_RELEASE = "FC-008"  # Bounded OFF retries failed; Auto remains blocked.
+FC_RELAY_RECOVERED = "FC-103"  # OFF and low draw confirmed; acknowledgement still required.
+FC_MANUAL_STOP = "FC-009"  # Manual OFF failed; relay ON or unknown, not a welded-contact diagnosis.
+_RELAY_FAULT_CODES = (FC_OFF_DRAW, FC_RELAY_RELEASE, FC_MANUAL_STOP)
 FC_SENSOR_RETURNED = "FC-100"
 FC_HARD_CLEARED = "FC-101"
 FC_FAULT_PERSISTED = "FC-102"
@@ -3719,6 +3778,208 @@ def _invalidate_fault_stop():
                 STATE["fault_unsaved"] = True
 
 
+def _relay_retry_update(**changes):
+    """Revise the standing relay fault under act -> fault -> state lock order.
+
+    A consumed attempt is persisted BEFORE touching hardware. If storage
+    fails, keep the budget in memory but issue no further command until
+    the existing persistence retry has saved it. Never replenish a budget.
+    Caller holds _act_lock.
+    """
+    with _fault_lock:
+        with _state_lock:
+            f = copy.deepcopy(STATE["fault"])
+        if not f or f.get("code") not in _RELAY_FAULT_CODES:
+            return None, False
+        f.update(changes)
+        try:
+            save_fault(f)
+            saved = True
+        except OSError:
+            saved = False
+        with _state_lock:
+            STATE["fault"] = f
+            STATE["fault_unsaved"] = not saved
+            if saved and f.get("stopped"):
+                _end_run_locked()
+                STATE["manual_off_pending"] = False
+    if saved and f.get("stopped"):
+        clear_manual_off_promise()
+    return f, saved
+
+
+def _relay_retry_deadline(f):
+    """Cold starts keep the persisted budget, with a conservative new wait."""
+    global _relay_retry_clock
+    retry = f["relay_retry"]
+    key = (f["at"], retry["attempts"])
+    if _relay_retry_clock is None or _relay_retry_clock[:2] != key:
+        immediate = retry["attempts"] == 0 and f["code"] != FC_MANUAL_STOP
+        delay = 0 if immediate else (60 if retry["phase"] == "wait" else 30)
+        _relay_retry_clock = (*key, time.monotonic() + delay)
+    return _relay_retry_clock[2]
+
+
+_RELAY_ACTIVITY_MESSAGES = {
+    "warning": "OFF retry started",
+    "hard": "First 3 OFF attempts failed — wait 60s for next 3",
+    "exhausted": "All 6 OFF retries failed — hard fault",
+    "recovered": "Relay reports OFF — hard fault remains",
+}
+
+
+def _short_relay_activity(msg):
+    """Compact older verbose entries for display, without rewriting history."""
+    for prefix, stage in (
+        ("FC-007 OFF retry started. Three attempts are allowed,", "warning"),
+        ("FC-008 The first three OFF attempts did not confirm power removal.", "hard"),
+        ("FC-008 All six OFF retries are exhausted.", "exhausted"),
+        ("FC-103 The relay reports OFF and fresh measured draw is within the OFF limit.", "recovered"),
+    ):
+        if msg.startswith(prefix):
+            return msg[:6] + " " + _RELAY_ACTIVITY_MESSAGES[stage]
+    return msg
+
+
+def _relay_retry_notice(f, stage):
+    """One notice per retry-stage transition, never a claim of welded contacts."""
+    code = FC_RELAY_RECOVERED if stage == "recovered" else f["code"]
+    descriptions = {
+        "warning": "OFF retry started. Three attempts are allowed, 30 seconds apart.",
+        "hard": "The first three OFF attempts did not confirm power removal. "
+                "A hard fault is latched. After 60 seconds, three final attempts "
+                "will be made, 30 seconds apart.",
+        "exhausted": "All six OFF retries are exhausted. Automatic OFF retries have stopped.",
+        "recovered": "The relay reports OFF and fresh measured draw is within the OFF limit. "
+                     "Stop confirmed. The fault remains latched until acknowledged.",
+    }
+    text = descriptions[stage]
+    if stage == "warning" and f["code"] == FC_MANUAL_STOP:
+        text = "A Manual OFF command could not be confirmed. " + text
+    title = "Stop confirmed" if stage == "recovered" else (
+        "OFF retry warning" if stage == "warning" else "Unable to stop - hard fault")
+    _log("%s %s" % (code, _RELAY_ACTIVITY_MESSAGES[stage]))
+    _notify("%s %s" % (code, title),
+            _alert_body(code, title, time.time(), text + "\nAuto remains blocked. "
+                "Force on overrides the stop without clearing the fault. "
+                "An OFF reply alone does not prove contacts opened. Continued draw may "
+                "indicate failed contacts or incorrect metering; communication failures "
+                "cannot establish a mechanical fault. Arrange safe independent isolation "
+                "and inspection if power removal is unconfirmed.",
+                [("OFF retries consumed", str(f["relay_retry"]["attempts"])),
+                 ("Power removal", "Confirmed" if f.get("stopped") else "NOT confirmed"),
+                 ("Controller mode", _mode_now())]),
+            on_complete=lambda ok: _mark_fault_delivered(f["at"]) if ok else None)
+
+
+def _relay_release_step(plug, gen=None):
+    """Two bounded groups of three OFF retries; observation continues afterwards."""
+    global _relay_retry_clock
+    notices = []
+    attempt_message = None
+    result = False
+    with _act_lock:
+        if plug is None or _stale_client(gen) or CFG["control"].get("mode") == "on":
+            return False
+        with _state_lock:
+            f = copy.deepcopy(STATE["fault"])
+            unsaved = STATE["fault_unsaved"]
+            watts, age = STATE["watts"], _elapsed_age_locked("watts_at")
+        if not f or f.get("code") not in _RELAY_FAULT_CODES or unsaved:
+            return False
+        if "relay_retry" not in f:
+            f, saved = _relay_retry_update(relay_retry={"attempts": 0, "phase": "first"})
+            if not saved:
+                return False
+        retry = f["relay_retry"]
+        # Only fresh low watts warrant an extra read-only relay check. High
+        # draw does not create an extra five-second command/polling loop.
+        confirmed = False
+        low = (watts is not None and _finite(watts) and watts <= CFG["plug"]["watts_off_max"]
+               and age is not None and age <= WATTS_STALE)
+        if low and retry["phase"] == "recovered" and f.get("stopped"):
+            return True  # Normal meter/relay loops monitor a confirmed recovery.
+        if low:
+            try:
+                actual = plug.state()
+                _record_relay_observation(actual)
+                if actual is False:
+                    watts = plug.power_w()
+                    with _state_lock:
+                        STATE["watts"] = watts
+                        _stamp_elapsed_locked("watts_at")
+                    confirmed = (watts is not None and _finite(watts)
+                                 and watts <= CFG["plug"]["watts_off_max"])
+            except PlugError:
+                pass
+        if confirmed:
+            if retry["phase"] != "recovered" or not f.get("stopped"):
+                f, saved = _relay_retry_update(stopped=True, relay_retry={
+                    "attempts": retry["attempts"], "phase": "recovered"},
+                    msg="%s Fan off" % f["code"])
+                if saved and retry["phase"] != "recovered":
+                    notices.append((f, "recovered"))
+            result = bool(f.get("stopped"))
+        elif retry["phase"] in ("exhausted", "recovered"):
+            # Exhaustion is terminal. A relapse does not grant six new tries.
+            if f.get("stopped"):
+                _relay_retry_update(stopped=False)
+        elif time.monotonic() >= _relay_retry_deadline(f):
+            n = retry["attempts"] + 1
+            phase = "exhausted" if n == 6 else ("wait" if n == 3 else (
+                "final" if n > 3 else "first"))
+            code = FC_RELAY_RELEASE if n >= 3 else f["code"]
+            msg = "%s %s" % (code, "Unable to stop" if n >= 3 else
+                "Manual OFF unconfirmed" if code == FC_MANUAL_STOP else "OFF but still drawing power")
+            f, saved = _relay_retry_update(code=code, msg=msg, stopped=False,
+                relay_retry={"attempts": n, "phase": phase})
+            _relay_retry_clock = (f["at"], n, time.monotonic() + (60 if n == 3 else 30))
+            if not saved:
+                return False
+            attempt_message = "%s OFF retry %d of 6" % (code, n)
+            if n == 1:
+                notices.append((f, "warning"))
+            try:
+                actual = plug.state()
+                _record_relay_observation(actual)
+            except PlugError:
+                pass  # An unknown state must not prevent the bounded OFF attempt.
+            try:
+                plug.set(False)
+                _remember_relay(plug, False)
+                _record_relay_observation(False)
+                w = plug.power_w()
+                with _state_lock:
+                    STATE["watts"] = w
+                    _stamp_elapsed_locked("watts_at")
+                confirmed = w is not None and _finite(w) and w <= CFG["plug"]["watts_off_max"]
+            except PlugError:
+                confirmed = False
+            # Spacing begins after the request finishes, including timeouts.
+            _relay_retry_clock = (f["at"], n, time.monotonic() + (60 if n == 3 else 30))
+            if confirmed:
+                f, saved = _relay_retry_update(stopped=True,
+                    relay_retry={"attempts": n, "phase": "recovered"},
+                    msg="%s Fan off" % f["code"])
+                if saved:
+                    notices.append((f, "recovered"))
+                result = saved
+            elif n in (3, 6):
+                notices.append((f, "hard" if n == 3 else "exhausted"))
+    _unsaved_edge()
+    # Start precedes attempt 1 in event order. The dashboard is newest-first,
+    # so the numbered attempt appears ABOVE its start announcement.
+    for snapshot, stage in notices:
+        if stage == "warning":
+            _relay_retry_notice(snapshot, stage)
+    if attempt_message:
+        _log(attempt_message)
+    for snapshot, stage in notices:
+        if stage != "warning":
+            _relay_retry_notice(snapshot, stage)
+    return result
+
+
 def _enforce_stop(plug, gen=None):
     """Keep a faulted fan off until the fault is acknowledged.
 
@@ -3735,6 +3996,10 @@ def _enforce_stop(plug, gen=None):
     """
     if plug is None:
         return False
+    with _state_lock:
+        relay_fault = (STATE["fault"] or {}).get("code") in _RELAY_FAULT_CODES
+    if relay_fault:
+        return _relay_release_step(plug, gen)
     with _act_lock:
         if _stale_client(gen):
             # Retried next cycle against the right plug. Stopping a
@@ -3759,11 +4024,14 @@ def _enforce_stop(plug, gen=None):
                 # _act_lock, so a clear cannot now complete between this
                 # check and the command below.
                 return False
-            off_draw_fault = STATE["fault"].get("code") == FC_OFF_DRAW
+            # A relay fault created since the outer snapshot is handled on
+            # the next cycle by the bounded scheduler, never by this loop.
+            if STATE["fault"].get("code") in _RELAY_FAULT_CODES:
+                return False
         try:
             actual = plug.state()
             _record_relay_observation(actual)
-            if actual is not False or off_draw_fault:
+            if actual is not False:
                 plug.set(False)
             _remember_relay(plug, False)
             _record_relay_observation(False)
@@ -3835,27 +4103,15 @@ def _off_draw_check(plug, gen=None):
         now = time.time()
         msg = "%s OFF but drawing %g W for %ds" % (FC_OFF_DRAW, w, int(elapsed))
         f = dict(at=now, msg=msg, stopped=False, code=FC_OFF_DRAW,
-                 attempted_at=now, delivered_at=None)
-        prev = _store_fault(f)
+                 attempted_at=now, delivered_at=None,
+                 relay_retry={"attempts": 0, "phase": "first"})
+        _store_fault(f)
         _off_draw_since = None
     _log(msg)
     try:
-        confirmed = bool(_enforce_stop(plug, gen))
+        _enforce_stop(plug, gen)
     except Exception:
-        confirmed = False
-    if prev is None:
-        _notify("%s OFF but still drawing power" % FC_OFF_DRAW,
-                _alert_body(FC_OFF_DRAW, "Relay OFF - Power Still Flowing", now,
-                    "The plug reports OFF but sustained load draw exceeds the OFF limit. "
-                    "Possible stuck/welded contacts or incorrect metering. Software cannot "
-                    "disconnect welded contacts; arrange safe independent isolation and inspection.",
-                    [("Actual reading", "%g W" % w),
-                     ("OFF limit", "%g W" % pg["watts_off_max"]),
-                     ("Action taken", "OFF and low draw confirmed" if confirmed else
-                      "Power removal NOT confirmed; fault latched"),
-                     ("Controller mode", _mode_now())],
-                    ["Relay contacts welded or failed to release", "Metering/configuration fault"]),
-                on_complete=lambda ok: _mark_fault_delivered(now) if ok else None)
+        pass
     return True
 
 
@@ -4719,6 +4975,12 @@ def api_state():
         lease_key = "min_run_at" if STATE["min_run_at"] is not None else "changed_at"
         age = _elapsed_age_locked(lease_key)
         s["min_run_remaining"] = max(0, CFG["control"]["min_run_minutes"]*60-age) if age is not None else 0
+        retry = (s["fault"] or {}).get("relay_retry")
+        if retry:
+            clock = _relay_retry_clock
+            matching = clock is not None and clock[:2] == (s["fault"]["at"], retry["attempts"])
+            s["fault_retry"] = dict(retry, remaining=max(0, clock[2]-time.monotonic())
+                if matching else (60 if retry["phase"] == "wait" else 30))
     deadline = s.pop("cold_start_hold_until", None)
     s.pop("cold_start_pending", None)
     s["cold_start_remaining"] = max(0, deadline-time.monotonic()) if deadline else 0
@@ -4730,7 +4992,7 @@ def api_state():
     # Served with the class, not stored with it: the colour is a
     # presentation decision that can change, and rewriting events.json
     # to recolour a log would be absurd.
-    s["events"] = [dict(e, cls=event_class(e.get("msg")))
+    s["events"] = [dict(e, msg=_short_relay_activity(e["msg"]), cls=event_class(e.get("msg")))
                    for e in s["events"][:EVENTS_SHOWN]]
     s["config"] = _safe_cfg()
     # Changes on every start, including an execv. It is the only thing a
@@ -4757,7 +5019,9 @@ def _notify_fault_cleared(had):
     titles = {FC_PLUG_COMMS: "Plug Communications Fault",
               FC_UNDER_POWER: "Hard Fault - Under Power",
               FC_OVER_POWER: "Hard Fault - Over Power",
-              FC_OFF_DRAW: "Relay OFF - Power Still Flowing"}
+              FC_OFF_DRAW: "Relay OFF - Power Still Flowing",
+              FC_RELAY_RELEASE: "Unable to Stop - Hard Fault"}
+    titles[FC_MANUAL_STOP] = "Manual OFF Unconfirmed"
     _notify("%s Fault cleared - fan available again" % FC_HARD_CLEARED,
             _alert_body(
                 FC_HARD_CLEARED, "Hard Fault Cleared", time.time(),
@@ -5239,6 +5503,7 @@ def _resume_payload():
         return {
             "v": 1,
             "off_draw_since": _off_draw_since,
+            "relay_retry_clock": _relay_retry_clock,
             "plug_ports": _plug_port_handover(),
             "latch": dict(STATE["latch"]),
             "ran_with": dict(STATE["ran_with"]),
@@ -5271,6 +5536,7 @@ def _apply_resume():
     starting at all is worse.
     """
     global _oob_since, _oob_generation, START_TIME, _oob_monotonic, _draw_grace, _off_draw_since
+    global _relay_retry_clock
     raw = os.environ.pop(RESUME_ENV, None)
     if not raw:
         return False
@@ -5323,6 +5589,16 @@ def _apply_resume():
     mono = time.monotonic()
     off_since = _n(d.get("off_draw_since"))
     _off_draw_since = off_since if off_since is not None and 0 <= off_since <= mono else None
+    retry_clock = d.get("relay_retry_clock")
+    with _state_lock:
+        fault = STATE["fault"] or {}
+        retry = fault.get("relay_retry") or {}
+    if (isinstance(retry_clock, list) and len(retry_clock) == 3
+            and _valid_fault_timestamp(retry_clock[0])
+            and type(retry_clock[1]) is int
+            and retry_clock[:2] == [fault.get("at"), retry.get("attempts")]
+            and _finite(retry_clock[2]) and 0 <= retry_clock[2] <= mono+60):
+        _relay_retry_clock = tuple(retry_clock)
     def clock_pair(value):
         if not isinstance(value, (list, tuple)) or len(value) != 2:
             return None

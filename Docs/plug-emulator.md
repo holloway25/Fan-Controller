@@ -80,6 +80,14 @@ HTTP transport; they do not access configured hardware or live settings.
 To simulate contacts remaining closed despite an OFF report, keep the relay
 OFF and set `off_watts` to a load value such as 23. With controller power
 monitoring enabled this should latch FC-007 after settling and the configured
-fault delay, leave the stop unconfirmed, and alert once. Restore `off_watts`
+fault delay, leave the stop unconfirmed, and start bounded OFF retries.
+It sends a first-retry warning, an FC-008 hard-fault alert after three failed
+attempts, and a final hard-fault update if the last three fail. See
+[power monitoring](configuration.md#plug) for timing and restart behaviour.
+Restore `off_watts`
 to 0 before acknowledging the fault. To simulate a rejected OFF command,
 start the emulated relay ON and use `reject_switch` targeting `switch`.
+Enter Manual in the controller to test FC-009: the failed original OFF must
+latch a fault, then use the same bounded retries without repeated Manual
+polls making extra commands. Restore normal emulator responses and OFF/0 W
+to check recovery before acknowledging the generated test fault.

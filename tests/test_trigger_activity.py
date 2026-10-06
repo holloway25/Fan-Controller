@@ -86,7 +86,12 @@ def test_disabled_or_missing_metrics_do_not_invent_activation_events():
     C,s,p,lease = setup()
     C.CFG['control']['humidity_enabled'] = False
     s.values.update(humidity=90,temperature=None)
-    C.tick()
+    try:
+        C.tick()
+    except C.ProtectError as exc:
+        assert 'temp' in str(exc)
+    else:
+        raise AssertionError('Missing enabled temperature accepted')
     assert not notes(C) and not p.commands
 
 

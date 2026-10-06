@@ -280,7 +280,7 @@ font-size:16px}
     <span class="hint">Minutes to keep an already-on fan running after a fault-free Auto cold start. 0 disables. Normal starts use Minimum run time.</span></label>
     <input type="number" id="cold_start_minutes" min="0" max="240" step="1"></div>
   <div class="row"><label for="watts_enabled">Power monitoring
-    <span class="hint">Watch the draw while the fan runs. Off means the wattage is shown but never acted on.</span></label>
+    <span class="hint">Checks power draw while the fan is ON and OFF. When disabled, wattage is still shown, but no new power faults are raised. Existing faults remain active.</span></label>
     <input type="checkbox" id="watts_enabled" style="width:auto"></div>
   <div class="row"><label for="watts_min">Expected draw, low
     <span class="hint">Watts. Below this while running is a fault: the relay closed but the fan is not pulling what it should.</span></label>
@@ -292,7 +292,7 @@ font-size:16px}
     <span class="hint">Watts. Above this while the relay reports OFF raises a fault after the delay below. Allow for normal standby draw.</span></label>
     <input type="number" id="watts_off_max" min="0" max="5000" step="0.5"></div>
   <div class="row"><label for="watts_fault_seconds">Fault after
-    <span class="hint">Seconds outside the band before the fan is stopped and a fault raised. Force on overrides a fault.</span></label>
+    <span class="hint">Seconds of abnormal draw before a fault is raised and an OFF command is attempted. Force on overrides protection.</span></label>
     <input type="number" id="watts_fault_seconds" min="5" max="3600" step="5"></div>
   <div class="actions"><button id="plugtest">Test plug</button>
     <button id="faultclear">Clear fault</button>
@@ -653,7 +653,11 @@ function render(s){
   f.textContent=s.fan==null?"Fan unknown":
     (s.fan?(flt?"Fan on - Fault":(dead?"Fan on, no draw":"Fan running"))
           :(flt?"Fan off - Fault":"Fan off"));
-  f.className="pill "+((dead||flt)?"bad":(s.fan?"on":"off"));
+  const offDraw=s.fan===false&&s.watts!=null&&s.watts>(s.config.plug.watts_off_max??1)
+    &&(s.switch_age==null||s.switch_age>=5);
+  const faultDraw=flt&&c.mode!=="on"&&s.watts!=null
+    &&s.watts>(s.config.plug.watts_off_max??1);
+  f.className="pill "+((dead||flt||offDraw)?"bad":(s.fan?"on":"off"));
   // Live means a poll succeeded, not that CO2 specifically arrived.
   // With CO2 disabled and humidity driving the fan, a perfectly healthy
   // session showed a dead indicator.
@@ -669,9 +673,15 @@ function render(s){
     ||(anyReading&&!liveReading)?"bad":(anyReading?"live":""));
   // Force on deliberately overrides fault-stop enforcement; do not promise
   // a retry while that override is active, even if an earlier stop was confirmed.
+  const retry=s.fault_retry;
+  const retryText=retry?(s.fault.stopped?" — stop confirmed; acknowledge fault":
+    (retry.phase==="exhausted"||retry.phase==="recovered")?" — automatic retries stopped":
+    retry.phase==="wait"?` — final retries in ${Math.ceil(retry.remaining)}s`:
+    retry.attempts===0?` — first OFF retry in ${Math.ceil(retry.remaining)}s`:
+    ` — stop unconfirmed; ${retry.phase==="final"?"final ":""}retry ${Math.max(1,retry.attempts>3?retry.attempts-3:retry.attempts)} of 3`):
+    (s.fault&&s.fault.stopped?"":" — stop unconfirmed, retrying");
   const fmsg=s.fault?(s.fault.msg+(c.mode==="on"?
-    " — Force on overrides fault stop":(s.fault.stopped?"":
-    " — stop unconfirmed, retrying"))):"";
+    " — Force on overrides fault stop":retryText)):"";
   say("topmsg",fmsg||s.error||"", "err");
   say("drawloopmsg",drawLate?"Power monitoring loop is not responding":
     (s.draw_loop_error?"Power monitoring loop: "+s.draw_loop_error:""),"err");
@@ -770,12 +780,11 @@ function render(s){
     if(value!=null&&!liveReading)$(id).textContent+=" (stale)";
   }
   $("w").textContent=s.watts==null?"-- W":fmtW(s.watts)+" W";
-  // Draw is only meaningful while the fan is meant to be running, and only
-  // once settled: a motor spinning up would otherwise flash red every start.
+  // ON draw needs spin-up grace; sustained draw while OFF is also abnormal.
   // No reading at all counts as bad, since a dead plug is exactly the case
   // this is here to catch.
-  let wcls="pill";
-  if(s.fan===true&&settled){
+  let wcls=(offDraw||faultDraw)?"pill bad":"pill";
+  if(s.fan===true&&settled&&!faultDraw){
     const pg=s.config.plug;
     const ok=s.watts!=null&&s.watts>=NO_DRAW_W
       &&s.watts>=pg.watts_min&&s.watts<=pg.watts_max;

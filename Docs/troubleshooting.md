@@ -92,6 +92,11 @@ Check the current mode, latch values and minimum-run lease in `/api/state`.
 
 ### Fan stopped for no apparent reason
 
+If readings are stale and fail-safe ON failed, check `FC-207` in the activity
+log and plug connectivity. The FC-001 outage email should say **fan ON
+unconfirmed** and **Ventilation is NOT confirmed**. It is an outage warning,
+not proof the relay switched; the controller retains its normal retries.
+
 Check mode changes, draw faults and external plug changes first. A cold restart
 can also explain a stop above the off threshold or during a minimum-run lease:
 it drops transient latches and the lease. An already-ON relay can instead get
@@ -123,7 +128,18 @@ for `watts_fault_seconds`.
 4. Clear the fault only after the draw is healthy.
 
 If the dashboard says the stop is unconfirmed, the controller could not verify
-the relay state and will retry. Check plug connectivity immediately.
+the relay state or low draw. Check plug connectivity immediately. For
+FC-007/FC-008/FC-009, retries are bounded: three attempts 30 seconds apart, a
+60-second wait, then three final attempts 30 seconds apart. After that,
+automatic OFF commands stop; the standing fault still blocks Auto.
+An OFF report with continued watts may indicate failed contacts or metering,
+not necessarily a communications failure. Arrange safe independent isolation
+and inspection. A recovery alert confirms OFF and low draw, not repaired
+contacts, and does not clear the fault.
+FC-009 means the initial Manual OFF command failed; its first retry waits
+30 seconds. This can be a rejected command or a connection failure, even
+with normal running watts. It does not assert welded contacts. The original
+Manual promise cannot make extra attempts after the fault budget is exhausted.
 
 ## Dashboard problems
 

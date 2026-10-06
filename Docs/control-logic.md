@@ -29,9 +29,14 @@ when disabled; temperature and humidity relationships are checked when enabled.
 See [configuration](configuration.md#control) for ranges and startup validation.
 
 A missing metric does not release its latch because absence does not prove the
-condition cleared. Disabling a rule releases it immediately. If all metrics
-stop, the stale-reading fail-safe may ventilate according to
-`stale_minutes`.
+condition cleared. Disabling a rule releases it immediately. A poll must contain
+every enabled trigger's measurement. If any is missing, the entire poll is
+rejected: existing readings and latches are retained, but the safety timestamp
+is not refreshed and no recovery is announced. The stale-reading fail-safe may
+then ventilate according to `stale_minutes`, in Auto only. Disabled triggers do
+not count; with no triggers enabled, any recognised measurement keeps the
+sensor live. Setting `stale_minutes` to 0 disables ventilation and its alerts,
+not the incomplete-reading error.
 
 ## What the stop line names
 
@@ -46,6 +51,11 @@ bearing on it.
 
 The record follows confirmed relay actions, not attempted commands. A failed
 switch-off retains it for retry; an unreadable plug is unknown, not off.
+Failure of the original Manual OFF command latches FC-009 and hands the
+outstanding promise to bounded fault-stop enforcement. The original failed
+command is separate from the six retries; repeated Manual polls or switching
+back to Manual cannot bypass their timing or replenish the budget. Confirmed
+OFF and fresh low draw completes the promise, but not the standing fault.
 A confirmed Manual stop or a plug read as off ends the run too. For a draw
 fault, the plug must confirm off and the updated fault record must reach disk
 before the run record is cleared. Force on starts a new, non-rule-driven run
@@ -99,8 +109,13 @@ reading inside `watts_min` to `watts_max`. A reading inside the band resets
 the fault timer. Remaining outside it for `watts_fault_seconds` stops the fan
 and stores a fault.
 
-The fault survives restart and blocks Auto until acknowledged. If the stop is
-not confirmed, it is retried. Force on overrides the fault so repaired hardware
+The fault survives restart and blocks Auto until acknowledged. If an ordinary
+draw-fault stop is not confirmed, it is retried. OFF-but-drawing faults use
+the [bounded FC-007/FC-008 sequence](configuration.md#plug), also used for
+FC-009 failed Manual stops, with a warning,
+hard-fault updates and a confirmed-stop recovery alert. Exhausting the retry
+budget stops automatic OFF commands, not read-only monitoring or the fault.
+Force on overrides the fault so repaired hardware
 can be tested.
 
 ## Responsiveness
