@@ -78,7 +78,7 @@ def test_off_unknown_disabled_manual_forced_and_faulted_starts_do_not_get_hold()
             C._refresh_relay(p,C._cfg_generation)
             assert C.STATE['cold_start_hold_until'] is None, options
     with boot() as (C,p,clock,reading):
-        with C._state_lock:
+        with C._act_lock, C._fault_lock, C._state_lock:
             C._adopt_relay_locked(None,clock[0])
         assert C.STATE['cold_start_pending'] is True
         p.on = False

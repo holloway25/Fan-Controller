@@ -7,6 +7,29 @@ sys.path.insert(0,os.path.dirname(os.path.abspath(__file__)))
 import harness
 
 
+def test_email_header_line_breaks_rejected_at_api_and_startup():
+    C = harness.load()
+    C.CFG['ui']['password_hash'] = ''
+    before = copy.deepcopy(C.CFG)
+    client = C.app.test_client()
+    for field in ('sender', 'recipients'):
+        for separator in ('\r', '\n', '\r\n'):
+            value = 'fan@example.invalid' + separator + 'Injected: value'
+            response = client.post('/api/config', json={
+                'control': {'mode':'manual'}, 'email': {field:value}})
+            assert response.status_code == 400 and response.is_json
+            assert 'line breaks' in response.json['error']
+            assert C.CFG == before
+            with open(C.CFG_PATH, 'w') as stream:
+                json.dump({'email': {field:value}}, stream)
+            try:
+                C.load_cfg()
+            except C.ConfigurationError:
+                pass
+            else:
+                raise AssertionError('Startup accepted an injected mail header')
+
+
 def test_legacy_enable_requires_boolean_before_migration():
     C = harness.load()
     for value in ('false', 'true', 0, 1, None, [], {}):

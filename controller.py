@@ -183,6 +183,8 @@ def _coerce(name, spec, v):
     if kind == "str":
         if not isinstance(v, str) or not (spec[1] <= len(v) <= spec[2]):
             raise ValueError("%s is not valid text" % name)
+        if name in ("email.sender", "email.recipients") and any(ch in v for ch in "\r\n"):
+            raise ValueError("%s must not contain line breaks" % name)
         return v
     if kind == "list_str":
         if not isinstance(v, list) or len(v) > spec[2] or \
@@ -2260,7 +2262,7 @@ def _end_run_locked():
 
 
 def _adopt_relay_locked(actual, now):
-    """Record confirmed relay state under _act_lock and _state_lock.
+    """Record relay state with caller holding act -> fault -> state locks.
 
     Shared by sensor polling and independent draw monitoring. A first
     observation does not invent a new minimum-run lease or spin-up grace.
@@ -2298,7 +2300,7 @@ def _refresh_relay(plug, gen=None, poll=False):
         if _stale_client(gen):
             return
         actual = _read_relay(plug, gen, poll=poll)
-        with _state_lock:
+        with _fault_lock, _state_lock:
             message = _adopt_relay_locked(actual, time.time())
     if message:
         _log(message)
@@ -2524,7 +2526,7 @@ def tick():
     # the window this guards: a save landing between them and the
     # recording below still writing a superseded reading.
     #
-    # Order is _act_lock then _state_lock, as everywhere.
+    # Relay adoption changes fault safety state: act -> fault -> state.
     with _act_lock:
         if gen != _cfg_generation:
             _wake.set()
@@ -2533,7 +2535,7 @@ def tick():
         if actual is not None:
             _normal_relay_at = (h, gen, time.time())
         _daily_pending = None
-        with _state_lock:
+        with _fault_lock, _state_lock:
             STATE.update(co2=co2, co2_path=path, reading_at=now,
                          error=None, sensor_error=None,
                          temperature=vals.get('temperature'),
@@ -2867,9 +2869,17 @@ def _send_mail(subject, body, email_cfg=None):
     to = _split_recipients(e.get("recipients"))
     if not to:
         return "no recipients configured"
-    msg = EmailMessage()
-    msg["From"], msg["To"], msg["Subject"] = e["sender"], ", ".join(to), subject
-    msg.set_content(body, charset="utf-8")
+    try:
+        # Validate raw recipients before splitting, which would hide newlines.
+        if any(ch in value for value in (e["sender"], e.get("recipients", ""), subject)
+               for ch in "\r\n"):
+            raise ValueError("Header contains a line break")
+        msg = EmailMessage()
+        msg["From"], msg["To"], msg["Subject"] = e["sender"], ", ".join(to), subject
+        msg.set_content(body, charset="utf-8")
+        payload = msg.as_bytes(policy=SMTP_POLICY)
+    except Exception as exc:
+        return "Invalid email message headers or content (%s)" % type(exc).__name__
     try:
         s = smtplib.SMTP(e["host"], int(e["port"] or 25),
                          timeout=SMTP_TIMEOUT)
@@ -2908,7 +2918,7 @@ def _send_mail(subject, body, email_cfg=None):
                 s.user = e["username"]
                 s.password = e["password"]
                 s.auth("CRAM-MD5", s.auth_cram_md5)
-        refused = s.sendmail(e["sender"], to, msg.as_bytes(policy=SMTP_POLICY))
+        refused = s.sendmail(e["sender"], to, payload)
         if refused:
             # smtplib returns normally when SOME recipients accepted the
             # message. Do not mark the whole alert delivered, or expose
@@ -4100,7 +4110,7 @@ def _off_draw_check(plug, gen=None):
         actual = _fan_status(plug) if plug is not None else None
         if actual is not False:
             if actual is True:
-                with _state_lock:
+                with _fault_lock, _state_lock:
                     message = _adopt_relay_locked(True, time.time())
             else:
                 message = None
@@ -4239,7 +4249,7 @@ def _draw_check(plug, gen=None):
             # existing fail-closed draw/comms protection.
             actual = _fan_status(plug) if plug is not None else None
             if actual is False:
-                with _state_lock:
+                with _fault_lock, _state_lock:
                     external_msg = _adopt_relay_locked(False, time.time())
                 _oob_since = None
                 external_stop = True

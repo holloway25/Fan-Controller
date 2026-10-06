@@ -98,6 +98,9 @@ controller locks, and meter reads unregister before taking `_act_lock` to commit
 their result. The gate's internal condition is not held during network I/O.
 
 `_fault_lock` treats the in-memory fault and `fault.json` as one transaction.
+Relay adoption also holds act -> fault -> state locks: an external ON must
+invalidate a prior stop confirmation without an email-delivery annotation
+writing back an older safety record or swallowing its persistence retry.
 Draw evaluation holds `_act_lock` before `_fault_lock` so the configured
 power band, fault decision and stored fault remain coherent.
 

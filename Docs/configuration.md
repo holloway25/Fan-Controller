@@ -229,6 +229,10 @@ Three intentional alert silences are:
 
 ### SMTP security
 
+Sender and recipient settings must not contain carriage returns or newlines;
+both API updates and startup validation reject them. Message-construction
+failures are returned as send errors without contacting SMTP, not server errors.
+
 When the relay advertises STARTTLS, the controller uses it with certificate
 verification before authenticating. Without STARTTLS, authenticated delivery
 uses CRAM-MD5 only. It refuses PLAIN or LOGIN authentication over an

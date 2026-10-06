@@ -15,6 +15,68 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import harness
 
 
+def test_relay_observation_serializes_with_delivery_persistence():
+    for polling in ('draw', 'sensor'):
+        C = harness.load()
+        C.CFG['control']['mode'] = 'auto'
+        C.CFG['protect']['sensor_id'] = 'test'
+        C._notify = lambda *args, **kwargs: None
+        fault = dict(at=C.time.time(), code='FC-008', msg='hard fault', stopped=True,
+                     relay_retry=dict(attempts=6, phase='recovered'))
+        C._store_fault(fault)
+        C.STATE['fan'] = False
+        writing, release, observed, finished = [threading.Event() for _ in range(4)]
+        errors = []
+        original = C.save_fault
+        def gated_write(value):
+            writing.set()
+            assert release.wait(3), 'Test failed to release persistence'
+            original(value)
+        C.save_fault = gated_write
+        class Plug:
+            def state(self):
+                observed.set()
+                return True
+            def set(self, _):
+                raise AssertionError('Faulted Auto issued a command')
+        class Protect:
+            def readings(self, _):
+                return dict(co2=500, temperature=20, humidity=40), 'co2'
+        plug = Plug()
+        C._clients = lambda: (Protect(), plug)
+        def guarded(action, done=None):
+            try:
+                action()
+            except BaseException as exc:
+                errors.append(exc)
+            finally:
+                if done:
+                    done.set()
+        delivery = threading.Thread(target=lambda: guarded(lambda: C._mark_fault_delivered(fault['at'])))
+        observer = threading.Thread(target=lambda: guarded(
+            lambda: C.tick() if polling == 'sensor' else C._refresh_relay(plug), finished))
+        delivery.start()
+        try:
+            assert writing.wait(2)
+            observer.start()
+            assert observed.wait(2)
+            assert not finished.wait(.1), 'Relay correction bypassed the fault transaction'
+            assert C.STATE['fault']['stopped'] is True
+        finally:
+            release.set()
+            delivery.join(3)
+            if observer.ident is not None:
+                observer.join(3)
+        assert not delivery.is_alive() and not observer.is_alive()
+        assert not errors, errors
+        assert C.STATE['fan'] is True and not C.STATE['fault']['stopped']
+        assert C.STATE['fault_unsaved'], 'Delivery update swallowed the safety revision'
+        C.save_fault = original
+        assert C._retry_fault_persist()
+        assert not C.load_fault()['stopped'] and not C.STATE['fault_unsaved']
+        assert C.STATE['fault']['relay_retry'] == fault['relay_retry']
+
+
 class GatedPlug:
     """A plug whose first read from a named thread blocks until released.
 

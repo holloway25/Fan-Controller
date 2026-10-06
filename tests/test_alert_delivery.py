@@ -536,6 +536,29 @@ def test_no_username_means_no_authentication():
 
 # -------------------------------------------------- message construction
 
+def test_invalid_email_message_is_json_failure_without_smtp_contact():
+    C = harness.load()
+    C.CFG['ui']['password_hash'] = ''
+    C.CFG['email'].update(enabled=True, host='relay.invalid', sender='fan@invalid',
+                          recipients='a@invalid')
+    original_smtp = C.smtplib.SMTP
+    def forbidden(*args, **kwargs):
+        raise AssertionError('Invalid header reached SMTP')
+    C.smtplib.SMTP = forbidden
+    client = C.app.test_client()
+    try:
+        for field in ('sender','recipients'):
+            original = C.CFG['email'][field]
+            C.CFG['email'][field] = original + '\nInjected: value'
+            response = client.post('/api/email/test', json={})
+            assert response.status_code == 400 and response.is_json
+            assert 'Invalid email message' in response.json['error']
+            C.CFG['email'][field] = original
+        assert 'Invalid email message' in C._send_mail('Subject\rInjected: value', 'body')
+        assert 'Invalid email message' in C._send_mail('Subject', object())
+    finally:
+        C.smtplib.SMTP = original_smtp
+
 def test_the_message_has_the_headers_a_mail_server_needs():
     C = harness.load()
     real = C.smtplib.SMTP
