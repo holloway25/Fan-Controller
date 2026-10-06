@@ -64,6 +64,17 @@ MODULE_TIMEOUT_SECONDS = 120
 # by hand for the right FAILURE, not merely a failure: a mutation
 # caught by an unrelated crash is not evidence.
 MUTATIONS = [
+    ("auto-fault-scheduler-bypassed", "controller.py",
+     '            if STATE["fault"] is not None:\n                return  # Fault-stop enforcement alone owns OFF commands and retry budgets.',
+     '            if False:\n                return',
+     "test_relay_release.py", "test_auto_polls_never_command_around_fault_scheduler"),
+    ("external-on-stop-confirmation-retained", "controller.py",
+     '        STATE["fault"].update(stopped=False)',
+     '        STATE["fault"].update(stopped=True)',
+     "test_relay_release.py", "test_external_on_revokes_recovered_stop_without_new_budget"),
+    ("mail-unicode-serialization-broken", "controller.py",
+     'msg.as_bytes(policy=SMTP_POLICY)', 'body',
+     "test_alert_delivery.py", "test_unicode_fault_notice_uses_real_smtp_serialization"),
     ("partial-sensor-outage-hidden", "controller.py",
      '        usable = all(vals.get(r["reading"]) is not None for r in live)',
      '        usable = any(vals.get(r["reading"]) is not None for r in live)',

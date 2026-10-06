@@ -12,6 +12,8 @@ import atexit, copy, hashlib, hmac, json, math, os, re, signal, smtplib
 import socket, ssl, sys, tempfile
 import threading, time
 import logging
+from email.message import EmailMessage
+from email.policy import SMTP as SMTP_POLICY
 from logging.handlers import RotatingFileHandler
 from urllib3.connection import HTTPConnection
 from urllib3.connectionpool import HTTPConnectionPool
@@ -2265,6 +2267,9 @@ def _adopt_relay_locked(actual, now):
     Unknown is never interpreted as off or as the end of a run.
     """
     prev = STATE["fan"]
+    if actual is True and STATE["fault"] and STATE["fault"].get("stopped"):
+        STATE["fault"].update(stopped=False)
+        STATE["fault_unsaved"] = True
     startup_msg = None
     if STATE["cold_start_pending"] and actual is not None:
         STATE["cold_start_pending"] = False
@@ -2633,6 +2638,8 @@ def tick():
         # while history was being saved. Decide from the CURRENT run's
         # state and lease, not values captured before that observation.
         with _state_lock:
+            if STATE["fault"] is not None:
+                return  # Fault-stop enforcement alone owns OFF commands and retry budgets.
             fan_on = STATE["fan"]
             changed = STATE["changed_at"]
             lease_at = STATE["min_run_at"] if STATE["min_run_at"] is not None else changed
@@ -2860,9 +2867,9 @@ def _send_mail(subject, body, email_cfg=None):
     to = _split_recipients(e.get("recipients"))
     if not to:
         return "no recipients configured"
-    msg = ("From: %s\r\nTo: %s\r\nSubject: %s\r\n"
-           "Content-Type: text/plain; charset=utf-8\r\n\r\n%s"
-           % (e["sender"], ", ".join(to), subject, body))
+    msg = EmailMessage()
+    msg["From"], msg["To"], msg["Subject"] = e["sender"], ", ".join(to), subject
+    msg.set_content(body, charset="utf-8")
     try:
         s = smtplib.SMTP(e["host"], int(e["port"] or 25),
                          timeout=SMTP_TIMEOUT)
@@ -2901,7 +2908,7 @@ def _send_mail(subject, body, email_cfg=None):
                 s.user = e["username"]
                 s.password = e["password"]
                 s.auth("CRAM-MD5", s.auth_cram_md5)
-        refused = s.sendmail(e["sender"], to, msg)
+        refused = s.sendmail(e["sender"], to, msg.as_bytes(policy=SMTP_POLICY))
         if refused:
             # smtplib returns normally when SOME recipients accepted the
             # message. Do not mark the whole alert delivered, or expose
@@ -3885,6 +3892,7 @@ def _relay_release_step(plug, gen=None):
             f = copy.deepcopy(STATE["fault"])
             unsaved = STATE["fault_unsaved"]
             watts, age = STATE["watts"], _elapsed_age_locked("watts_at")
+            fan = STATE["fan"]
         if not f or f.get("code") not in _RELAY_FAULT_CODES or unsaved:
             return False
         if "relay_retry" not in f:
@@ -3897,7 +3905,7 @@ def _relay_release_step(plug, gen=None):
         confirmed = False
         low = (watts is not None and _finite(watts) and watts <= CFG["plug"]["watts_off_max"]
                and age is not None and age <= WATTS_STALE)
-        if low and retry["phase"] == "recovered" and f.get("stopped"):
+        if low and fan is False and retry["phase"] == "recovered" and f.get("stopped"):
             return True  # Normal meter/relay loops monitor a confirmed recovery.
         if low:
             try:

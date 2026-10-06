@@ -16,6 +16,45 @@ def raised():
     return C, clock, mail, plug
 
 
+def test_auto_polls_never_command_around_fault_scheduler():
+    for phase, count, unsaved in [('first',1,False), ('wait',3,False),
+            ('exhausted',6,False), ('first',1,True)]:
+        C, clock, mail, plug = raised()
+        C.STATE['fault']['relay_retry'] = dict(attempts=count, phase=phase)
+        C.STATE['fault_unsaved'] = unsaved
+        plug.relay = True
+        class Protect:
+            def readings(self, _):
+                return dict(co2=500, temperature=20, humidity=40), 'co2'
+        C.CFG['protect']['sensor_id'] = 'test'
+        C._clients = lambda: (Protect(), plug)
+        before = list(plug.commands)
+        for _ in range(3):
+            C.tick()
+        assert plug.commands == before, 'Auto bypassed fault scheduler'
+        assert C.STATE['fault']['relay_retry'] == dict(attempts=count, phase=phase)
+        assert C.STATE['fault_unsaved'] == unsaved
+
+
+def test_external_on_revokes_recovered_stop_without_new_budget():
+    C, clock, mail, plug = raised()
+    plug.watts = 0
+    check(C, clock, plug, 5, watts=0)
+    assert C.STATE['fault']['stopped']
+    retry = copy.deepcopy(C.STATE['fault']['relay_retry'])
+    plug.relay = True
+    C._refresh_relay(plug, C._cfg_generation)
+    assert C.STATE['fan'] is True
+    assert not C.STATE['fault']['stopped'] and C.STATE['fault_unsaved']
+    assert C.STATE['fault']['relay_retry'] == retry
+    before = list(plug.commands)
+    assert C._enforce_stop(plug, C._cfg_generation) is False
+    assert C._retry_fault_persist()
+    assert C._enforce_stop(plug, C._cfg_generation) is False
+    assert not C.load_fault()['stopped']
+    assert C.STATE['fault']['relay_retry'] == retry and plug.commands == before
+
+
 def test_two_groups_exact_spacing_and_terminal_exhaustion():
     C, clock, mail, plug = raised()
     for interval, count, phase in ((29,1,'first'),(1,2,'first'),

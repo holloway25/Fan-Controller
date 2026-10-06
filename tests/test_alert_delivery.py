@@ -545,18 +545,49 @@ def test_the_message_has_the_headers_a_mail_server_needs():
     finally:
         C.smtplib.SMTP = real
     sender, to, msg = fake.sent
+    from email import policy
+    from email.parser import BytesParser
+    parsed = BytesParser(policy=policy.default).parsebytes(msg)
     assert sender == "fan@invalid", sender
     assert to == ["a@example.com", "b@example.net"], to
-    assert "Subject: Fan stopped" in msg, msg[:200]
-    assert "From: fan@invalid" in msg
-    assert "To: a@example.com, b@example.net" in msg
-    assert "charset=utf-8" in msg
-    head, _, body = msg.partition("\r\n\r\n")
-    assert body == "the body", repr(body)
+    assert parsed['Subject'] == 'Fan stopped'
+    assert parsed['From'] == 'fan@invalid'
+    assert parsed['To'] == 'a@example.com, b@example.net'
+    assert parsed.get_content_charset() == 'utf-8'
+    assert parsed.get_content().rstrip() == 'the body'
     return "headers and body separated correctly"
 
 
 # ---------------------------------------------------------- stale alerts
+
+def test_unicode_fault_notice_uses_real_smtp_serialization():
+    C = harness.load()
+    real = C.smtplib.SMTP
+    class SerializedSMTP(FakeSMTP):
+        does_esmtp = False
+        def ehlo_or_helo_if_needed(self):
+            pass
+        def mail(self, sender, options):
+            return 250, b'ok'
+        def rcpt(self, recipient, options):
+            return 250, b'ok'
+        def data(self, msg):
+            self.payload = msg
+            return 250, b'ok'
+        def sendmail(self, sender, to, msg):
+            return real.sendmail(self, sender, to, msg)
+    fake = with_fake(C, SerializedSMTP(), username='')
+    body = 'FC-009 Manual OFF unconfirmed — relay ON\nTemperature: 23°C'
+    try:
+        why = C._send_mail('FC-006 Standing fault — restart', body)
+        assert why is None, why
+    finally:
+        C.smtplib.SMTP = real
+    from email import policy
+    from email.parser import BytesParser
+    parsed = BytesParser(policy=policy.default).parsebytes(fake.payload)
+    assert parsed['Subject'] == 'FC-006 Standing fault — restart'
+    assert parsed.get_content().replace('\r\n', '\n').rstrip() == body
 
 def stale_setup(C, fan_already_on):
     """Drive _failsafe with readings long stale."""

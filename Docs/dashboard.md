@@ -34,7 +34,10 @@ errors keep the overall error indicator red without marking fresh sensor
 measurements stale. `/api/state` exposes sensor acquisition errors separately
 as `sensor_error`.
 
-The power pill is neutral while the fan is off. While it is running and settled,
+The power pill is normally neutral while the fan is off, but turns red for
+draw above the OFF limit after settling. During fault-stop enforcement,
+continued draw is red even if the relay remains ON or unknown; Force on
+retains its deliberate override. While the fan is running and settled,
 power is green inside the configured band and red outside it, even when
 `watts_enabled` is off. The setting controls fault action, not visibility.
 

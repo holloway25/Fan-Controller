@@ -92,6 +92,9 @@ def test_failed_stops_keep_fresh_on_and_invalidate_stop_confirmation():
         C.STATE['fault']['stopped'] = True
         C.STATE['manual_off_pending'] = True
         plug = BrokenPlug(C, on=True)
+        C._record_relay_observation(True)
+        assert C.STATE['fan'] is True and C.STATE['fault']['stopped'] is False
+        assert C.STATE['fault_unsaved'], 'ON observation did not invalidate stop before command'
         if manual:
             C._manual_off(plug)
             assert plug.calls == []  # Standing fault owns the stop, not Manual.
