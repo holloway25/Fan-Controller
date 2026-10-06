@@ -164,7 +164,6 @@ def test_fault_stop_confirmation_replaces_cached_running_relay():
     C = harness.load()
     C.CFG['control']['mode'] = 'auto'
     C.STATE['fault'] = {'at':1, 'msg':'fault', 'stopped':False}
-    C._confirm_fault_stopped = lambda: True
     class Switch(Meter):
         on = True
         def state(self):

@@ -15,6 +15,59 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import harness
 
 
+def test_old_stop_confirmation_cannot_override_new_observation_or_fault():
+    for change in ('on', 'on_off', 'replacement'):
+        C = harness.load()
+        C.CFG['control']['mode'] = 'auto'
+        C.CFG['plug']['watts_enabled'] = False
+        C._notify = lambda *args, **kwargs: None
+        fault = dict(at=C.time.time(), code='FC-003', msg='draw fault', stopped=False)
+        C._store_fault(fault)
+        class Plug:
+            on = True
+            def state(self):
+                return self.on
+            def set(self, value):
+                self.on = value
+        plug = Plug()
+        C.STATE['fan'] = True
+        paused, release = threading.Event(), threading.Event()
+        original = C._confirm_fault_stopped
+        results, errors = [], []
+        def delayed(*token):
+            paused.set()
+            assert release.wait(3)
+            return original(*token)
+        C._confirm_fault_stopped = delayed
+        def stop():
+            try:
+                results.append(C._enforce_stop(plug))
+            except BaseException as exc:
+                errors.append(exc)
+        worker = threading.Thread(target=stop)
+        worker.start()
+        try:
+            assert paused.wait(2), 'Stop did not reach the unlocked confirmation gap'
+            if change == 'replacement':
+                C._store_fault(dict(fault, at=fault['at']+1, msg='new fault'))
+            else:
+                plug.on = True
+                C._refresh_relay(plug)
+                if change == 'on_off':
+                    plug.on = False
+                    C._refresh_relay(plug)
+        finally:
+            release.set()
+            worker.join(3)
+        assert not worker.is_alive() and not errors, errors
+        assert results == [False], 'Superseded stop returned success'
+        assert not C.STATE['fault']['stopped'] and not C.load_fault()['stopped'], change
+        assert not any('stop confirmed' in event['msg'] for event in C.STATE['events'])
+        C._confirm_fault_stopped = original
+        assert C._enforce_stop(plug) is True, 'A fresh stop did not recover normally'
+        assert C.STATE['fault']['stopped'] and C.load_fault()['stopped']
+
+
 def test_relay_observation_serializes_with_delivery_persistence():
     for polling in ('draw', 'sensor'):
         C = harness.load()

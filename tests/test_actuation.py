@@ -488,12 +488,12 @@ def test_the_fault_write_happens_outside_the_actuation_lock():
     seen = {}
     real_confirm = C._confirm_fault_stopped
 
-    def watched():
+    def watched(*token):
         free = C._act_lock.acquire(blocking=False)
         seen["act_lock_free"] = free
         if free:
             C._act_lock.release()
-        return real_confirm()
+        return real_confirm(*token)
 
     C._confirm_fault_stopped = watched
     try:
@@ -881,7 +881,8 @@ def test_a_confirmed_fault_stop_clears_the_run_record():
         C.STATE["fault"] = {"at": C.time.time(), "msg": "draw fault",
                             "stopped": False}
         C.STATE["ran_with"] = {"humidity": True}
-    assert C._confirm_fault_stopped() is True, "the stop was not confirmed"
+    C._record_relay_observation(False)
+    assert C._confirm_fault_stopped(C.STATE['fault']['at'], C.STATE['relay_revision']) is True, "the stop was not confirmed"
     assert C.STATE["ran_with"] == {}, \
         "a confirmed fault stop left the run record: %r" % C.STATE["ran_with"]
     return "a confirmed fault stop ends the run"
@@ -904,7 +905,8 @@ def test_an_unconfirmed_fault_stop_keeps_the_run_record():
         C.STATE["fault"] = {"at": C.time.time(), "msg": "draw fault",
                             "stopped": False}
         C.STATE["ran_with"] = {"humidity": True}
-    assert C._confirm_fault_stopped() is False, "an unsaved stop was confirmed"
+    C._record_relay_observation(False)
+    assert C._confirm_fault_stopped(C.STATE['fault']['at'], C.STATE['relay_revision']) is False, "an unsaved stop was confirmed"
     assert C.STATE["ran_with"].get("humidity") is True, \
         "an unconfirmed fault stop discarded the run: %r" % C.STATE["ran_with"]
     return "an unconfirmed fault stop keeps the run"

@@ -189,15 +189,17 @@ def test_failed_stop_confirmation_is_retried():
     """
     C = harness.load()
     C._store_fault(dict(FAULT))
+    C._record_relay_observation(False)
+    token = (C.STATE['fault']['at'], C.STATE['relay_revision'])
     with failing_os("replace"):
-        first = C._confirm_fault_stopped()
+        first = C._confirm_fault_stopped(*token)
 
     assert first is False, "claimed confirmed after a failed write"
     assert C.STATE["fault"].get("stopped") is not True, \
         "memory moved ahead of disk"
     assert C.STATE["fault_unsaved"] is True, "not flagged for retry"
 
-    assert C._confirm_fault_stopped() is True, "never retried"
+    assert C._confirm_fault_stopped(*token) is True, "never retried"
     assert json.load(open(C.FAULT_PATH)).get("stopped") is True
     return "retried and landed"
 

@@ -1736,6 +1736,7 @@ class Tasmota:
 STATE = {
     "plug_polling_enabled": not PLUG_ACCESS_DISABLED,
     "co2": None, "co2_path": None, "fan": None, "reading_at": None,
+    "relay_revision": 0,  # Process-local sequence for confirmed observations/actions.
     "changed_at": None, "error": None, "sensor_name": None,
     # Demand may renew a lease without physically starting the motor.
     "min_run_at": None,
@@ -2269,6 +2270,8 @@ def _adopt_relay_locked(actual, now):
     Unknown is never interpreted as off or as the end of a run.
     """
     prev = STATE["fan"]
+    if actual is not None:
+        STATE["relay_revision"] += 1
     if actual is True and STATE["fault"] and STATE["fault"].get("stopped"):
         STATE["fault"].update(stopped=False)
         STATE["fault_unsaved"] = True
@@ -2412,11 +2415,12 @@ def _force_on(plug, gen=None, poll=False):
         except PlugError as error:
             actual, read_error = None, error
         if actual is True:
-            with _state_lock:
-                STATE["fan"] = True  # no change, so no lease and no event
+            _record_relay_observation(True)  # No lease or event for an unchanged relay.
             return
         with _state_lock:
             was_on = STATE["fan"] is True
+        _record_relay_observation(actual)
+        with _state_lock:
             if actual is False:
                 STATE["fan"] = False
                 # The physical run ended, even though the fan is about
@@ -2442,6 +2446,7 @@ def _force_on(plug, gen=None, poll=False):
                  % (FC_EXTERNAL_CHANGE, _mode_now()))
         plug.set(True)               # raises: retried on the next cycle
         _remember_relay(plug, True)
+        _record_relay_observation(True)
         now = time.time()
         with _state_lock:
             STATE["fan"] = True
@@ -3721,9 +3726,11 @@ def _clear_fault_locked():
     return had, True
 
 
-def _confirm_fault_stopped():
+def _confirm_fault_stopped(expected_at, relay_revision):
     """Record that the plug confirmed the stop. True if this call did it.
 
+    Requires the episode and observation revision captured after the stop.
+    A newer observation or replacement fault discards the old result.
     Re-reads the fault inside the lock rather than trusting a snapshot
     taken earlier: an acknowledgement may have landed in between, and
     writing the older value back would resurrect a cleared fault.
@@ -3737,6 +3744,11 @@ def _confirm_fault_stopped():
     with _fault_lock:
         with _state_lock:
             cur = STATE["fault"]
+            if (
+                    not cur or cur.get("at") != expected_at
+                    or STATE["relay_revision"] != relay_revision
+                    or STATE["fan"] is not False):
+                return False  # This stop result was superseded; do not write or log it.
             if not cur or cur.get("stopped"):
                 return False
             snap = dict(cur)
@@ -3779,6 +3791,7 @@ def _record_relay_observation(actual):
         return
     with _fault_lock:
         with _state_lock:
+            STATE["relay_revision"] += 1
             STATE["fan"] = actual
             fault = STATE["fault"]
             if actual is True and fault and fault.get("stopped"):
@@ -4069,18 +4082,23 @@ def _enforce_stop(plug, gen=None):
             return False            # unconfirmed: retried next cycle
         with _state_lock:
             STATE["fan"] = False
+            stop_token = (STATE["fault"].get("at"), STATE["relay_revision"])
     # Outside _act_lock: the fault write takes its own lock, and a disk
     # write must not extend a hold a settings save may be waiting on.
-    if _confirm_fault_stopped():
+    newly_confirmed = _confirm_fault_stopped(*stop_token)
+    with _fault_lock, _state_lock:
+        f = STATE["fault"] or {}
+        valid = (f.get("at") == stop_token[0]
+                 and STATE["relay_revision"] == stop_token[1]
+                 and STATE["fan"] is False and f.get("stopped") is True)
+        code = f.get("code")
+    if newly_confirmed and valid:
         # Carries the code of the fault it belongs to, so the raise and
         # the confirmation come back from the same search. Falls back to
         # the bare line for a fault written by an older version.
-        with _state_lock:
-            f = STATE["fault"] or {}
-        code = f.get("code")
         _log("%sFan off \u2014 stop confirmed"
              % ("%s " % code if code else ""))
-    return True
+    return bool(valid)
 
 def _off_draw_check(plug, gen=None):
     """Latch sustained fresh draw despite a confirmed software OFF state."""

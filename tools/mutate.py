@@ -64,6 +64,18 @@ MODULE_TIMEOUT_SECONDS = 120
 # by hand for the right FAILURE, not merely a failure: a mutation
 # caught by an unrelated crash is not evidence.
 MUTATIONS = [
+    ("stale-stop-confirmation-accepted", "controller.py",
+     '            if (\n                    not cur or cur.get("at") != expected_at',
+     '            if False and (\n                    not cur or cur.get("at") != expected_at',
+     "test_concurrency.py", "test_old_stop_confirmation_cannot_override_new_observation_or_fault"),
+    ("stop-observation-revision-ignored", "controller.py",
+     '                    or STATE["relay_revision"] != relay_revision',
+     '                    or False',
+     "test_concurrency.py", "test_old_stop_confirmation_cannot_override_new_observation_or_fault"),
+    ("stop-fault-episode-ignored", "controller.py",
+     '                    not cur or cur.get("at") != expected_at',
+     '                    not cur',
+     "test_concurrency.py", "test_old_stop_confirmation_cannot_override_new_observation_or_fault"),
     ("relay-observation-delivery-race", "controller.py",
      '        with _fault_lock, _state_lock:\n            message = _adopt_relay_locked(actual, time.time())',
      '        with _state_lock:\n            message = _adopt_relay_locked(actual, time.time())',

@@ -101,6 +101,10 @@ their result. The gate's internal condition is not held during network I/O.
 Relay adoption also holds act -> fault -> state locks: an external ON must
 invalidate a prior stop confirmation without an email-delivery annotation
 writing back an older safety record or swallowing its persistence retry.
+Stop results committed after releasing the actuation lock carry the fault
+episode and a process-local relay-observation revision. A newer observation
+or replacement fault discards the old result before persistence and reporting.
+This sequence is not a runtime setting or restart lease.
 Draw evaluation holds `_act_lock` before `_fault_lock` so the configured
 power band, fault decision and stored fault remain coherent.
 
