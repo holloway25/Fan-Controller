@@ -34,13 +34,16 @@ PAGE = b'''<!doctype html><meta name="viewport" content="width=device-width">
 <label>Timeout hold, seconds <input id="timeout_seconds" type="number" min="0.1" max="60" step="any" value="15"></label><br>
 <label>Brief outage, seconds <input id="outage_seconds" type="number" min="0.1" max="600" step="any" value="30"></label><br>
 <label>Fail next requests <input id="fail_next" type="number" min="0" max="100" step="1" value="0"></label><br>
-<p>0 keeps the selected failure mode active (outages still expire). A positive count fails only that many matching requests, then recovers. Apply starts a new batch.</p>
+<p>0 keeps the selected failure mode active (outages still expire). A positive count fails only that many matching requests, then recovers. Editing Failure or Fail next requests starts a new batch on Apply.</p>
 <p>Timeout holds an accepted request without replying. Outage drops selected requests, then recovers automatically. Neither reproduces a TCP connect timeout. Controls remain available; failed switches leave the simulated relay unchanged.</p>
 <button>Apply</button></form><pre id="status"></pre>
 <script>
 const ids=['relay','fan_profile','startup_watts','startup_seconds','on_watts','warm_watts','warm_after_minutes','off_watts','failure','target','delay_seconds','timeout_seconds','outage_seconds','fail_next'];
-async function load(){const r=await fetch('/api/emulator');if(!r.ok)throw Error('Read failed');const s=await r.json();for(const id of ids)document.getElementById(id).value=String(s[id]);document.getElementById('status').textContent=JSON.stringify(s,null,2);}
-document.getElementById('form').onsubmit=async e=>{e.preventDefault();try{const b={};for(const id of ids){let v=document.getElementById(id).value;b[id]=['relay','fan_profile'].includes(id)?v==='true':['failure','target'].includes(id)?v:Number(v);}const r=await fetch('/api/emulator',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});if(!r.ok)throw Error('Settings rejected');await load();}catch(err){document.getElementById('status').textContent=err.message;}};
+const dirty=new Set();let ready=false,saving=false;
+for(const id of ids){const field=document.getElementById(id);for(const event of ['input','change'])field.addEventListener(event,()=>dirty.add(id));}
+function show(s,submitted=new Map()){for(const id of ids){const field=document.getElementById(id);if(submitted.has(id)&&field.value===submitted.get(id))dirty.delete(id);if(!dirty.has(id))field.value=String(s[id]);}document.getElementById('status').textContent=JSON.stringify(s,null,2);}
+async function load(){const r=await fetch('/api/emulator');if(!r.ok)throw Error('Read failed');show(await r.json());ready=true;}
+document.getElementById('form').onsubmit=async e=>{e.preventDefault();if(!ready||saving)return;const submitted=new Map([...dirty].map(id=>[id,document.getElementById(id).value]));if(!submitted.size){document.getElementById('status').textContent='No changes to apply';return;}saving=true;try{const b={};for(const [id,v] of submitted)b[id]=['relay','fan_profile'].includes(id)?v==='true':['failure','target'].includes(id)?v:Number(v);const r=await fetch('/api/emulator',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});if(!r.ok)throw Error('Settings rejected');show(await r.json(),submitted);}catch(err){document.getElementById('status').textContent=err.message;}finally{saving=false;}};
 load().catch(e=>document.getElementById('status').textContent=e.message);
 setInterval(async()=>{try{const r=await fetch('/api/emulator');if(!r.ok)throw Error('Read failed');document.getElementById('status').textContent=JSON.stringify(await r.json(),null,2);}catch(e){document.getElementById('status').textContent=e.message;}},2000);
 </script>'''

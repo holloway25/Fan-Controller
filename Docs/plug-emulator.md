@@ -40,6 +40,11 @@ adapting headers for the loopback upstream. Do not proxy `/cm`, expose the
 whole server, or publish the controls to the internet. Anyone allowed to use
 these controls can change the simulated relay and load; there is no login.
 
+The control page sends only deliberately edited fields on Apply. Editing
+failure settings does not submit an old relay selection or other unchanged
+settings. Deliberately change Relay to switch the simulated plug; an Apply
+with no edits does nothing. Edits made during an Apply remain pending.
+
 Alternatively, on the development machine:
 
 ```sh
