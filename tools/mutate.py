@@ -64,6 +64,12 @@ MODULE_TIMEOUT_SECONDS = 120
 # by hand for the right FAILURE, not merely a failure: a mutation
 # caught by an unrelated crash is not evidence.
 MUTATIONS = [
+    ("emulator-timeout-reply-restored", "tools/plug_emulator.py",
+     '            if settings["failure"] == "timeout":', '            if False:',
+     "test_plug_emulator.py", "test_timeout_and_connection_drop_leave_switch_unchanged_and_recover"),
+    ("emulator-outage-never-recovers", "tools/plug_emulator.py",
+     'self.clock() >= self.outage_until', 'False',
+     "test_plug_emulator.py", "test_brief_outage_expires_without_changing_relay_or_extending_on_unrelated_save"),
     ("plug-boolean-watts-accepted", "controller.py",
      '            if isinstance(raw, bool):', '            if False:',
      "test_off_draw.py", "test_boolean_http_meter_values_cannot_confirm_fault_stop"),

@@ -14,7 +14,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 DEFAULTS = dict(relay=False, on_watts=23, off_watts=0,
                 fan_profile=True, startup_watts=27, startup_seconds=3.0,
                 warm_watts=22, warm_after_minutes=30.0,
-                failure="none", target="all", delay_seconds=0.0)
+                failure="none", target="all", delay_seconds=0.0,
+                timeout_seconds=15.0, outage_seconds=30.0)
 PAGE = b'''<!doctype html><meta name="viewport" content="width=device-width">
 <title>Test plug</title><h1>Emulated plug (no hardware)</h1>
 <p>Simulated fan: brief startup surge, normal running draw, then a gradual reduction as it warms. Settings reset on emulator restart.</p>
@@ -27,12 +28,15 @@ PAGE = b'''<!doctype html><meta name="viewport" content="width=device-width">
 <label>Warm running watts <input id="warm_watts" type="number" min="0" max="100000" step="1" value="22"></label><br>
 <label>Minutes to warm after startup <input id="warm_after_minutes" type="number" min="0" max="1440" step="any" value="30"></label><br>
 <label>OFF watts <input id="off_watts" type="number" min="0" max="100000" step="1" value="0"></label><br>
-<label>Failure <select id="failure"><option>none</option><option>http_error</option><option>malformed</option><option>reject_switch</option></select></label><br>
+<label>Failure <select id="failure"><option>none</option><option>http_error</option><option>malformed</option><option>reject_switch</option><option value="timeout">No reply (read timeout)</option><option value="drop_connection">Drop connection</option><option value="outage">Brief outage (auto recovery)</option></select></label><br>
 <label>Target <select id="target"><option>all</option><option>relay</option><option>power</option><option>switch</option></select></label><br>
 <label>Reply delay, seconds <input id="delay_seconds" type="number" min="0" max="20" step="any" value="0"></label><br>
+<label>Timeout hold, seconds <input id="timeout_seconds" type="number" min="0.1" max="60" step="any" value="15"></label><br>
+<label>Brief outage, seconds <input id="outage_seconds" type="number" min="0.1" max="600" step="any" value="30"></label><br>
+<p>Timeout holds an accepted request without replying. Outage drops selected requests, then recovers automatically. Neither reproduces a TCP connect timeout. Controls remain available; failed switches leave the simulated relay unchanged.</p>
 <button>Apply</button></form><pre id="status"></pre>
 <script>
-const ids=['relay','fan_profile','startup_watts','startup_seconds','on_watts','warm_watts','warm_after_minutes','off_watts','failure','target','delay_seconds'];
+const ids=['relay','fan_profile','startup_watts','startup_seconds','on_watts','warm_watts','warm_after_minutes','off_watts','failure','target','delay_seconds','timeout_seconds','outage_seconds'];
 async function load(){const r=await fetch('/api/emulator');if(!r.ok)throw Error('Read failed');const s=await r.json();for(const id of ids)document.getElementById(id).value=String(s[id]);document.getElementById('status').textContent=JSON.stringify(s,null,2);}
 document.getElementById('form').onsubmit=async e=>{e.preventDefault();try{const b={};for(const id of ids){let v=document.getElementById(id).value;b[id]=['relay','fan_profile'].includes(id)?v==='true':['failure','target'].includes(id)?v:Number(v);}const r=await fetch('/api/emulator',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});if(!r.ok)throw Error('Settings rejected');await load();}catch(err){document.getElementById('status').textContent=err.message;}};
 load().catch(e=>document.getElementById('status').textContent=e.message);
@@ -47,6 +51,13 @@ class PlugState:
         self.counts = dict(relay=0, power=0, switch=0)
         self.clock = clock or time.monotonic
         self.started_at = None
+        self.outage_until = None
+
+    def _failure_locked(self):
+        failure = self.values["failure"]
+        if failure == "outage" and (self.outage_until is None or self.clock() >= self.outage_until):
+            return "none"
+        return failure
 
     def _set_relay_locked(self, on):
         if on != self.values["relay"]:
@@ -74,7 +85,9 @@ class PlugState:
         with self.lock:
             watts, phase, elapsed = self._load_locked()
             return dict(self.values, requests=dict(self.counts), current_watts=watts,
-                        phase=phase, run_seconds=round(elapsed, 2))
+                        phase=phase, run_seconds=round(elapsed, 2),
+                        active_failure=self._failure_locked(),
+                        outage_remaining_seconds=round(max(0.0, (self.outage_until or 0)-self.clock()), 2))
 
     def update(self, body):
         if not isinstance(body, dict) or set(body) - set(DEFAULTS):
@@ -84,13 +97,15 @@ class PlugState:
             if key in ("relay", "fan_profile"):
                 valid = type(value) is bool
             elif key == "failure":
-                valid = value in ("none", "http_error", "malformed", "reject_switch")
+                valid = value in ("none", "http_error", "malformed", "reject_switch",
+                                  "timeout", "drop_connection", "outage")
             elif key == "target":
                 valid = value in ("all", "relay", "power", "switch")
             else:
                 try:
                     valid = (type(value) in (int, float) and math.isfinite(value)
-                             and 0 <= value <= {"delay_seconds":20, "startup_seconds":60,
+                             and (0.1 if key in ("timeout_seconds", "outage_seconds") else 0) <= value
+                             <= {"delay_seconds":20, "timeout_seconds":60, "outage_seconds":600, "startup_seconds":60,
                                                  "warm_after_minutes":1440}.get(key, 100000))
                     if valid and key.endswith("_watts"):
                         valid = float(value).is_integer()
@@ -103,6 +118,9 @@ class PlugState:
                 self._set_relay_locked(body["relay"])
             self.values.update({key:int(value) if key.endswith("_watts") else value
                                 for key,value in body.items() if key != "relay"})
+            if "failure" in body or "outage_seconds" in body:
+                self.outage_until = (self.clock()+self.values["outage_seconds"]
+                                     if self.values["failure"] == "outage" else None)
 
 
 class EmulatorServer(ThreadingHTTPServer):
@@ -179,8 +197,16 @@ class Handler(BaseHTTPRequestHandler):
         with state.lock:
             state.counts[operation] += 1
             settings = dict(state.values)
+            settings["failure"] = state._failure_locked()
         selected = settings["target"] in ("all", operation)
         if selected:
+            if settings["failure"] in ("drop_connection", "outage"):
+                self.close_connection = True
+                return
+            if settings["failure"] == "timeout":
+                time.sleep(settings["timeout_seconds"])
+                self.close_connection = True
+                return  # No late actuation after a client has timed out.
             time.sleep(settings["delay_seconds"])
             if settings["failure"] == "http_error":
                 return self.reply(503, dict(error="Simulated plug failure"))

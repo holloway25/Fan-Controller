@@ -188,5 +188,81 @@ def test_emulated_meter_and_controls_report_integer_watts():
     with_server(check)
 
 
+def test_timeout_and_connection_drop_leave_switch_unchanged_and_recover():
+    C = harness.load()
+    def check(server):
+        plug = C.Tasmota("127.0.0.1:%d" % server.server_port)
+        # Keep this check fast while using the real requests/parser/error path.
+        C._plug_http_get = lambda url, params, timeout: C.requests.get(
+            url, params=params, timeout=(0.1, 0.03))
+        for failure, reason in (("timeout", "ReadTimeout"), ("drop_connection", "ConnectionError")):
+            server.state.update(dict(failure=failure, target="switch", timeout_seconds=0.1))
+            try:
+                plug.set(True)
+            except C.PlugError as exc:
+                assert reason in str(exc)
+            else:
+                raise AssertionError("Simulated connection failure was accepted")
+            assert plug.state() is False and plug.power_w() == 0
+            with urllib.request.urlopen("http://127.0.0.1:%d/api/emulator" % server.server_port) as r:
+                assert json.load(r)['relay'] is False
+        time.sleep(0.12)  # The timed-out handler must not actuate later.
+        assert server.state.snapshot()['relay'] is False
+        server.state.update(dict(failure="none"))
+        assert plug.set(True) is True
+    with_server(check)
+
+
+def test_brief_outage_expires_without_changing_relay_or_extending_on_unrelated_save():
+    C = harness.load()
+    def check(server):
+        now = [100.0]
+        server.state = E.PlugState(clock=lambda: now[0])
+        server.state.update(dict(relay=True, failure="outage", target="all", outage_seconds=30))
+        plug = C.Tasmota("127.0.0.1:%d" % server.server_port)
+        for operation in (plug.state, plug.power_w, lambda: plug.set(False)):
+            try:
+                operation()
+            except C.PlugError:
+                pass
+            else:
+                raise AssertionError("Request succeeded during outage")
+        now[0] += 29
+        server.state.update(dict(on_watts=24))
+        assert server.state.snapshot()['outage_remaining_seconds'] == 1
+        with urllib.request.urlopen("http://127.0.0.1:%d/api/emulator" % server.server_port) as r:
+            assert json.load(r)['active_failure'] == 'outage'
+        now[0] += 1
+        assert server.state.snapshot()['active_failure'] == 'none'
+        assert plug.state() is True and plug.power_w() == 24
+        assert plug.set(False) is False
+        server.state.update(dict(failure='outage', target='power', outage_seconds=10))
+        assert plug.state() is False
+        try:
+            plug.power_w()
+        except C.PlugError:
+            pass
+        else:
+            raise AssertionError('Targeted outage did not fail meter read')
+        server.state.update(dict(failure='none'))
+        assert plug.power_w() == 0
+    with_server(check)
+
+
+def test_network_fault_settings_reject_invalid_values_atomically():
+    state = E.PlugState()
+    for body in (dict(relay=True, timeout_seconds=0), dict(outage_seconds=601),
+                 dict(timeout_seconds=True), dict(outage_seconds=float('inf')),
+                 dict(timeout_seconds=10**400), dict(failure='unknown')):
+        before = state.snapshot()
+        try:
+            state.update(body)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError('Invalid network simulation setting accepted')
+        assert state.snapshot() == before
+
+
 if __name__ == "__main__":
     sys.exit(harness.run(dict(globals())))

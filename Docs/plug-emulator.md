@@ -47,6 +47,8 @@ Alternatively, on the development machine:
 ./venv/bin/python tools/plug_emulator.py set --json '{"on_watts":100}'
 ./venv/bin/python tools/plug_emulator.py set --json '{"relay":false}'
 ./venv/bin/python tools/plug_emulator.py set --json '{"failure":"http_error","target":"power"}'
+./venv/bin/python tools/plug_emulator.py set --json '{"failure":"outage","target":"all","outage_seconds":30}'
+./venv/bin/python tools/plug_emulator.py set --json '{"failure":"timeout","target":"power","timeout_seconds":15}'
 ./venv/bin/python tools/plug_emulator.py set --json '{"failure":"none","delay_seconds":0}'
 ```
 
@@ -56,14 +58,28 @@ than changing normal running watts while the warm profile remains enabled.
 Settings: `relay` and `fan_profile` (Booleans), `on_watts`, `off_watts`,
 `startup_watts` and `warm_watts` (whole watts, 0–100000), `startup_seconds` (0–60),
 `warm_after_minutes` (0–1440, warming duration after startup),
-`delay_seconds` (0–20), `target` (`all`, `relay`, `power`, `switch`), and
-`failure` (`none`, `http_error`, `malformed`, `reject_switch`). The delay and
+`delay_seconds` (0–20), `timeout_seconds` (0.1–60, default 15),
+`outage_seconds` (0.1–600, default 30), `target` (`all`, `relay`, `power`, `switch`), and
+`failure` (`none`, `http_error`, `malformed`, `reject_switch`, `timeout`,
+`drop_connection`, `outage`). The delay and
 failure apply only to the chosen operation. A rejected switch leaves the
 relay unchanged. A delay beyond the controller's timeout simulates a slow
 HTTP reply, **not** a TCP connection timeout. Request counts contain no
 credentials. The control API accepts JSON and rejects cross-origin browser
 writes. Tasmota credential parameters are ignored and never logged.
 The control page's live status includes current watts, phase and run duration.
+For slow replies use `delay_seconds`. `timeout` accepts the HTTP connection
+but holds the request without a reply for `timeout_seconds`, then closes it;
+choose a hold longer than the client's read timeout. It never executes a
+timed-out switch later. `drop_connection` closes selected requests immediately.
+`outage` drops selected requests for `outage_seconds`, then automatically
+resumes normal replies. Selecting `outage` again or changing its duration
+starts a new window; unrelated setting changes do not extend it. Controls stay
+available throughout, and the simulated relay retains its last state.
+Live status reports `active_failure` and `outage_remaining_seconds`.
+These are HTTP/read failures, **not** a reproduction of TCP SYN loss,
+source-port reuse, or the production `ConnectTimeout`. They test controller
+error handling and recovery, not the suspected hardware/network cause.
 Repeated ON commands or settings saves do not restart the motor profile;
 only an OFF-to-ON transition does. Timing uses an elapsed clock, not wall time.
 Reported power is rounded to whole watts, including during the load taper.
