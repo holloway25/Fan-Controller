@@ -1573,7 +1573,7 @@ def _open_plug_diagnostics():
         logger = logging.Logger('fan-plug-diagnostics')
         logger.addHandler(RotatingFileHandler(path, maxBytes=1048576,
                                              backupCount=3))
-        return logger, min(until, time.time()+48*3600)
+        return logger, min(until, time.time()+7*24*3600)
     except Exception:
         # Diagnostics must never block startup or change fan protection.
         return None, 0

@@ -57,16 +57,23 @@ def test_expired_or_failed_diagnostics_do_not_change_control():
 
 def test_local_opt_in_has_private_bounded_files_and_expiry():
     C = harness.load()
+    C.time.time = lambda: 1000000.0
     assert C._open_plug_diagnostics() == (None, 0)
     with open(os.path.join(C.DIR, 'plug-diagnostics.enabled'), 'w') as stream:
         json.dump({'until': C.time.time()+1000000}, stream)
     logger, until = C._open_plug_diagnostics()
-    assert logger is not None and until <= C.time.time()+48*3600
+    assert logger is not None and until == C.time.time()+7*24*3600
     handler = logger.handlers[0]
     assert handler.maxBytes == 1048576 and handler.backupCount == 3
     assert os.stat(handler.baseFilename).st_mode & 0o777 == 0o600
     assert os.stat(os.path.dirname(handler.baseFilename)).st_mode & 0o777 == 0o700
     handler.close()
+    requested = C.time.time()+3*24*3600
+    with open(os.path.join(C.DIR, 'plug-diagnostics.enabled'), 'w') as stream:
+        json.dump({'until': requested}, stream)
+    logger, until = C._open_plug_diagnostics()
+    assert until == requested
+    logger.handlers[0].close()
 
 
 if __name__ == '__main__':

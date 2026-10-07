@@ -10,7 +10,7 @@ For software-only development against a fake Tasmota plug, see the
 For connection fault-finding, an operator can create a local ignored
 `plug-diagnostics.enabled` file containing `{"until": <Unix expiry time>}`
 and use the preserving restart. Timing logging is off by default and stops
-at that expiry, capped at 48 hours from startup. Remove the marker to prevent
+at that expiry, capped at seven days from startup. Remove the marker to prevent
 reactivation on subsequent restarts.
 
 Private `diagnostics/plug-requests.jsonl` records fixed operation labels,
