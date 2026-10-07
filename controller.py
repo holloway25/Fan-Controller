@@ -1738,7 +1738,10 @@ class Tasmota:
         running rather than trusting that the relay closed."""
         d = self._cmd("Status 8")
         try:
-            watts = float(d["StatusSNS"]["ENERGY"]["Power"])
+            raw = d["StatusSNS"]["ENERGY"]["Power"]
+            if isinstance(raw, bool):
+                return None
+            watts = float(raw)
             return watts if math.isfinite(watts) else None
         except (KeyError, TypeError, ValueError, OverflowError):
             return None

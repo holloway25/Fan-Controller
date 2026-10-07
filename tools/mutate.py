@@ -64,6 +64,9 @@ MODULE_TIMEOUT_SECONDS = 120
 # by hand for the right FAILURE, not merely a failure: a mutation
 # caught by an unrelated crash is not evidence.
 MUTATIONS = [
+    ("plug-boolean-watts-accepted", "controller.py",
+     '            if isinstance(raw, bool):', '            if False:',
+     "test_off_draw.py", "test_boolean_http_meter_values_cannot_confirm_fault_stop"),
     ("relay-mail-pending-stage-not-persisted", "controller.py",
      '                f["relay_notice"] = {"stage": stage, "delivered": False}',
      '                pass',

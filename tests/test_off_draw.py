@@ -171,5 +171,35 @@ def test_off_timer_uses_elapsed_time_and_healthy_reading_resets_it():
     assert C.STATE['fault']['code'] == C.FC_OFF_DRAW
 
 
+def test_boolean_http_meter_values_cannot_confirm_fault_stop():
+    from test_plug_requests import Reply
+    for limit in (0, 1):
+        for raw in (False, True):
+            C, clock, notices, fake = setup()
+            C.CFG['plug']['watts_off_max'] = limit
+            check(C, clock, fake)
+            check(C, clock, fake, 30)
+            before = C.STATE['fault']['relay_retry']['attempts']
+            class MeterReply(Reply):
+                def json(self):
+                    return {'POWER':'OFF', 'StatusSNS':{'ENERGY':{'Power':raw}}}
+            C._plug_http_get = lambda *a, **kw: MeterReply()
+            plug = C.Tasmota('192.0.2.10')
+            assert plug.power_w() is None
+            check(C, clock, plug, 30, watts=0)
+            assert not C.STATE['fault']['stopped']
+            assert C.STATE['fault']['relay_retry']['phase'] != 'recovered'
+            assert C.STATE['fault']['relay_retry']['attempts'] == before + 1
+            assert not any(subject.startswith('FC-103') for subject, _ in notices)
+    C, _, _, _ = setup()
+    class MeterReply(Reply):
+        def json(self):
+            return {'StatusSNS':{'ENERGY':{'Power':raw}}}
+    C._plug_http_get = lambda *a, **kw: MeterReply()
+    plug = C.Tasmota('192.0.2.10')
+    for raw in (0, 1, 23, '0', '23'):
+        assert plug.power_w() == float(raw)
+
+
 if __name__ == '__main__':
     sys.exit(harness.run(dict(globals())))
