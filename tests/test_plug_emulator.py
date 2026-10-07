@@ -264,5 +264,76 @@ def test_network_fault_settings_reject_invalid_values_atomically():
         assert state.snapshot() == before
 
 
+def test_fail_next_batch_is_targeted_exact_and_recovers_without_rearming():
+    C = harness.load()
+    def check(server):
+        plug = C.Tasmota("127.0.0.1:%d" % server.server_port)
+        server.state.update(dict(failure='drop_connection',target='power',fail_next=3))
+        for remaining in (2,1,0):
+            assert plug.state() is False
+            with urllib.request.urlopen("http://127.0.0.1:%d/api/emulator" % server.server_port) as r:
+                json.load(r)
+            try:
+                plug.power_w()
+            except C.PlugError:
+                pass
+            else:
+                raise AssertionError('Batch failed fewer requests than requested')
+            assert server.state.snapshot()['failures_remaining'] == remaining
+            server.state.update(dict(on_watts=24))
+        assert server.state.snapshot()['active_failure'] == 'none'
+        for _ in range(3):
+            assert plug.power_w() == 0
+        server.state.update(dict(failure='reject_switch',target='all',fail_next=1))
+        assert plug.state() is False and plug.power_w() == 0
+        assert server.state.snapshot()['failures_remaining'] == 1
+        try:
+            plug.set(True)
+        except C.PlugError:
+            pass
+        else:
+            raise AssertionError('Switch failure was not applied')
+        assert plug.set(True) is True
+    with_server(check)
+
+
+def test_concurrent_requests_consume_exactly_one_failure_each():
+    C = harness.load()
+    def check(server):
+        server.state.update(dict(failure='http_error',target='power',fail_next=3))
+        barrier = threading.Barrier(8)
+        results = []
+        def request():
+            barrier.wait()
+            try:
+                C.Tasmota("127.0.0.1:%d" % server.server_port).power_w()
+            except C.PlugError:
+                results.append('failed')
+            else:
+                results.append('ok')
+        workers=[threading.Thread(target=request) for _ in range(8)]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(10)
+            assert not worker.is_alive()
+        assert results.count('failed') == 3 and results.count('ok') == 5
+        assert server.state.snapshot()['failures_remaining'] == 0
+    with_server(check)
+
+
+def test_fail_next_rejects_invalid_counts_atomically():
+    state=E.PlugState()
+    for count in (-1,101,True,1.5,'3',None):
+        before=state.snapshot()
+        try:
+            state.update(dict(relay=True,fail_next=count))
+        except ValueError:
+            pass
+        else:
+            raise AssertionError('Invalid batch count accepted')
+        assert state.snapshot() == before
+
+
 if __name__ == "__main__":
     sys.exit(harness.run(dict(globals())))

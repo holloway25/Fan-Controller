@@ -49,6 +49,7 @@ Alternatively, on the development machine:
 ./venv/bin/python tools/plug_emulator.py set --json '{"failure":"http_error","target":"power"}'
 ./venv/bin/python tools/plug_emulator.py set --json '{"failure":"outage","target":"all","outage_seconds":30}'
 ./venv/bin/python tools/plug_emulator.py set --json '{"failure":"timeout","target":"power","timeout_seconds":15}'
+./venv/bin/python tools/plug_emulator.py set --json '{"failure":"drop_connection","target":"power","fail_next":3}'
 ./venv/bin/python tools/plug_emulator.py set --json '{"failure":"none","delay_seconds":0}'
 ```
 
@@ -59,7 +60,8 @@ Settings: `relay` and `fan_profile` (Booleans), `on_watts`, `off_watts`,
 `startup_watts` and `warm_watts` (whole watts, 0–100000), `startup_seconds` (0–60),
 `warm_after_minutes` (0–1440, warming duration after startup),
 `delay_seconds` (0–20), `timeout_seconds` (0.1–60, default 15),
-`outage_seconds` (0.1–600, default 30), `target` (`all`, `relay`, `power`, `switch`), and
+`outage_seconds` (0.1–600, default 30), `fail_next` (integer 0–100, default 0),
+`target` (`all`, `relay`, `power`, `switch`), and
 `failure` (`none`, `http_error`, `malformed`, `reject_switch`, `timeout`,
 `drop_connection`, `outage`). The delay and
 failure apply only to the chosen operation. A rejected switch leaves the
@@ -77,6 +79,13 @@ resumes normal replies. Selecting `outage` again or changing its duration
 starts a new window; unrelated setting changes do not extend it. Controls stay
 available throughout, and the simulated relay retains its last state.
 Live status reports `active_failure` and `outage_remaining_seconds`.
+Set `fail_next` to a positive count to fail only the next N matching commands,
+then resume normal replies automatically. Unmatched commands, invalid commands
+and control-page requests do not consume the batch. `failures_remaining` shows
+the remaining count; applying `failure` or `fail_next` starts a new batch.
+Unrelated updates do not replenish it. With `fail_next:0`, the selected failure
+is not count-limited (the outage duration still applies). The separate reply
+delay remains active until reset to 0, even after a failure batch is exhausted.
 These are HTTP/read failures, **not** a reproduction of TCP SYN loss,
 source-port reuse, or the production `ConnectTimeout`. They test controller
 error handling and recovery, not the suspected hardware/network cause.

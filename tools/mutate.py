@@ -64,6 +64,9 @@ MODULE_TIMEOUT_SECONDS = 120
 # by hand for the right FAILURE, not merely a failure: a mutation
 # caught by an unrelated crash is not evidence.
 MUTATIONS = [
+    ("emulator-batch-count-not-consumed", "tools/plug_emulator.py",
+     '                state.failures_remaining -= 1', '                pass',
+     "test_plug_emulator.py", "test_fail_next_batch_is_targeted_exact_and_recovers_without_rearming"),
     ("emulator-timeout-reply-restored", "tools/plug_emulator.py",
      '            if settings["failure"] == "timeout":', '            if False:',
      "test_plug_emulator.py", "test_timeout_and_connection_drop_leave_switch_unchanged_and_recover"),
