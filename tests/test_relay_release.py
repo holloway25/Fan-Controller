@@ -369,6 +369,40 @@ def test_manual_recovery_requires_low_draw_and_discharges_promise_without_cleari
     assert wanted is False
 
 
+def test_manual_recovery_persistence_retry_finishes_stop_before_acknowledgement():
+    C, clock, mail, plug = manual_failed()
+    C.STATE['ran_with'] = {'co2'}
+    C.STATE['min_run_at'] = clock[0]
+    plug.reject, plug.relay, plug.watts = False, False, 0
+    save = C.save_fault
+    def disk_full(_):
+        raise OSError('Simulated full disk')
+    C.save_fault = disk_full
+    check(C, clock, plug, 5, watts=0)
+    assert C.STATE['fault']['stopped'] and C.STATE['fault_unsaved']
+    assert C.STATE['fault']['relay_retry']['phase'] == 'recovered'
+    assert C.STATE['manual_off_pending'] and C.manual_off_promised()
+    assert not C._retry_fault_persist()
+    assert C.STATE['manual_off_pending'] and C.manual_off_promised()
+    C.save_fault = save
+    assert C._retry_fault_persist()
+    assert not C.STATE['fault_unsaved']
+    assert C.load_fault()['stopped'] and C.STATE['fault']['code'] == 'FC-009'
+    assert not C.STATE['manual_off_pending'] and not C.manual_off_promised()
+    assert not C.STATE['ran_with']
+    assert C.STATE['min_run_at'] is None
+    # The recovered fast path and subsequent acknowledgement owe no new OFF.
+    before = list(plug.commands)
+    assert C._enforce_stop(plug, C._cfg_generation)
+    response = C.app.test_client().post('/api/fault/clear', json={})
+    assert response.status_code == 200 and response.get_json()['cleared']
+    assert C.STATE['fault'] is None
+    plug.relay = True
+    C._record_relay_observation(True)
+    C._manual_off(plug, C._cfg_generation)
+    assert plug.relay is True and plug.commands == before
+
+
 def test_unreachable_manual_stop_does_not_claim_a_mechanical_fault():
     C, clock, mail, plug = setup('manual')
     C.STATE['manual_off_pending']=True

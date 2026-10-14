@@ -4501,18 +4501,30 @@ def _retry_fault_persist():
     retry wrote the cleared fault back to disk and a restart resurrected
     it: memory None, disk faulted.
     """
-    with _fault_lock:
-        with _state_lock:
-            owed = STATE["fault_unsaved"]
-            pending = copy.deepcopy(STATE["fault"])
-        if not owed or pending is None:
-            return False
-        try:
-            save_fault(pending)
-        except OSError:
-            return False
-        with _state_lock:
-            STATE["fault_unsaved"] = False
+    # Completing a saved relay recovery also discharges Manual's durable
+    # stop promise. Serialize with mode changes and relay observations so
+    # neither a newer ON nor a newly requested stop can be cleared here.
+    with _act_lock:
+        with _fault_lock:
+            with _state_lock:
+                owed = STATE["fault_unsaved"]
+                pending = copy.deepcopy(STATE["fault"])
+            if not owed or pending is None:
+                return False
+            try:
+                save_fault(pending)
+            except OSError:
+                return False
+            recovered = (pending.get("code") in _RELAY_FAULT_CODES
+                         and pending.get("stopped")
+                         and pending.get("relay_retry", {}).get("phase") == "recovered")
+            with _state_lock:
+                STATE["fault_unsaved"] = False
+                if recovered:
+                    _end_run_locked()
+                    STATE["manual_off_pending"] = False
+        if recovered:
+            clear_manual_off_promise()
     _log("%s Fault saved \u2014 will survive a restart"
          % FC_FAULT_PERSISTED)
     # Resets the alert edge. Without this the flag stayed raised after a
