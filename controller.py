@@ -1000,15 +1000,17 @@ def _persist_fault_on_exit():
     down. It costs one write and turns a silent loss into either a save
     or a loud complaint.
 
-    Takes _fault_lock with a BOUNDED wait. The first version skipped the
+    Takes act -> fault locks with a shared two-second BOUNDED wait.
+    Actuation serialization includes completed Manual-stop cleanup.
+    The first version skipped the
     lock entirely, to avoid a signal handler blocking on something
     another thread held - and reintroduced the exact stale-snapshot race
     the lock exists to prevent: read the fault, have an acknowledgement
     clear it, then write the old snapshot back, and the fault returns
     from the dead at the next start with nothing to say why. Correctness
     first; the timeout is what keeps it from waiting until systemd
-    escalates to SIGKILL. Two seconds is far longer than any holder
-    needs and far shorter than the stop deadline.
+    escalates to SIGKILL. An in-flight plug request may outlast the bound;
+    report that refusal rather than waiting through the stop deadline.
 
     Giving up without writing is the right failure. Whoever holds the
     lock is in the middle of a fault transaction of their own, so the
@@ -1020,7 +1022,14 @@ def _persist_fault_on_exit():
     is the journal, which is where anyone looks after a stop that went
     wrong.
     """
-    if not _fault_lock.acquire(timeout=2):
+    deadline = time.monotonic() + 2
+    if not _act_lock.acquire(timeout=2):
+        print("Could not take the actuation lock on the way out; an unsaved "
+              "fault may be lost. Check the draw before running the fan.",
+              file=sys.stderr, flush=True)
+        return False
+    if not _fault_lock.acquire(timeout=max(0, deadline - time.monotonic())):
+        _act_lock.release()
         print("Could not take the fault lock on the way out; an unsaved "
               "fault may be lost. Check the draw before running the fan.",
               file=sys.stderr, flush=True)
@@ -1029,10 +1038,11 @@ def _persist_fault_on_exit():
         return _persist_fault_locked()
     finally:
         _fault_lock.release()
+        _act_lock.release()
 
 
 def _persist_fault_locked():
-    """The body of the last-chance write, with _fault_lock already held."""
+    """Last-chance write, with act -> fault locks already held."""
     with _state_lock:
         # Deep-copied: _confirm_fault_stopped mutates the dict in place,
         # so a reference could be changed underneath the write.
@@ -1053,6 +1063,7 @@ def _persist_fault_locked():
         return False
     with _state_lock:
         STATE["fault_unsaved"] = False
+    _finish_saved_relay_recovery_locked(fault)
     print("Unsaved fault written to disk on shutdown; it will survive "
           "the restart.", file=sys.stderr, flush=True)
     return True
@@ -4493,6 +4504,23 @@ def _draw_check(plug, gen=None):
                 on_complete=_fault_sent)
 
 
+def _finish_saved_relay_recovery_locked(fault):
+    """Complete a durable recovery while holding act -> fault locks.
+
+    Manual marker creation and its mode commit use the same actuation
+    transaction, so this cannot delete a marker created midway through it.
+    The standing fault is deliberately retained for acknowledgement.
+    """
+    recovered = (fault.get("code") in _RELAY_FAULT_CODES
+                 and fault.get("stopped")
+                 and fault.get("relay_retry", {}).get("phase") == "recovered")
+    if recovered:
+        with _state_lock:
+            _end_run_locked()
+            STATE["manual_off_pending"] = False
+        clear_manual_off_promise()
+
+
 def _retry_fault_persist():
     """Re-attempt a fault write that failed. True if it saved this time.
 
@@ -4515,16 +4543,9 @@ def _retry_fault_persist():
                 save_fault(pending)
             except OSError:
                 return False
-            recovered = (pending.get("code") in _RELAY_FAULT_CODES
-                         and pending.get("stopped")
-                         and pending.get("relay_retry", {}).get("phase") == "recovered")
             with _state_lock:
                 STATE["fault_unsaved"] = False
-                if recovered:
-                    _end_run_locked()
-                    STATE["manual_off_pending"] = False
-        if recovered:
-            clear_manual_off_promise()
+            _finish_saved_relay_recovery_locked(pending)
     _log("%s Fault saved \u2014 will survive a restart"
          % FC_FAULT_PERSISTED)
     # Resets the alert edge. Without this the flag stayed raised after a
@@ -5419,6 +5440,12 @@ def _api_config_locked(act_locked=False):
     section, so committing it writes back whatever the sections this
     request did not touch looked like when the copy was taken.
     """
+    # Include marker creation and disk persistence, not just the memory
+    # commit: recovery cleanup must never unlink a newly created promise
+    # before its corresponding Manual mode has been committed.
+    if not act_locked:
+        with _act_lock:
+            return _api_config_locked(act_locked=True)
     body = _json_body()
     bad = _body_error(body)
     if bad:
@@ -5452,6 +5479,24 @@ def _api_config_locked(act_locked=False):
     entering_manual = (cand.get("control", {}).get("mode") == "manual"
                        and CFG["control"].get("mode") != "manual")
     if entering_manual:
+        # Finish an older unsaved recovery BEFORE creating a new promise.
+        # Locking alone is not enough if this save wins the actuation lock
+        # before the background persistence retry does.
+        with _fault_lock:
+            with _state_lock:
+                old = copy.deepcopy(STATE["fault"])
+                owed = STATE["fault_unsaved"]
+            if (owed and old and old.get("code") in _RELAY_FAULT_CODES
+                    and old.get("stopped")
+                    and old.get("relay_retry", {}).get("phase") == "recovered"):
+                try:
+                    save_fault(old)
+                except OSError:
+                    return jsonify(error="Could not save the previous stop recovery. "
+                                         "Manual was not selected; retry once storage recovers."), 503
+                with _state_lock:
+                    STATE["fault_unsaved"] = False
+                _finish_saved_relay_recovery_locked(old)
         try:
             promise_manual_off()
         except OSError as e:

@@ -66,6 +66,14 @@ from being applied through a client connected to an old physical plug.
 Manual's pending stop is retained when a stale generation is detected so the
 next valid cycle still owes the stop.
 
+Manual's durable stop marker is written before its mode is saved, within the
+same actuation transaction as the configuration commit. Confirmed relay-fault
+recovery completes the stop promise only after the recovery is durably saved,
+including a later persistence retry or shutdown flush. Cleanup retains the
+standing fault and cannot interleave with creation of a new Manual promise.
+The shutdown flush takes actuation then fault locks with a shared two-second
+wait budget; failure to acquire them is reported to the journal.
+
 Unrelated and no-op saves carry the current draw-fault timer into the new
 generation without accepting stale clients. Plug or power-monitoring changes
 reset that timer, as do transitions into or out of Force on. Email, dashboard,

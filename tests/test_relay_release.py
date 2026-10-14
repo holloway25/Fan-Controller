@@ -3,6 +3,7 @@ import copy
 import json
 import os
 import sys
+import threading
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_off_draw import setup, check, Plug
 import harness
@@ -369,7 +370,7 @@ def test_manual_recovery_requires_low_draw_and_discharges_promise_without_cleari
     assert wanted is False
 
 
-def test_manual_recovery_persistence_retry_finishes_stop_before_acknowledgement():
+def pending_manual_recovery():
     C, clock, mail, plug = manual_failed()
     C.STATE['ran_with'] = {'co2'}
     C.STATE['min_run_at'] = clock[0]
@@ -385,6 +386,11 @@ def test_manual_recovery_persistence_retry_finishes_stop_before_acknowledgement(
     assert not C._retry_fault_persist()
     assert C.STATE['manual_off_pending'] and C.manual_off_promised()
     C.save_fault = save
+    return C, clock, mail, plug
+
+
+def test_manual_recovery_persistence_retry_finishes_stop_before_acknowledgement():
+    C, clock, mail, plug = pending_manual_recovery()
     assert C._retry_fault_persist()
     assert not C.STATE['fault_unsaved']
     assert C.load_fault()['stopped'] and C.STATE['fault']['code'] == 'FC-009'
@@ -401,6 +407,94 @@ def test_manual_recovery_persistence_retry_finishes_stop_before_acknowledgement(
     C._record_relay_observation(True)
     C._manual_off(plug, C._cfg_generation)
     assert plug.relay is True and plug.commands == before
+
+
+def test_shutdown_saved_manual_recovery_is_not_owed_after_cold_start():
+    C, clock, mail, plug = pending_manual_recovery()
+    assert C._persist_fault_on_exit()
+    assert not C.STATE['manual_off_pending'] and not C.manual_off_promised()
+    assert not C.STATE['ran_with'] and C.STATE['min_run_at'] is None
+    assert not C._retry_fault_persist()
+    D = harness.load()
+    D.CFG = copy.deepcopy(C.CFG)
+    D.MANUAL_PENDING_PATH = C.MANUAL_PENDING_PATH
+    D.save_fault(C.load_fault())
+    D.STATE['fault'] = D.load_fault()
+    D._notify = lambda *args, **kwargs: None
+    D._restore_manual_stop_promise()
+    assert not D.STATE['manual_off_pending']
+    response = D.app.test_client().post('/api/fault/clear', json={})
+    assert response.status_code == 200 and response.get_json()['cleared']
+    p = Plug(D, relay=True, watts=23)
+    D._record_relay_observation(True)
+    D._manual_off(p, D._cfg_generation)
+    assert p.relay is True and not p.commands
+
+
+def test_recovery_cleanup_cannot_remove_a_concurrent_new_manual_marker():
+    for shutdown in (False, True):
+        C, clock, mail, plug = pending_manual_recovery()
+        C.CFG['control']['mode'] = 'auto'
+        cleaning, release, saving, promised = (threading.Event() for _ in range(4))
+        clear, promise = C.clear_manual_off_promise, C.promise_manual_off
+        results = []
+        def paused_cleanup():
+            cleaning.set()
+            assert release.wait(3)
+            clear()
+        def watched_promise():
+            promised.set()
+            promise()
+        def recover():
+            results.append(C._persist_fault_on_exit() if shutdown else C._retry_fault_persist())
+        def save_manual():
+            saving.set()
+            results.append(C.app.test_client().post('/api/config',
+                json={'control': {'mode': 'manual'}}).status_code)
+        C.clear_manual_off_promise = paused_cleanup
+        C.promise_manual_off = watched_promise
+        recovery = threading.Thread(target=recover)
+        saver = threading.Thread(target=save_manual)
+        recovery.start()
+        try:
+            assert cleaning.wait(3)
+            saver.start()
+            assert saving.wait(3)
+            assert not promised.wait(0.1), 'New marker created during old recovery cleanup'
+        finally:
+            release.set()
+            recovery.join(4)
+            if saver.ident is not None:
+                saver.join(4)
+        assert not recovery.is_alive() and not saver.is_alive()
+        assert results == [True, 200]
+        assert C.CFG['control']['mode'] == 'manual'
+        assert C.STATE['manual_off_pending'] and C.manual_off_promised()
+        # A cold start must retain this NEW request, not the completed one.
+        D = harness.load()
+        D.CFG = copy.deepcopy(C.CFG)
+        D.MANUAL_PENDING_PATH = C.MANUAL_PENDING_PATH
+        D._restore_manual_stop_promise()
+        assert D.STATE['manual_off_pending']
+
+
+def test_new_manual_save_finishes_older_recovery_before_creating_promise():
+    C, clock, mail, plug = pending_manual_recovery()
+    C.CFG['control']['mode'] = 'auto'
+    save = C.save_fault
+    def disk_full(_):
+        raise OSError('Simulated full disk')
+    C.save_fault = disk_full
+    response = C.app.test_client().post('/api/config', json={'control': {'mode': 'manual'}})
+    assert response.status_code == 503 and C.CFG['control']['mode'] == 'auto'
+    assert C.STATE['fault_unsaved'] and C.manual_off_promised()
+    C.save_fault = save
+    response = C.app.test_client().post('/api/config', json={'control': {'mode': 'manual'}})
+    assert response.status_code == 200
+    assert not C.STATE['fault_unsaved'] and C.STATE['fault']['stopped']
+    assert C.STATE['manual_off_pending'] and C.manual_off_promised()
+    assert not C._retry_fault_persist()
+    assert C.STATE['manual_off_pending'] and C.manual_off_promised()
 
 
 def test_unreachable_manual_stop_does_not_claim_a_mechanical_fault():

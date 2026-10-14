@@ -578,6 +578,21 @@ def test_last_chance_write_still_works_when_the_lock_is_free():
     return "written, and the lock released"
 
 
+def test_last_chance_write_actuation_wait_is_bounded():
+    C = harness.load()
+    C.STATE['fault'] = {'msg': 'draw fault', 'stopped': True}
+    C.STATE['fault_unsaved'] = True
+    C._act_lock.acquire()
+    started = time.monotonic()
+    try:
+        assert C._persist_fault_on_exit() is False
+    finally:
+        C._act_lock.release()
+    assert time.monotonic() - started < 4
+    assert C.STATE['fault_unsaved']
+    assert C._persist_fault_on_exit() is True
+
+
 def test_state_reports_a_process_generation():
     """restart.sh proves a restart with this. The port answering proves
     nothing: a failed exec leaves the original process serving."""

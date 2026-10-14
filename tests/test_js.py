@@ -39,7 +39,7 @@ def _why_not():
 def test_the_javascript_tests_pass():
     why = _why_not()
     if why:
-        return "SKIP %s" % why
+        harness.skip(why)
     r = subprocess.run(["node", RUNNER], capture_output=True, text=True,
                        cwd=ROOT, timeout=300)
     if r.returncode != 0:
@@ -58,7 +58,7 @@ def test_an_empty_run_is_a_failure():
     repository has now met in four different disguises."""
     why = _why_not()
     if why:
-        return "SKIP %s" % why
+        harness.skip(why)
     import shutil
     import tempfile
     # An EMPTY DIRECTORY passed to the real runner, rather than a copy
@@ -89,6 +89,26 @@ def test_the_dependency_is_declared_and_dev_only():
     assert os.path.exists(os.path.join(ROOT, "package-lock.json")), (
         "the lock file is not committed, so the version is not pinned")
     return "dev dependency, pinned"
+
+
+def test_missing_browser_dependencies_are_reported_as_skips():
+    import contextlib
+    import io
+    original = globals()["_why_not"]
+    try:
+        for reason in ("node is not installed", "jsdom is not installed - run npm install"):
+            globals()["_why_not"] = lambda: reason
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = harness.run({
+                    "test_the_javascript_tests_pass": test_the_javascript_tests_pass,
+                    "test_an_empty_run_is_a_failure": test_an_empty_run_is_a_failure})
+            assert code == 0
+            text = output.getvalue()
+            assert text.count("SKIP  ") == 2, text
+            assert "PASS  " not in text, text
+    finally:
+        globals()["_why_not"] = original
 
 
 if __name__ == "__main__":
