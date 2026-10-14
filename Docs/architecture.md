@@ -71,8 +71,12 @@ same actuation transaction as the configuration commit. Confirmed relay-fault
 recovery completes the stop promise only after the recovery is durably saved,
 including a later persistence retry or shutdown flush. Cleanup retains the
 standing fault and cannot interleave with creation of a new Manual promise.
-The shutdown flush takes actuation then fault locks with a shared two-second
-wait budget; failure to acquire them is reported to the journal.
+Shutdown fault persistence waits at most two seconds for the fault lock and
+does not depend on a free actuation lock. If actuation is busy, only Manual
+cleanup is deferred; the essential safety record is still saved. A recovered
+fault records the exact stop-marker identity so a cold start can finish that
+cleanup without consuming a newer Manual request. Normal persistence retries
+also complete deferred cleanup. Lock refusal is reported to the journal.
 
 Unrelated and no-op saves carry the current draw-fault timer into the new
 generation without accepting stale clients. Plug or power-monitoring changes

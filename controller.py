@@ -452,7 +452,12 @@ def _valid_fault_record(value):
     if not isinstance(value, dict):
         return False
     if set(value) - {"at", "msg", "code", "stopped",
-                     "attempted_at", "delivered_at", "relay_retry", "relay_notice"}:
+                     "attempted_at", "delivered_at", "relay_retry", "relay_notice",
+                     "manual_stop_id"}:
+        return False
+    if "manual_stop_id" in value and (
+            not isinstance(value["manual_stop_id"], str)
+            or not re.fullmatch(r"[0-9a-f]{64}", value["manual_stop_id"])):
         return False
     if not isinstance(value.get("msg"), str) or not value["msg"].strip():
         return False
@@ -509,7 +514,17 @@ def promise_manual_off():
     Manual again writes it afresh at a point where the stop is genuinely
     owed.
     """
-    write_json_durable(MANUAL_PENDING_PATH, {"at": time.time()}, mode=0o600)
+    write_json_durable(MANUAL_PENDING_PATH,
+                       {"at": time.time(), "id": os.urandom(16).hex()}, mode=0o600)
+
+
+def _manual_stop_id():
+    """Identify the exact durable promise, including legacy marker files."""
+    try:
+        with open(MANUAL_PENDING_PATH, "rb") as marker:
+            return hashlib.sha256(marker.read()).hexdigest()
+    except OSError:
+        return None
 
 
 def clear_manual_off_promise():
@@ -1000,8 +1015,8 @@ def _persist_fault_on_exit():
     down. It costs one write and turns a silent loss into either a save
     or a loud complaint.
 
-    Takes act -> fault locks with a shared two-second BOUNDED wait.
-    Actuation serialization includes completed Manual-stop cleanup.
+    Essential persistence needs only the fault lock, with a bounded wait.
+    If actuation is busy, defer Manual-stop cleanup, never the safety write.
     The first version skipped the
     lock entirely, to avoid a signal handler blocking on something
     another thread held - and reintroduced the exact stale-snapshot race
@@ -1009,7 +1024,7 @@ def _persist_fault_on_exit():
     clear it, then write the old snapshot back, and the fault returns
     from the dead at the next start with nothing to say why. Correctness
     first; the timeout is what keeps it from waiting until systemd
-    escalates to SIGKILL. An in-flight plug request may outlast the bound;
+    escalates to SIGKILL. If a fault transaction outlasts the bound,
     report that refusal rather than waiting through the stop deadline.
 
     Giving up without writing is the right failure. Whoever holds the
@@ -1022,27 +1037,24 @@ def _persist_fault_on_exit():
     is the journal, which is where anyone looks after a stop that went
     wrong.
     """
-    deadline = time.monotonic() + 2
-    if not _act_lock.acquire(timeout=2):
-        print("Could not take the actuation lock on the way out; an unsaved "
-              "fault may be lost. Check the draw before running the fan.",
-              file=sys.stderr, flush=True)
-        return False
-    if not _fault_lock.acquire(timeout=max(0, deadline - time.monotonic())):
-        _act_lock.release()
+    act_locked = _act_lock.acquire(blocking=False)
+    if not _fault_lock.acquire(timeout=2):
+        if act_locked:
+            _act_lock.release()
         print("Could not take the fault lock on the way out; an unsaved "
               "fault may be lost. Check the draw before running the fan.",
               file=sys.stderr, flush=True)
         return False
     try:
-        return _persist_fault_locked()
+        return _persist_fault_locked(cleanup=act_locked)
     finally:
         _fault_lock.release()
-        _act_lock.release()
+        if act_locked:
+            _act_lock.release()
 
 
-def _persist_fault_locked():
-    """Last-chance write, with act -> fault locks already held."""
+def _persist_fault_locked(cleanup=True):
+    """Fault lock required; cleanup additionally requires the actuation lock."""
     with _state_lock:
         # Deep-copied: _confirm_fault_stopped mutates the dict in place,
         # so a reference could be changed underneath the write.
@@ -1063,7 +1075,8 @@ def _persist_fault_locked():
         return False
     with _state_lock:
         STATE["fault_unsaved"] = False
-    _finish_saved_relay_recovery_locked(fault)
+    if cleanup:
+        _finish_saved_relay_recovery_locked(fault)
     print("Unsaved fault written to disk on shutdown; it will survive "
           "the restart.", file=sys.stderr, flush=True)
     return True
@@ -3873,6 +3886,10 @@ def _relay_retry_update(**changes):
             return None, False
         previous_retry = f.get("relay_retry")
         f.update(changes)
+        if changes.get("stopped") and _relay_recovered(f):
+            marker_id = _manual_stop_id()
+            if marker_id is not None:
+                f["manual_stop_id"] = marker_id
         retry = changes.get("relay_retry")
         if retry and retry != previous_retry:
             stage = ({"wait": "hard", "exhausted": "exhausted",
@@ -4504,6 +4521,12 @@ def _draw_check(plug, gen=None):
                 on_complete=_fault_sent)
 
 
+def _relay_recovered(fault):
+    return (fault.get("code") in _RELAY_FAULT_CODES
+            and fault.get("stopped")
+            and fault.get("relay_retry", {}).get("phase") == "recovered")
+
+
 def _finish_saved_relay_recovery_locked(fault):
     """Complete a durable recovery while holding act -> fault locks.
 
@@ -4511,9 +4534,9 @@ def _finish_saved_relay_recovery_locked(fault):
     transaction, so this cannot delete a marker created midway through it.
     The standing fault is deliberately retained for acknowledgement.
     """
-    recovered = (fault.get("code") in _RELAY_FAULT_CODES
-                 and fault.get("stopped")
-                 and fault.get("relay_retry", {}).get("phase") == "recovered")
+    recovered = _relay_recovered(fault)
+    if "manual_stop_id" in fault and fault["manual_stop_id"] != _manual_stop_id():
+        return  # This durable recovery must not consume a newer promise.
     if recovered:
         with _state_lock:
             _end_run_locked()
@@ -4537,7 +4560,16 @@ def _retry_fault_persist():
             with _state_lock:
                 owed = STATE["fault_unsaved"]
                 pending = copy.deepcopy(STATE["fault"])
-            if not owed or pending is None:
+            if pending is None:
+                return False
+            if not owed:
+                # Essential shutdown persistence may already have landed
+                # while actuation was busy. Finish matching cleanup without
+                # claiming the safety record is still unsaved or rewriting it.
+                if (_relay_recovered(pending) and pending.get("manual_stop_id")
+                        and pending["manual_stop_id"] == _manual_stop_id()):
+                    _finish_saved_relay_recovery_locked(pending)
+                    return True
                 return False
             try:
                 save_fault(pending)
@@ -5853,6 +5885,10 @@ def _restore_manual_stop_promise():
     A marker left behind after leaving Manual is not a current stop request.
     Called before threads start, when no configuration update can race it.
     """
+    fault = STATE["fault"]
+    if fault and _relay_recovered(fault) and fault.get("manual_stop_id"):
+        with _act_lock, _fault_lock:
+            _finish_saved_relay_recovery_locked(fault)
     if CFG["control"].get("mode") == "manual" and manual_off_promised():
         with _state_lock:
             owed = STATE["manual_off_pending"]

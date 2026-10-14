@@ -497,6 +497,79 @@ def test_new_manual_save_finishes_older_recovery_before_creating_promise():
     assert C.STATE['manual_off_pending'] and C.manual_off_promised()
 
 
+def test_manual_marker_is_created_inside_actuation_transaction():
+    C, clock, mail, plug = setup('auto')
+    promise, save = C.promise_manual_off, C.save_cfg
+    seen = []
+    def locked():
+        free = C._act_lock.acquire(blocking=False)
+        if free:
+            C._act_lock.release()
+        assert not free, 'Manual promise/config persisted without actuation lock'
+        seen.append(True)
+    def watched_promise():
+        locked()
+        promise()
+    def watched_save(config):
+        locked()
+        save(config)
+    C.promise_manual_off, C.save_cfg = watched_promise, watched_save
+    result = C.app.test_client().post('/api/config', json={'control': {'mode': 'manual'}})
+    assert result.status_code == 200 and seen == [True, True]
+    assert C.STATE['manual_off_pending'] and C.manual_off_promised()
+
+
+def test_busy_shutdown_saves_recovery_then_reconciles_exact_promise_on_cold_start():
+    for newer in (False, True):
+        C, clock, mail, plug = pending_manual_recovery()
+        original_id = C._manual_stop_id()
+        C._act_lock.acquire()
+        try:
+            assert C._persist_fault_on_exit()
+            assert C.load_fault()['manual_stop_id'] == original_id
+            assert not C.STATE['fault_unsaved'], 'The essential safety record was saved'
+            assert C.STATE['manual_off_pending'] and C.manual_off_promised()
+        finally:
+            C._act_lock.release()
+        if newer:
+            C.promise_manual_off()  # New identity even with identical wall time.
+            assert C._manual_stop_id() != original_id
+        D = harness.load()
+        D.CFG = copy.deepcopy(C.CFG)
+        D.MANUAL_PENDING_PATH = C.MANUAL_PENDING_PATH
+        D.save_fault(C.load_fault())
+        D.STATE['fault'] = D.load_fault()
+        D._restore_manual_stop_promise()
+        assert D.STATE['fault'] is not None and D.STATE['fault']['stopped']
+        assert D.STATE['manual_off_pending'] is newer
+        assert D.manual_off_promised() is newer
+
+
+def test_busy_shutdown_deferred_recovery_cleanup_retries_without_clearing_fault():
+    C, clock, mail, plug = pending_manual_recovery()
+    C._act_lock.acquire()
+    try:
+        assert C._persist_fault_on_exit()
+    finally:
+        C._act_lock.release()
+    assert C.STATE['manual_off_pending'] and not C.STATE['fault_unsaved']
+    def no_rewrite(_):
+        raise AssertionError('Deferred cleanup rewrote an already durable safety fault')
+    C.save_fault = no_rewrite
+    assert C._retry_fault_persist()
+    assert not C.STATE['manual_off_pending'] and not C.manual_off_promised()
+    assert C.STATE['fault']['stopped'] and not C.STATE['fault_unsaved']
+
+
+def test_recovery_marker_identity_validation_is_fail_closed():
+    C, clock, mail, plug = pending_manual_recovery()
+    record = copy.deepcopy(C.STATE['fault'])
+    assert C._valid_fault_record(record)
+    for invalid in (None, True, 123, '', 'a'*63, 'a'*65, 'z'*64):
+        record['manual_stop_id'] = invalid
+        assert not C._valid_fault_record(record), invalid
+
+
 def test_unreachable_manual_stop_does_not_claim_a_mechanical_fault():
     C, clock, mail, plug = setup('manual')
     C.STATE['manual_off_pending']=True
