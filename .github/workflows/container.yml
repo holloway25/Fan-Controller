@@ -11,8 +11,8 @@ on:
         type: boolean
         default: false
   schedule:
-    # Daily trigger; the UTC epoch-day guard below selects every second day.
-    # Unlike day-of-month */2, this preserves the cadence across month ends.
+    # Daily trigger; the UTC epoch-day guard below selects every third day.
+    # Unlike day-of-month */3, this preserves the cadence across month ends.
     - cron: '17 3 * * *'
 permissions:
   contents: read
@@ -46,8 +46,8 @@ jobs:
             epoch_seconds=$(date -u +%s)
             # Require a bounded decimal integer before shell arithmetic.
             [[ "$epoch_seconds" =~ ^[0-9]{1,12}$ ]]
-            if (( 10#$epoch_seconds / 86400 % 2 != 0 )); then
-              echo 'Not a maintenance build day; the next scheduled build is tomorrow.'
+            if (( 10#$epoch_seconds / 86400 % 3 != 0 )); then
+              echo 'Not a maintenance build day; skipping until the next eligible UTC day.'
               echo 'build=false' >> "$GITHUB_OUTPUT"
               exit 0
             fi

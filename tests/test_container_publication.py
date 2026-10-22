@@ -197,7 +197,7 @@ def test_metadata_anchor_does_not_replace_the_reviewed_source_identity():
     assert api.approved == SHA
 
 
-def test_two_day_schedule_crosses_month_end_and_does_not_gate_manual_builds():
+def test_three_day_schedule_crosses_month_end_and_does_not_gate_manual_builds():
     if not shutil.which('bash'):
         harness.skip('bash is required to execute the schedule gate')
     workflow = (ROOT/'.github/workflows/container.yml').read_text()
@@ -214,7 +214,9 @@ def test_two_day_schedule_crosses_month_end_and_does_not_gate_manual_builds():
         env = dict(os.environ,PATH=str(root)+os.pathsep+os.environ['PATH'],
                    GITHUB_SHA=SHA,GITHUB_REPOSITORY='example/fan',HEAD_SHA='',
                    GH_TOKEN='placeholder',MAINTENANCE='false')
-        days = [datetime.date(2026,10,30)+datetime.timedelta(days=i) for i in range(5)]
+        days = [start+datetime.timedelta(days=i)
+                for start in (datetime.date(2026,10,29),datetime.date(2026,12,29))
+                for i in range(8)]
         selected = []
         for day in days:
             stamp = int(datetime.datetime.combine(day,datetime.time(3,17),datetime.timezone.utc).timestamp())
@@ -226,11 +228,14 @@ def test_two_day_schedule_crosses_month_end_and_does_not_gate_manual_builds():
                                         capture_output=True,text=True,timeout=10)
                 assert result.returncode==0, result.stdout+result.stderr
                 built = 'build=true\n' in output.read_text()
-                expected = event!='schedule' or stamp//86400%2==0
+                expected = event!='schedule' or stamp//86400%3==0
                 assert built == expected, (day,event,output.read_text())
                 if event=='schedule' and built: selected.append(day)
         assert len(selected)>=2
-        assert all((b-a).days==2 for a,b in zip(selected,selected[1:])), selected
+        for month in (10,12):
+            boundary = [day for day in selected if day.month in (month,month%12+1)]
+            assert len(boundary)>=2
+            assert all((b-a).days==3 for a,b in zip(boundary,boundary[1:])), boundary
 
 
 def test_scheduled_clock_failure_never_enables_build():
@@ -251,9 +256,9 @@ def test_scheduled_clock_failure_never_enables_build():
         env = dict(os.environ,PATH=str(root)+os.pathsep+os.environ['PATH'],
                    EVENT='schedule',MAINTENANCE='false',GITHUB_SHA=SHA,HEAD_SHA='',
                    GITHUB_REPOSITORY='example/fan',GH_TOKEN='placeholder')
-        # 172800 is a valid even epoch day: ignoring a failed clock command
+        # 259200 is an eligible epoch day: ignoring a failed clock command
         # would incorrectly continue into a successful maintenance build.
-        cases = (('172800','7'),('','7'),('','0'),('not-a-time','0'),
+        cases = (('259200','7'),('','7'),('','0'),('not-a-time','0'),
                  ('1+2','0'),('9'*100,'0'),('-1','0'),('123\n456','0'))
         for value,status in cases:
             output = root/'output'
@@ -264,7 +269,7 @@ def test_scheduled_clock_failure_never_enables_build():
             assert result.returncode != 0, (value,status,result.stdout,result.stderr)
             assert 'build=true' not in output.read_text(), 'Failed clock enabled a build'
         # Base-10 arithmetic also handles a valid value with leading zeroes.
-        env.update(FAKE_NOW='000172800',FAKE_DATE_EXIT='0')
+        env.update(FAKE_NOW='000259200',FAKE_DATE_EXIT='0')
         result = subprocess.run(['bash','-c',script],cwd=ROOT,env=env,
                                 capture_output=True,text=True,timeout=10)
         assert result.returncode==0 and 'build=true' in output.read_text()

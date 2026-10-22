@@ -112,10 +112,11 @@ be combined with a successful retried ARM64 attempt, without guessing tag names
 from the publication attempt. Records are retained for 30 days; missing/expired
 records fail closed and require rebuilding the missing platforms.
 
-Maintenance builds run every second UTC day at 03:17 UTC (GitHub may delay
-scheduled starts). A daily trigger checks UTC epoch-day parity, preserving the
-two-day cadence across month/year boundaries; the intervening trigger skips
-the build. Manual maintenance is available on any day.
+Maintenance builds run every third UTC day at 03:17 UTC (GitHub may delay
+scheduled starts). A daily trigger builds when the UTC epoch-day number is
+divisible by three, preserving the three-day cadence across month/year
+boundaries; intervening triggers skip the build. Manual maintenance is
+available on any day.
 Clock-command failures or invalid timestamps abort the scheduled job before
 it can enable a build.
 

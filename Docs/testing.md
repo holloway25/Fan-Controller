@@ -71,5 +71,6 @@ branch or pull request and event type. Branch pushes and pull requests retain
 the full Python/architecture matrix; release tags do not rerun source tests.
 Only dependency downloads are cached: installs and every test still run, even
 on a cache hit. The privacy workflow is not cancelled, so intermediate pushed
-commits remain checked. Docker publication and two-day maintenance gates are
-unchanged. Removing old logs or artifacts does not refund minutes already used.
+commits remain checked. Docker publication retains all its safety gates, with
+maintenance scheduled every three days. Removing old logs or artifacts does
+not refund minutes already used.
