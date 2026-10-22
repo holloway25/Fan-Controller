@@ -1,0 +1,15 @@
+# Allowlist: a developer's live config, SSH files, runtime data, and Git history
+# must never enter the build context, even when building from a dirty checkout.
+**
+!Dockerfile
+!requirements.txt
+!controller.py
+!config.example.json
+!LICENSE
+!templates/
+!templates/**
+!static/
+!static/**
+!container/
+!container/start.py
+!container/requirements.lock

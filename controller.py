@@ -30,10 +30,14 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 DIR = os.path.dirname(os.path.abspath(__file__))
-CFG_PATH = os.path.join(DIR, "config.json")
+DATA_DIR = os.path.abspath(os.environ.get("FAN_CONTROLLER_DATA_DIR", DIR))
+PERSIST_STOP_STATE = os.environ.get("FAN_CONTROLLER_PERSIST_STATE") == "1"
+STOP_STATE_PATH = os.path.join(DATA_DIR, "resume.json")
+_stopping = threading.Event()
+CFG_PATH = os.path.join(DATA_DIR, "config.json")
 # Local testing interlock, sampled at startup. No request (including a
 # dashboard plug test or actuation) may reach hardware while this is set.
-PLUG_ACCESS_DISABLED = os.path.lexists(os.path.join(DIR, "plug-access.disabled"))
+PLUG_ACCESS_DISABLED = os.path.lexists(os.path.join(DATA_DIR, "plug-access.disabled"))
 
 DEFAULTS = {
     "protect": {"host": "192.0.2.1", "username": "", "password": "",
@@ -369,7 +373,7 @@ def save_cfg(cfg):
     write_json_durable(CFG_PATH, cfg, mode=0o600, indent=2)
 
 
-HIST_PATH = os.path.join(DIR, "history.json")
+HIST_PATH = os.path.join(DATA_DIR, "history.json")
 HIST_HOURS = 24           # retention window, independent of poll interval
 HIST_CAP = 20000          # memory bound if poll_seconds is very small
 HIST_FLUSH_SECONDS = 300  # batch disk writes rather than one per poll
@@ -377,8 +381,8 @@ _last_flush = 0.0
 # When the draw first left its band. None while healthy, so a single good
 # reading resets the clock rather than accumulating toward a fault.
 
-FAULT_PATH = os.path.join(DIR, "fault.json")
-RESTART_PATH = os.path.join(DIR, "restart.request")
+FAULT_PATH = os.path.join(DATA_DIR, "fault.json")
+RESTART_PATH = os.path.join(DATA_DIR, "restart.request")
 def _restart_identity(st):
     return (st.st_dev, st.st_ino, st.st_mtime_ns, st.st_ctime_ns, st.st_size)
 
@@ -390,7 +394,7 @@ except OSError:
 # because a crash or a power cut between committing Manual and making
 # the stop would otherwise drop the promise, leaving the fan running in
 # the one mode whose whole purpose is to stop touching it.
-MANUAL_PENDING_PATH = os.path.join(DIR, "manual-off.pending")
+MANUAL_PENDING_PATH = os.path.join(DATA_DIR, "manual-off.pending")
 # Captured at import, and again by the process that replaces this one,
 # so a trigger written before startup can be told from one written
 # after it.
@@ -699,7 +703,7 @@ def event_class(msg):
     return ""
 
 
-EVENTS_PATH = os.path.join(DIR, "events.json")
+EVENTS_PATH = os.path.join(DATA_DIR, "events.json")
 # 1000 rather than 300 since 2026-08-16, when the alert transitions
 # started logging with their codes. An episode now costs several lines
 # instead of one, and the point of the codes is that a search finds a
@@ -806,7 +810,7 @@ def save_hist(hist):
 
 _hist_write_lock = threading.Lock()
 
-DAILY_PATH = os.path.join(DIR, "daily.json")
+DAILY_PATH = os.path.join(DATA_DIR, "daily.json")
 # Two years. One line per day, three metrics - kilobytes, against the
 # 188KB the 24h trace already costs. The point is to answer "was it
 # this humid last week" without extending the trace, which is the
@@ -1085,6 +1089,9 @@ def _persist_fault_locked(cleanup=True):
 def flush_hist(signum=None, frame=None):
     """Persist on shutdown so batching never costs a restart's samples."""
     if signum is not None:
+        if PERSIST_STOP_STATE:
+            _stopping.set()
+            _save_stop_state()
         # Before the history write, which can be 20,000 points against a
         # stop deadline. The fault matters more than the graph.
         _persist_fault_on_exit()
@@ -1583,11 +1590,11 @@ def _restore_plug_ports(rows):
 def _open_plug_diagnostics():
     """Local, time-limited opt-in; never part of saved device settings."""
     try:
-        with open(os.path.join(DIR, 'plug-diagnostics.enabled')) as stream:
+        with open(os.path.join(DATA_DIR, 'plug-diagnostics.enabled')) as stream:
             until = json.load(stream)['until']
         if not _finite(until) or until <= time.time():
             return None, 0
-        folder = os.path.join(DIR, 'diagnostics')
+        folder = os.path.join(DATA_DIR, 'diagnostics')
         os.makedirs(folder, mode=0o700, exist_ok=True)
         os.chmod(folder, 0o700)
         path = os.path.join(folder, 'plug-requests.jsonl')
@@ -1886,7 +1893,7 @@ def _stale_client(gen):
     inside the same lock hold, or a caller that has no generation to
     offer. Those keep the old behaviour rather than being refused.
     """
-    return gen is not None and gen != _cfg_generation
+    return _stopping.is_set() or (gen is not None and gen != _cfg_generation)
 
 
 def _client_snapshot():
@@ -4601,7 +4608,7 @@ def watts_loop():
     """
     last_issue = None
     relay_issue = None
-    while True:
+    while not _stopping.is_set():
         try:
             _retry_relay_notice()
         except Exception as e:
@@ -4817,7 +4824,7 @@ def loop():
     fails = 0
     last_logged = None
     last_code = None
-    while True:
+    while not _stopping.is_set():
         try:
             # Inside the try: a bad value here used to kill the thread.
             base = max(5, min(3600, int(float(CFG["control"]["poll_seconds"]))))
@@ -4888,7 +4895,8 @@ UI_ERROR_TRACKED = 64
 # the proxy and every request logged as the same client. Trust a single
 # hop of X-Forwarded-For / -Proto / -Host to recover the real client.
 # One hop only: trusting more lets a client forge the chain.
-app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+if os.environ.get("FAN_CONTROLLER_TRUST_PROXY", "1") == "1":
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 
 
 def _safe_cfg():
@@ -5472,6 +5480,8 @@ def _api_config_locked(act_locked=False):
     section, so committing it writes back whatever the sections this
     request did not touch looked like when the copy was taken.
     """
+    if _stopping.is_set():
+        return jsonify(error="Controller is stopping; retry after startup."), 503
     # Include marker creation and disk persistence, not just the memory
     # commit: recovery cleanup must never unlink a newly created promise
     # before its corresponding Manual mode has been committed.
@@ -5754,7 +5764,7 @@ def _resume_payload():
         }
 
 
-def _apply_resume():
+def _apply_resume(allow_old_monotonic=False):
     """Take over the timing state of the process we replaced.
 
     Carried in the environment rather than a file, deliberately. The
@@ -5821,7 +5831,8 @@ def _apply_resume():
     _oob_since = _n(d.get("oob_since"))
     mono = time.monotonic()
     off_since = _n(d.get("off_draw_since"))
-    _off_draw_since = off_since if off_since is not None and 0 <= off_since <= mono else None
+    _off_draw_since = (off_since if off_since is not None and off_since <= mono
+                      and (allow_old_monotonic or off_since >= 0) else None)
     retry_clock = d.get("relay_retry_clock")
     with _state_lock:
         fault = STATE["fault"] or {}
@@ -5871,6 +5882,149 @@ def _apply_resume():
          % ("latched: " + ", ".join(held) if held else "no latch held",
             "minimum-run lease carried" if lease else "no lease"))
     return True
+
+
+def _state_fingerprint(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True,
+                                    allow_nan=False).encode()).hexdigest()
+
+
+def _boot_id():
+    try:
+        with open('/proc/sys/kernel/random/boot_id') as stream:
+            return stream.read().strip()
+    except OSError:
+        return None
+
+
+def _save_stop_state():
+    """Opt-in orderly-stop checkpoint, never a periodic snapshot or relay action.
+
+    Freeze configuration, actuation, requests and fault transactions in the
+    same order as exec handover. Missing/busy/failed checkpoints mean cold
+    start, never permission to lose a separately persisted safety fault.
+    """
+    acquired = []
+    deadline = time.monotonic() + 25
+    try:
+        for lock in (_cfg_lock, _act_lock, _plug_request_lock, _fault_lock):
+            if not lock.acquire(timeout=max(0, deadline-time.monotonic())):
+                raise OSError('shutdown checkpoint lock timeout')
+            acquired.append(lock)
+        with _state_lock:
+            owed = STATE['fault_unsaved']
+        if owed and not _persist_fault_locked():
+            raise OSError('safety fault is not durable')
+        if _fault_annotation_dirty is not None:
+            with _state_lock:
+                fault = copy.deepcopy(STATE['fault'])
+            if fault and not _save_annotation(fault):
+                raise OSError('fault notification state is not durable')
+        with _state_lock:
+            snapshot = {'version': 1, 'wall': time.time(), 'mono': time.monotonic(),
+                        'boot': _boot_id(), 'config': _state_fingerprint(CFG),
+                        'fault': _state_fingerprint(STATE['fault']),
+                        'payload': _resume_payload()}
+        write_json_durable(STOP_STATE_PATH, snapshot, mode=0o600)
+        print('Orderly-stop state saved.', file=sys.stderr, flush=True)
+        return True
+    except (OSError, ValueError, TypeError) as exc:
+        print('Orderly-stop state not saved: %s; next start will be cold.'
+              % type(exc).__name__, file=sys.stderr, flush=True)
+        return False
+    finally:
+        for lock in reversed(acquired):
+            lock.release()
+
+
+def _load_stop_state():
+    """Consume one clean-stop checkpoint before threads start.
+
+    On the same kernel boot, elapsed time is monotonic. Across host reboots
+    use bounded nonnegative wall downtime; ambiguous or >24h gaps start cold.
+    Absolute monotonic stamps are rebased, never compared across hosts.
+    """
+    if not PERSIST_STOP_STATE or not os.path.lexists(STOP_STATE_PATH):
+        return False
+    def invalid_constant(_):
+        raise ValueError('non-finite checkpoint JSON')
+    try:
+        with open(STOP_STATE_PATH) as stream:
+            raw = stream.read(65537)
+        # Consume durably BEFORE applying: a subsequent crash cannot replay it.
+        os.unlink(STOP_STATE_PATH)
+        _fsync_dir(DATA_DIR)
+        if len(raw) > 65536:
+            raise ValueError('checkpoint too large')
+        record = json.loads(raw, parse_constant=invalid_constant)
+        if (not isinstance(record, dict) or record.get('version') != 1
+                or record.get('config') != _state_fingerprint(CFG)
+                or record.get('fault') != _state_fingerprint(STATE['fault'])
+                or not isinstance(record.get('payload'), dict)
+                or not _valid_fault_timestamp(record.get('wall'))
+                or not _finite(record.get('mono'))):
+            raise ValueError('checkpoint does not match current configuration/fault')
+        mono = time.monotonic()
+        same_boot = _boot_id() is not None and record.get('boot') == _boot_id()
+        downtime = (mono-record['mono'] if same_boot else time.time()-record['wall'])
+        if not _finite(downtime) or not 0 <= downtime <= 86400:
+            raise ValueError('ambiguous checkpoint downtime')
+        payload = copy.deepcopy(record['payload'])
+        if (payload.get('v') != 1
+                or set(payload) != set(_resume_payload())
+                or not isinstance(payload.get('latch'), dict)
+                or set(payload['latch']) != set(STATE['latch'])
+                or any(type(v) is not bool for v in payload['latch'].values())
+                or not isinstance(payload.get('ran_with'), dict)
+                or set(payload['ran_with']) - set(STATE['latch'])
+                or any(type(v) is not bool for v in payload['ran_with'].values())
+                or type(payload.get('manual_off_pending')) is not bool
+                or type(payload.get('cold_start_pending')) is not bool):
+            raise ValueError('invalid checkpoint control state')
+        for key in ('changed_at','min_run_at','reading_at','oob_since','start_time'):
+            if payload[key] is not None and _n(payload[key]) is None:
+                raise ValueError('invalid checkpoint timestamp')
+        shift = mono-record['mono']-downtime
+        def shifted(value):
+            if value is None:
+                return None
+            if not _finite(value):
+                raise ValueError('invalid elapsed clock')
+            return value+shift
+        payload['off_draw_since'] = shifted(payload.get('off_draw_since'))
+        payload['cold_start_hold_until'] = shifted(payload.get('cold_start_hold_until'))
+        for key in ('oob_monotonic', 'draw_grace'):
+            pair = payload.get(key)
+            if pair is not None:
+                if not isinstance(pair, list) or len(pair) != 2 or not _finite(pair[0]):
+                    raise ValueError('invalid clock pair')
+                payload[key] = [pair[0], shifted(pair[1])]
+        clocks = payload.get('elapsed_clocks', {})
+        if not isinstance(clocks, dict):
+            raise ValueError('invalid elapsed clocks')
+        for key, pair in clocks.items():
+            if not isinstance(pair, list) or len(pair) != 2 or not _finite(pair[0]):
+                raise ValueError('invalid acquisition clock')
+            clocks[key] = [pair[0], shifted(pair[1])]
+        retry = payload.get('relay_retry_clock')
+        if retry is not None:
+            if not isinstance(retry, list) or len(retry) != 3:
+                raise ValueError('invalid retry clock')
+            retry[2] = max(mono, shifted(retry[2]))
+        # Hold source ports conservatively for their remaining wait after downtime.
+        ports = payload.get('plug_ports', [])
+        if not isinstance(ports, list):
+            raise ValueError('invalid port history')
+        for row in ports:
+            if not isinstance(row, list) or len(row) != 3 or not _finite(row[2]):
+                raise ValueError('invalid port record')
+            row[2] = max(0, row[2]-downtime)
+        os.environ[RESUME_ENV] = json.dumps(payload, allow_nan=False)
+        return _apply_resume(allow_old_monotonic=True)
+    except (OSError, ValueError, TypeError, KeyError, OverflowError):
+        os.environ.pop(RESUME_ENV, None)
+        _log('%s Stop checkpoint unusable; starting cold' % FC_RESTART_PROBLEM)
+        return False
 
 
 def _announce_owed_manual_stop():
@@ -6042,6 +6196,8 @@ def _restart_now():
     # This matches configuration/actuation lock ordering and closes the
     # gap between handover capture and exec where Manual could be saved
     # with a stop promise that was absent from the captured handover.
+    if _stopping.is_set():
+        return False
     acquired = []
     unsaved = True
     try:
@@ -6106,7 +6262,7 @@ def restart_loop():
     it. Writing this file needs shell access as the service user, which
     is already total control.
     """
-    while True:
+    while not _stopping.is_set():
         try:
             if _consume_restart_request():
                 _restart_now()
@@ -6118,7 +6274,7 @@ def restart_loop():
 if __name__ == "__main__":
     # Before any thread starts, so the first decide() sees the lease and
     # the latches the previous process was holding.
-    resumed = _apply_resume()
+    resumed = _apply_resume() or _load_stop_state()
     # Immediately after, and before anything else can log: this line is
     # what explains every line that appears below it.
     _announce_start(resumed)
@@ -6139,4 +6295,5 @@ if __name__ == "__main__":
     threading.Thread(target=loop, daemon=True).start()
     threading.Thread(target=watts_loop, daemon=True).start()
     threading.Thread(target=restart_loop, daemon=True).start()
-    app.run(host="127.0.0.1", port=8096, threaded=True)
+    app.run(host=os.environ.get("FAN_CONTROLLER_BIND", "127.0.0.1"),
+            port=8096, threaded=True)

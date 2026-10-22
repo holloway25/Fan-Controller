@@ -2,6 +2,10 @@
 
 The controller is one Flask process managed by systemd.
 
+The optional [container deployment](docker.md) runs the same single controller
+process without systemd. Its `/data` volume separates writable runtime state
+from image code. Native paths and restart behaviour are unchanged by default.
+
 ```text
 UniFi Protect --HTTPS--> Fan Controller --HTTP--> Tasmota plug
                          | poll and decide
@@ -155,6 +159,17 @@ The lease uses `min_run_at` separately from physical relay timing (`changed_at`)
 so demand handover does not renew motor spin-up grace or reset draw protection.
 A preserving restart carries the existing deadline without extending or creating a hold.
 Changes to plug, sensor or control settings cancel it; unrelated saves do not.
+
+Containers explicitly enable `FAN_CONTROLLER_PERSIST_STATE=1`. SIGTERM blocks
+new actuation, takes the existing handover locks in order, persists any unsaved
+fault first and writes one private clean-stop checkpoint. Startup consumes it
+before applying it and requires matching configuration and fault state. Saved
+elapsed clocks are rebased on a changed host, using monotonic downtime on the
+same kernel boot or nonnegative wall downtime across host reboots. Downtime
+counts toward leases and safety timers. Ambiguous clock rollback or a gap over
+24 hours falls back to the existing cold-start rules. Relay/power observations
+are never restored as facts; the device is read again. Forced kills and power
+loss cannot manufacture a clean-stop checkpoint. Fault records remain separate.
 Events are bounded and best-effort, so the absence
 of a start event does not prove no restart occurred.
 

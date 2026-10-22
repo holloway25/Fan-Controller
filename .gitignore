@@ -38,6 +38,7 @@ __pycache__/
 fault.json
 restart.request
 manual-off.pending
+resume.json
 plug-access.disabled
 plug-diagnostics.enabled
 diagnostics/

@@ -1,0 +1,70 @@
+name: approve container
+on:
+  workflow_dispatch:
+    inputs:
+      candidate:
+        description: Immutable candidate tag from the successful container workflow summary
+        required: true
+        type: string
+      approved:
+        description: I approve this tested controller candidate for latest
+        required: true
+        default: false
+        type: boolean
+permissions:
+  contents: read
+concurrency:
+  group: container-publication
+  cancel-in-progress: false
+jobs:
+  promote:
+    if: inputs.approved == true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Promote the tested manifest, never rebuild it
+        env:
+          CANDIDATE: ${{ inputs.candidate }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ "$CANDIDATE" =~ ^candidate-([0-9a-f]{40})-([0-9]+)-([0-9]+)$ ]]
+          revision="${BASH_REMATCH[1]}"
+          run_id="${BASH_REMATCH[2]}"
+          run_attempt="${BASH_REMATCH[3]}"
+          # Prove the supplying workflow finished successfully, not just a
+          # platform staging tag somebody happened to push.
+          status=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/attempts/$run_attempt" --jq '.conclusion')
+          [[ "$status" == success ]]
+          workflow=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" --jq '.path')
+          [[ "$workflow" == .github/workflows/container.yml ]]
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          digest=$(docker buildx imagetools inspect "$image:$CANDIDATE" --format '{{json .Manifest.Digest}}' | tr -d '"')
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          docker pull "$image@$digest"
+          actual=$(docker inspect "$image@$digest" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')
+          channel=$(docker inspect "$image@$digest" --format '{{index .Config.Labels "io.fan-controller.channel"}}')
+          [[ "$actual" == "$revision" && "$channel" == candidate ]]
+          # Move the approved source pointer first. If publishing later fails,
+          # a maintenance retry can rebuild this approved code, never the old one.
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/container-approved" >/dev/null 2>&1; then
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/container-approved" \
+              -f "sha=$revision" -F force=true >/dev/null
+          else
+            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+              -f ref=refs/tags/container-approved -f "sha=$revision" >/dev/null
+          fi
+          docker buildx imagetools create -t "$image:release-$revision-$run_id-$run_attempt" \
+            -t "$image:latest" "$image@$digest"
+          published=$(docker buildx imagetools inspect "$image:latest" --format '{{json .Manifest.Digest}}' | tr -d '"')
+          [[ "$published" == "$digest" ]]
+          echo "Approved exact tested image: \`$image@$digest\`" >> "$GITHUB_STEP_SUMMARY"
+          echo 'No running installation was updated.' >> "$GITHUB_STEP_SUMMARY"

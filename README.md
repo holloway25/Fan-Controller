@@ -11,6 +11,9 @@ Debian-based image. Python 3.10 or newer is required. Flask listens only on
 
 ## Get started
 
+Docker/Unraid users: see [container installation and image channels](Docs/docker.md).
+The native installer below remains supported. Never run both against one plug.
+
 Run as the ordinary account that will operate the service, not as root:
 
 ```sh

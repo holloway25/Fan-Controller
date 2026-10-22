@@ -1,0 +1,187 @@
+name: container
+on:
+  workflow_run:
+    workflows: [tests]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      maintenance:
+        description: Rebuild approved code with patch-only updates (otherwise candidate)
+        type: boolean
+        default: false
+  schedule:
+    - cron: '17 3 * * 2'
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.source.outputs.build }}
+      revision: ${{ steps.source.outputs.revision }}
+      channel: ${{ steps.source.outputs.channel }}
+      image: ${{ steps.source.outputs.image }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: source
+        env:
+          EVENT: ${{ github.event_name }}
+          MAINTENANCE: ${{ inputs.maintenance }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          channel=candidate
+          revision="$GITHUB_SHA"
+          if [[ "$EVENT" == schedule || "$MAINTENANCE" == true ]]; then
+            channel=maintenance
+            revision=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/container-approved" --jq .object.sha 2>/dev/null || true)
+            if [[ -z "$revision" ]]; then
+              echo 'No candidate has been approved yet; maintenance publishing is disabled.'
+              echo 'build=false' >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          elif [[ "$EVENT" == workflow_run ]]; then
+            revision="$HEAD_SHA"
+            git merge-base --is-ancestor "$revision" origin/main
+          fi
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+          git cat-file -e "$revision:Dockerfile"
+          echo 'build=true' >> "$GITHUB_OUTPUT"
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: prepare
+    if: needs.prepare.outputs.build == 'true'
+    timeout-minutes: 35
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ needs.prepare.outputs.revision }}
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.14'
+      - name: Resolve runtime dependencies
+        env:
+          CHANNEL: ${{ needs.prepare.outputs.channel }}
+        run: |
+          if [[ "$CHANNEL" == maintenance ]]; then
+            python tools/container_dependencies.py
+          else
+            cp requirements.txt container/requirements.lock
+          fi
+          pip install -r container/requirements.lock
+      - name: Check the resolved runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends shellcheck
+          npm ci
+          set +e
+          python tests/run_all.py --all > out.txt 2>&1
+          result=$?
+          set -e
+          cat out.txt
+          [[ "$result" == 0 ]]
+          ! grep -q '^SKIP' out.txt
+      - name: Maintenance mutation checks
+        if: needs.prepare.outputs.channel == 'maintenance' && matrix.arch == 'amd64'
+        run: python tools/mutate.py
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Build once, test and push that same image
+        env:
+          IMAGE: ${{ needs.prepare.outputs.image }}
+          REVISION: ${{ needs.prepare.outputs.revision }}
+          ARCH: ${{ matrix.arch }}
+          CHANNEL: ${{ needs.prepare.outputs.channel }}
+        run: |
+          set -euo pipefail
+          tag="$IMAGE:build-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$ARCH"
+          docker build --pull --no-cache --build-arg "REVISION=$REVISION" \
+            --label "io.fan-controller.channel=$CHANNEL" -t "$tag" .
+          python tools/test_container.py "$tag"
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            ghcr.io/aquasecurity/trivy:0.76.1 image --exit-code 1 \
+            --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed "$tag"
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push tested platform artifact
+        env:
+          IMAGE: ${{ needs.prepare.outputs.image }}
+          ARCH: ${{ matrix.arch }}
+        run: docker push "$IMAGE:build-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$ARCH"
+
+  publish:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    concurrency:
+      group: container-publication
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish only after both native platforms pass
+        env:
+          IMAGE: ${{ needs.prepare.outputs.image }}
+          REVISION: ${{ needs.prepare.outputs.revision }}
+          CHANNEL: ${{ needs.prepare.outputs.channel }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          immutable="$CHANNEL-$REVISION-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          docker buildx imagetools create -t "$IMAGE:$immutable" \
+            "$IMAGE:build-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-amd64" \
+            "$IMAGE:build-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-arm64"
+          digest=$(docker buildx imagetools inspect "$IMAGE:$immutable" --format '{{json .Manifest.Digest}}' | tr -d '"')
+          if [[ "$CHANNEL" == maintenance ]]; then
+            approved=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/container-approved" --jq .object.sha)
+            [[ "$approved" == "$REVISION" ]] # An intervening approval wins.
+            docker buildx imagetools create -t "$IMAGE:latest" "$IMAGE@$digest"
+          else
+            current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)
+            if [[ "$current" == "$REVISION" ]]; then
+              docker buildx imagetools create -t "$IMAGE:candidate" "$IMAGE@$digest"
+            fi
+          fi
+          {
+            echo "Image: \`$IMAGE:$immutable\`"
+            echo "Digest: \`$digest\`"
+            echo "Controller revision: \`$REVISION\`"
+            echo 'No running installation was updated.'
+          } >> "$GITHUB_STEP_SUMMARY"
