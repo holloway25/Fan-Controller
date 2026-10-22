@@ -1,5 +1,7 @@
 """Out-of-order maintenance and approvals cannot regress latest's build order."""
 import importlib.util
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
@@ -7,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from unittest.mock import patch
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import harness
 ROOT = Path(__file__).resolve().parents[1]
@@ -174,6 +177,23 @@ def test_approval_can_read_the_workflow_provenance_it_checks():
     job = workflow.split('  promote:\n',1)[1]
     permissions = job.split('    permissions:\n',1)[1].split('    steps:',1)[0]
     assert '      actions: read\n' in permissions, 'Approval needs Actions read permission for supplying-run verification'
+
+
+def test_metadata_anchor_does_not_replace_the_reviewed_source_identity():
+    api = Registry()
+    anchor = 'd'*40
+    args = ['publication','--revision',SHA,'--digest',DIGEST,'--kind','approval']
+    env = dict(GITHUB_REPOSITORY='example/fan',GH_TOKEN='placeholder',
+               GITHUB_RUN_ID='200',GITHUB_RUN_ATTEMPT='1',GITHUB_SHA=anchor)
+    with patch.dict(os.environ,env), patch.object(sys,'argv',args), \
+            patch.object(P,'GitHub',return_value=api), contextlib.redirect_stdout(io.StringIO()) as out:
+        P.main()
+    assert out.getvalue().strip() == 'true'
+    tag = api.tags[api.ref['object']['sha']]
+    assert tag['object'] == anchor, 'Metadata must anchor to the workflow commit'
+    record = json.loads(tag['message'])
+    assert record['revision'] == SHA and record['digest'] == DIGEST
+    assert api.approved == SHA
 
 
 if __name__ == '__main__':

@@ -64,9 +64,12 @@ jobs:
           fi
           # Move the approved source pointer first. If publishing later fails,
           # a maintenance retry can rebuild this approved code, never the old one.
-          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/container-approved" >/dev/null 2>&1; then
-            gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/container-approved" \
-              -f "sha=$revision" -F force=true >/dev/null
+          previous=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/container-approved" --jq .object.sha 2>/dev/null || true)
+          if [[ -n "$previous" ]]; then
+            if [[ "$previous" != "$revision" ]]; then
+              gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/container-approved" \
+                -f "sha=$revision" -F force=true >/dev/null
+            fi
           else
             gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
               -f ref=refs/tags/container-approved -f "sha=$revision" >/dev/null

@@ -37,8 +37,13 @@ class GitHub:
             raise
 
 
-def reserve(api, revision, digest, kind, run_id, attempt):
+def reserve(api, revision, digest, kind, run_id, attempt, anchor=None):
+    # This tag is an ordering record, NOT the approved source pointer. Anchor
+    # its Git object to the workflow commit the built-in token can reference;
+    # keep the actual approved source identity separately in the JSON record.
+    anchor = revision if anchor is None else anchor
     if (not re.fullmatch(r'[0-9a-f]{40}', revision)
+            or not re.fullmatch(r'[0-9a-f]{40}', anchor)
             or not re.fullmatch(r'sha256:[0-9a-f]{64}', digest)
             or kind not in ('maintenance','approval')
             or type(run_id) is not int or run_id <= 0
@@ -63,7 +68,7 @@ def reserve(api, revision, digest, kind, run_id, attempt):
     record = dict(version=1, run=run_id, attempt=attempt, revision=revision,
                   digest=digest, kind=kind)
     tag = api('POST', 'git/tags', dict(tag='container-publication',
-              message=json.dumps(record, sort_keys=True), object=revision, type='commit'))
+              message=json.dumps(record, sort_keys=True), object=anchor, type='commit'))
     if ref is None:
         api('POST', 'git/refs', dict(ref='refs/'+REF, sha=tag['sha']))
     else:
@@ -79,7 +84,8 @@ def main():
     args = parser.parse_args()
     api = GitHub(os.environ['GITHUB_REPOSITORY'], os.environ['GH_TOKEN'])
     allowed = reserve(api, args.revision, args.digest, args.kind,
-                      int(os.environ['GITHUB_RUN_ID']), int(os.environ['GITHUB_RUN_ATTEMPT']))
+                      int(os.environ['GITHUB_RUN_ID']), int(os.environ['GITHUB_RUN_ATTEMPT']),
+                      anchor=os.environ.get('GITHUB_SHA'))
     print('true' if allowed else 'false')
     if not allowed:
         print('Older or repeated publication skipped; latest is unchanged.', file=sys.stderr)

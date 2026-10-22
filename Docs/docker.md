@@ -125,6 +125,8 @@ referenced by `container-approved`, never the newest code on `main`. It:
    one publication lock and a durable `container-publication` metadata tag;
    older/repeated builds cannot move `latest` backwards. The order is reserved
    before moving the channel, so a failed publish requires a newer run/attempt.
+   That metadata tag anchors to the workflow commit; its JSON records the actual
+   approved controller revision and image digest separately.
 
 Python stays within 3.15; OS stays within Bookworm. Python minor/major changes,
 dependency major changes and controller code changes require a candidate
@@ -141,6 +143,15 @@ explicitly check the approval box. Only repository writers can dispatch it.
 The workflow checks its successful supplying run and source labels, updates
 the approved source pointer, and promotes the already-tested manifest to
 `latest` without rebuilding. No production host is contacted.
+
+Approval requires Actions read permission to verify the supplying run. GitHub
+may restrict its built-in token from creating/moving `container-approved` to
+an older commit containing different workflow files. In that case, an explicitly
+authorised maintainer must set that source tag to the exact reviewed commit
+using their own workflow-capable login, then retry approval. Never substitute
+the newest unreviewed commit, bypass the image checks, or store a broad personal
+token merely to avoid this step. An already matching source tag is left alone;
+normal maintenance uses the existing approval without moving it.
 
 For local development builds, keep `container/requirements.lock` aligned with
 `requirements.txt`, then build with `docker build -t fan-controller:local .`.
