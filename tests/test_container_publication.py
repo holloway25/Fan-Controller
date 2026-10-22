@@ -1,6 +1,7 @@
 """Out-of-order maintenance and approvals cannot regress latest's build order."""
 import importlib.util
 import contextlib
+import datetime
 import io
 import json
 import os
@@ -194,6 +195,42 @@ def test_metadata_anchor_does_not_replace_the_reviewed_source_identity():
     record = json.loads(tag['message'])
     assert record['revision'] == SHA and record['digest'] == DIGEST
     assert api.approved == SHA
+
+
+def test_two_day_schedule_crosses_month_end_and_does_not_gate_manual_builds():
+    if not shutil.which('bash'):
+        harness.skip('bash is required to execute the schedule gate')
+    workflow = (ROOT/'.github/workflows/container.yml').read_text()
+    assert "cron: '17 3 * * *'" in workflow
+    lines = workflow.split('      - id: source',1)[1].split('  build:',1)[0].split('        run: |',1)[1].splitlines()
+    script = '\n'.join(line[10:] for line in lines[1:] if line.startswith('          '))
+    with tempfile.TemporaryDirectory() as folder:
+        root = Path(folder)
+        for name, body in {'date':"import os; print(os.environ['FAKE_NOW'])",
+                           'gh':"print('a'*40)", 'git':'pass'}.items():
+            path = root/name
+            path.write_text('#!'+sys.executable+'\n'+body+'\n')
+            path.chmod(0o755)
+        env = dict(os.environ,PATH=str(root)+os.pathsep+os.environ['PATH'],
+                   GITHUB_SHA=SHA,GITHUB_REPOSITORY='example/fan',HEAD_SHA='',
+                   GH_TOKEN='placeholder',MAINTENANCE='false')
+        days = [datetime.date(2026,10,30)+datetime.timedelta(days=i) for i in range(5)]
+        selected = []
+        for day in days:
+            stamp = int(datetime.datetime.combine(day,datetime.time(3,17),datetime.timezone.utc).timestamp())
+            for event,maintenance in (('schedule','false'),('workflow_dispatch','false'),('workflow_dispatch','true')):
+                output = root/'output'
+                output.write_text('')
+                env.update(EVENT=event,MAINTENANCE=maintenance,FAKE_NOW=str(stamp),GITHUB_OUTPUT=str(output))
+                result = subprocess.run(['bash','-c',script],cwd=ROOT,env=env,
+                                        capture_output=True,text=True,timeout=10)
+                assert result.returncode==0, result.stdout+result.stderr
+                built = 'build=true\n' in output.read_text()
+                expected = event!='schedule' or stamp//86400%2==0
+                assert built == expected, (day,event,output.read_text())
+                if event=='schedule' and built: selected.append(day)
+        assert len(selected)>=2
+        assert all((b-a).days==2 for a,b in zip(selected,selected[1:])), selected
 
 
 if __name__ == '__main__':

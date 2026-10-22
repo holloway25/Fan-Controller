@@ -11,7 +11,9 @@ on:
         type: boolean
         default: false
   schedule:
-    - cron: '17 3 * * 2'
+    # Daily trigger; the UTC epoch-day guard below selects every second day.
+    # Unlike day-of-month */2, this preserves the cadence across month ends.
+    - cron: '17 3 * * *'
 permissions:
   contents: read
 
@@ -40,6 +42,11 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          if [[ "$EVENT" == schedule ]] && (( $(date -u +%s) / 86400 % 2 != 0 )); then
+            echo 'Not a maintenance build day; the next scheduled build is tomorrow.'
+            echo 'build=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           channel=candidate
           revision="$GITHUB_SHA"
           if [[ "$EVENT" == schedule || "$MAINTENANCE" == true ]]; then

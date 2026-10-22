@@ -109,7 +109,12 @@ be combined with a successful retried ARM64 attempt, without guessing tag names
 from the publication attempt. Records are retained for 30 days; missing/expired
 records fail closed and require rebuilding the missing platforms.
 
-Weekly maintenance (or a manual maintenance dispatch) uses the exact commit
+Maintenance builds run every second UTC day at 03:17 UTC (GitHub may delay
+scheduled starts). A daily trigger checks UTC epoch-day parity, preserving the
+two-day cadence across month/year boundaries; the intervening trigger skips
+the build. Manual maintenance is available on any day.
+
+Scheduled maintenance (or a manual maintenance dispatch) uses the exact commit
 referenced by `container-approved`, never the newest code on `main`. It:
 
 1. Refreshes `python:3.15-slim-bookworm` and stable-distribution OS packages.
