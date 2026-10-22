@@ -1,4 +1,4 @@
-ARG PYTHON_IMAGE=python:3.15-slim-bookworm
+ARG PYTHON_IMAGE=python:3.15-slim-trixie
 FROM ${PYTHON_IMAGE}
 ARG REVISION=unknown
 LABEL org.opencontainers.image.source="https://github.com/holloway25/Fan-Controller" \

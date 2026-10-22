@@ -1,6 +1,9 @@
 # Docker and Unraid
 
 The container is an alternative to the native installer, not a requirement.
+This checkout builds on Debian 13 Trixie Slim with Python 3.15. Base-image
+changes go through candidate approval; maintenance keeps the base selected
+by the approved source rather than silently upgrading to a new Debian release.
 It needs no GPIO, privileged mode, host networking or Docker socket. It must
 be able to reach the configured Protect console, plug, DNS and SMTP service.
 Run exactly one controller against a physical plug; stop the old service before
@@ -117,7 +120,7 @@ the build. Manual maintenance is available on any day.
 Scheduled maintenance (or a manual maintenance dispatch) uses the exact commit
 referenced by `container-approved`, never the newest code on `main`. It:
 
-1. Refreshes `python:3.15-slim-bookworm` and stable-distribution OS packages.
+1. Refreshes `python:3.15-slim-trixie` and stable-distribution OS packages.
 2. Resolves stable runtime Python packages within their existing major version,
    accepting minor/patch updates. Certifi uses date-based releases, so newer
    calendar versions are allowed. Downgrades, prereleases and new dependency
@@ -133,7 +136,7 @@ referenced by `container-approved`, never the newest code on `main`. It:
    That metadata tag anchors to the workflow commit; its JSON records the actual
    approved controller revision and image digest separately.
 
-Python stays within 3.15; OS stays within Bookworm. Python minor/major changes,
+Python stays within 3.15; OS stays within Debian 13 Trixie. Python minor/major changes,
 dependency major changes and controller code changes require a candidate
 approval. Exact baseline pins in `requirements.txt` make native installs
 reproducible; they are lower bounds for container updates, not permanently frozen
