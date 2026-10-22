@@ -15,7 +15,12 @@ RUN apt-get update && apt-get upgrade -y \
     && install -d -o fan -g fan -m 0700 /data
 COPY requirements.txt /tmp/requirements-original.txt
 COPY container/requirements.lock /tmp/requirements.txt
-RUN pip install --no-cache-dir -r /tmp/requirements.txt
+# Packaging tools are build-time only. Remove their private dependency copies
+# and ensurepip's bundled installer wheel from the final runtime filesystem.
+RUN python -m pip install --no-cache-dir -r /tmp/requirements.txt \
+    && python -m pip uninstall --yes setuptools wheel \
+    && python -m pip uninstall --yes pip \
+    && python -c "import ensurepip,pathlib,shutil; shutil.rmtree(pathlib.Path(ensurepip.__file__).parent)"
 COPY controller.py config.example.json LICENSE /app/
 COPY templates /app/templates/
 COPY static /app/static/

@@ -95,6 +95,20 @@ and leases, persist a draw fault, acknowledge it, and check actual Docker stop
 signal handling. Image vulnerability scans reject fixable HIGH/CRITICAL issues.
 These checks do not prove physical power isolation or eliminate all vulnerabilities.
 
+The final runtime image removes pip, setuptools, wheel and ensurepip (including
+its bundled installer wheel) after dependencies are installed. Their private
+libraries are not controller runtime dependencies and must not be left behind
+as unmaintained copies. Update dependencies by rebuilding the image, not by
+installing packages inside a running container. The native installer is unchanged.
+
+Each successful platform build saves its tested registry digest as a workflow
+artifact. Publication downloads both records and validates the repository,
+source, channel, architecture and workflow run before assembling by digest.
+This supports **Re-run failed jobs**: a successful earlier AMD64 attempt can
+be combined with a successful retried ARM64 attempt, without guessing tag names
+from the publication attempt. Records are retained for 30 days; missing/expired
+records fail closed and require rebuilding the missing platforms.
+
 Weekly maintenance (or a manual maintenance dispatch) uses the exact commit
 referenced by `container-approved`, never the newest code on `main`. It:
 

@@ -19,9 +19,12 @@ def main():
     args=parser.parse_args()
     root=Path(__file__).resolve().parents[1]
     run('docker','run','--rm','--network','none','--entrypoint','python',args.image,'-c',
-        "import os,sys; from pathlib import Path; assert os.getuid()==10001; "
+        "import os,sys,importlib.util; from pathlib import Path; assert os.getuid()==10001; "
         "assert sys.version_info[:2]==(3,15); assert not Path('/app/config.json').exists(); "
-        "assert not Path('/app/.git').exists(); print('PASS non-root image without live configuration')")
+        "assert not Path('/app/.git').exists(); "
+        "assert all(importlib.util.find_spec(name) is None for name in "
+        "('pip','ensurepip','setuptools','wheel')); "
+        "import flask,requests,urllib3; print('PASS non-root runtime without live configuration or packaging tools')")
     name='fan-integration-'+uuid.uuid4().hex[:12]
     container=name+'-service'
     run('docker','volume','create',name)

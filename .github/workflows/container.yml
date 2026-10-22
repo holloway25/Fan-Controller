@@ -131,7 +131,22 @@ jobs:
         env:
           IMAGE: ${{ needs.prepare.outputs.image }}
           ARCH: ${{ matrix.arch }}
-        run: docker push "$IMAGE:build-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$ARCH"
+          REVISION: ${{ needs.prepare.outputs.revision }}
+          CHANNEL: ${{ needs.prepare.outputs.channel }}
+        run: |
+          set -euo pipefail
+          tag="$IMAGE:build-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$ARCH"
+          docker push "$tag"
+          digest=$(docker buildx imagetools inspect "$tag" --format '{{json .Manifest.Digest}}' | tr -d '"')
+          python tools/container_artifacts.py record --image "$IMAGE" --revision "$REVISION" \
+            --channel "$CHANNEL" --arch "$ARCH" --digest "$digest" --path "platform-$ARCH.json"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: container-platform-${{ matrix.arch }}
+          path: platform-${{ matrix.arch }}.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 30
 
   publish:
     needs: [prepare, build]
@@ -152,6 +167,11 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: container-platform-*
+          path: platform-artifacts
+          merge-multiple: true
       - name: Publish only after both native platforms pass
         env:
           IMAGE: ${{ needs.prepare.outputs.image }}
@@ -161,9 +181,11 @@ jobs:
         run: |
           set -euo pipefail
           immutable="$CHANNEL-$REVISION-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          references=$(python tools/container_artifacts.py references --image "$IMAGE" \
+            --revision "$REVISION" --channel "$CHANNEL" --path platform-artifacts)
+          mapfile -t platforms <<< "$references"
           docker buildx imagetools create -t "$IMAGE:$immutable" \
-            "$IMAGE:build-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-amd64" \
-            "$IMAGE:build-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-arm64"
+            "${platforms[@]}"
           digest=$(docker buildx imagetools inspect "$IMAGE:$immutable" --format '{{json .Manifest.Digest}}' | tr -d '"')
           if [[ "$CHANNEL" == maintenance ]]; then
             approved=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/container-approved" --jq .object.sha)

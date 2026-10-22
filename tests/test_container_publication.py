@@ -13,6 +13,9 @@ ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('publication', ROOT/'tools/container_publication.py')
 P = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(P)
+spec = importlib.util.spec_from_file_location('artifacts', ROOT/'tools/container_artifacts.py')
+A = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(A)
 SHA, DIGEST = 'a'*40, 'sha256:'+'b'*64
 
 
@@ -92,6 +95,9 @@ def test_actual_maintenance_script_skips_old_and_repeated_latest_moves():
 from pathlib import Path
 if 'inspect' in sys.argv:
     print('sha256:'+'b'*64)
+elif 'create' in sys.argv and not any(arg.endswith(':latest') for arg in sys.argv):
+    expected=[os.environ['IMAGE']+'@sha256:'+char*64 for char in ('b','c')]
+    assert sys.argv[-2:] == expected, 'Assembly reconstructed tags instead of recorded digests'
 elif any(arg.endswith(':latest') for arg in sys.argv):
     with Path(os.environ['FAKE_MOVES']).open('a') as stream: stream.write('latest\\n')
 ''',
@@ -99,6 +105,10 @@ elif any(arg.endswith(':latest') for arg in sys.argv):
 from pathlib import Path
 sys.path.insert(0,str(Path(os.environ['FAKE_ROOT'])/'tests'))
 import test_container_publication as fixture
+if sys.argv[1].endswith('container_artifacts.py'):
+    sys.argv.pop(1)
+    fixture.A.main()
+    raise SystemExit()
 P=fixture.P
 api=fixture.Registry()
 state=Path(os.environ['FAKE_STATE'])
@@ -123,10 +133,40 @@ P.main()
                    FAKE_STATE=str(box/'state'), FAKE_MOVES=str(box/'moves'))
         for run, attempt in ((200,1),(100,9),(200,1),(200,2)):
             env.update(GITHUB_RUN_ID=str(run), GITHUB_RUN_ATTEMPT=str(attempt))
-            result = subprocess.run(['bash','-c',script], cwd=ROOT,env=env,
+            folder = box/'platform-artifacts'
+            folder.mkdir(exist_ok=True)
+            for arch,char in zip(A.ARCHES,('b','c')):
+                # Simulate AMD64 preserved from attempt 1 while only ARM64 was retried.
+                row = A.record(env['IMAGE'],SHA,'maintenance',arch,'sha256:'+char*64,run,
+                               1 if arch=='amd64' else attempt)
+                (folder/('platform-'+arch+'.json')).write_text(json.dumps(row))
+            result = subprocess.run(['bash','-c',script], cwd=box,env=env,
                                     capture_output=True,text=True,timeout=15)
             assert result.returncode == 0, result.stdout+result.stderr
         assert (box/'moves').read_text().splitlines() == ['latest','latest'], 'Actual workflow moved latest for an old/repeated build'
+
+
+def test_platform_artifacts_keep_successful_attempt_identity_and_validate_provenance():
+    with tempfile.TemporaryDirectory() as folder:
+        root = Path(folder)
+        for arch,char,attempt in (('amd64','b',1),('arm64','c',2)):
+            row = A.record('example/fan',SHA,'candidate',arch,'sha256:'+char*64,100,attempt)
+            (root/('platform-'+arch+'.json')).write_text(json.dumps(row))
+        expected = ['example/fan@sha256:'+char*64 for char in ('b','c')]
+        assert A.references(root,'example/fan',SHA,'candidate',100,2) == expected
+        path = root/'platform-amd64.json'
+        original = json.loads(path.read_text())
+        for key,value in (('run',99),('revision','c'*40),('arch','arm64'),('channel','maintenance'),
+                          ('attempt',3),('image','other/fan'),('digest','not-a-digest'),('version',True)):
+            row = dict(original,**{key:value})
+            path.write_text(json.dumps(row))
+            try: A.references(root,'example/fan',SHA,'candidate',100,2)
+            except ValueError: pass
+            else: raise AssertionError('Wrong platform provenance accepted: '+key)
+        path.unlink()
+        try: A.references(root,'example/fan',SHA,'candidate',100,2)
+        except FileNotFoundError: pass
+        else: raise AssertionError('Missing architecture accepted')
 
 
 if __name__ == '__main__':

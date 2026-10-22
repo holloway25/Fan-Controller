@@ -720,6 +720,14 @@ MUTATIONS = [
      '            if [[ "$publish" == true ]]; then',
      '            if true; then', "test_container_publication.py",
      "test_actual_maintenance_script_skips_old_and_repeated_latest_moves"),
+    ("container-platform-digests-reconstructed", ".github/workflows/container.yml",
+     '            "${platforms[@]}"',
+     '            "$IMAGE:build-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-amd64" "$IMAGE:build-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-arm64"',
+     "test_container_publication.py", "test_actual_maintenance_script_skips_old_and_repeated_latest_moves"),
+    ("container-platform-version-type-ignored", "tools/container_artifacts.py",
+     "        if (row != checked or type(row['version']) is not int",
+     "        if (False and row != checked or False",
+     "test_container_publication.py", "test_platform_artifacts_keep_successful_attempt_identity_and_validate_provenance"),
 
     # ---------------------------------------------------- log classes
     ("prefix-not-stripped", "controller.py",
