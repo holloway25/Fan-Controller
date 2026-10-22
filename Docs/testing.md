@@ -65,3 +65,11 @@ GitHub CI runs the full suite on x86 and ARM64, including browser, installer,
 restart and ShellCheck coverage. Privacy checks run separately. A hosted ARM64
 runner does not reproduce Pi performance or attached hardware; see
 [ARM limitations](arm.md#remaining-hardware-validation).
+
+To limit hosted minutes, newer test runs cancel superseded runs for the same
+branch or pull request and event type. Branch pushes and pull requests retain
+the full Python/architecture matrix; release tags do not rerun source tests.
+Only dependency downloads are cached: installs and every test still run, even
+on a cache hit. The privacy workflow is not cancelled, so intermediate pushed
+commits remain checked. Docker publication and two-day maintenance gates are
+unchanged. Removing old logs or artifacts does not refund minutes already used.

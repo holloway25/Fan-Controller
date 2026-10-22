@@ -9,7 +9,15 @@ permissions:
 
 on:
   push:
+    # Release/approval tags do not change source. All branches still get checks.
+    branches: ['**']
   pull_request:
+
+# Keep the newest test run for each branch/PR and event type. Do not share
+# this group with privacy: its pushed-commit history scan must not be cancelled.
+concurrency:
+  group: tests-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   linux:
@@ -38,6 +46,8 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: requirements.txt
 
       - run: pip install -r requirements.txt
 
@@ -67,7 +77,11 @@ jobs:
       # not a mistake - and three regressions got past exactly
       # that.
       - name: node and jsdom
-        run: npm ci
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci --prefer-offline
 
       # The reason to run this on Linux at all: every test in
       # test_durability.py needs O_DIRECTORY and every test in
@@ -180,6 +194,8 @@ jobs:
           # Trixie on the deployed board ships 3.13. Docs/arm.md
           # records the exact version measured there.
           python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements.txt
 
       - run: pip install -r requirements.txt
 
@@ -191,7 +207,11 @@ jobs:
       # Same reason. The runners ship Node, so this only fetches
       # the pinned jsdom.
       - name: jsdom
-        run: npm ci
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci --prefer-offline
 
       - name: run the suite
         run: |
