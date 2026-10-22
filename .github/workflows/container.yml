@@ -84,7 +84,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
-          python-version: '3.14'
+          python-version: '3.15'
       - name: Resolve runtime dependencies
         env:
           CHANNEL: ${{ needs.prepare.outputs.channel }}

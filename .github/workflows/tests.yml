@@ -29,8 +29,8 @@ jobs:
         # this row is compatibility cover, not a description of the
         # deployed board. Corrected 2026-08-16; it used to claim
         # Bookworm was what the 3B+ runs.
-        # 3.14 covers the development/x86 environment; the Pi uses 3.13.
-        python: ["3.10", "3.11", "3.14"]
+        # Retain native compatibility; 3.15 also covers the container runtime.
+        python: ["3.10", "3.11", "3.14", "3.15"]
     steps:
       # Current action majors run on supported GitHub runner Node versions.
       - uses: actions/checkout@v5
@@ -115,7 +115,7 @@ jobs:
       # development and CI task, not routine validation of a running
       # controller. Each one copies the whole tree.
       - name: mutations must be caught
-        if: matrix.python == '3.14'
+        if: matrix.python == '3.15'
         run: python tools/mutate.py
 
       # A skip is not a pass. On Linux with bash present nothing should

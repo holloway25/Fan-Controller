@@ -20,7 +20,7 @@ def main():
     root=Path(__file__).resolve().parents[1]
     run('docker','run','--rm','--network','none','--entrypoint','python',args.image,'-c',
         "import os,sys; from pathlib import Path; assert os.getuid()==10001; "
-        "assert sys.version_info[:2]==(3,14); assert not Path('/app/config.json').exists(); "
+        "assert sys.version_info[:2]==(3,15); assert not Path('/app/config.json').exists(); "
         "assert not Path('/app/.git').exists(); print('PASS non-root image without live configuration')")
     name='fan-integration-'+uuid.uuid4().hex[:12]
     container=name+'-service'

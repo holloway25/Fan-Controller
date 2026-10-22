@@ -98,7 +98,7 @@ These checks do not prove physical power isolation or eliminate all vulnerabilit
 Weekly maintenance (or a manual maintenance dispatch) uses the exact commit
 referenced by `container-approved`, never the newest code on `main`. It:
 
-1. Refreshes `python:3.14-slim-bookworm` and stable-distribution OS packages.
+1. Refreshes `python:3.15-slim-bookworm` and stable-distribution OS packages.
 2. Resolves runtime Python packages within their existing major/minor version,
    rejecting downgrades, prereleases and new dependency names.
 3. Runs the complete suite against those resolved dependencies, maintenance
@@ -106,7 +106,7 @@ referenced by `container-approved`, never the newest code on `main`. It:
 4. Publishes a dated/run-specific artifact and updates `latest` only if the
    approved source pointer has not changed during the build.
 
-Python stays within 3.14; OS stays within Bookworm. Python minor/major changes,
+Python stays within 3.15; OS stays within Bookworm. Python minor/major changes,
 dependency minor/major changes and controller code changes require a candidate
 approval. Python dependencies are resolved into `container/requirements.lock`
 without modifying the approved `requirements.txt`. Patch updates are not assumed
