@@ -26,19 +26,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 3.10 is the floor: click, requests and urllib3 in
-        # requirements.txt all declare requires-python >=3.10, so the
-        # pinned set cannot install below it. The source itself parses
-        # back to 3.9, which is not the same thing - which is why this
-        # matrix is built from the dependencies rather than the syntax.
-        #
-        # 3.11 covers Debian Bookworm, which an older Pi image ships.
-        # The MEASURED Pi runs Trixie with 3.13 - see Docs/arm.md - so
-        # this row is compatibility cover, not a description of the
-        # deployed board. Corrected 2026-08-16; it used to claim
-        # Bookworm was what the 3B+ runs.
-        # Retain native compatibility; 3.15 also covers the container runtime.
-        python: ["3.10", "3.11", "3.14", "3.15"]
+        # Python 3.15 is the supported baseline and container runtime.
+        python: ["3.15"]
     steps:
       # Current action majors run on supported GitHub runner Node versions.
       - uses: actions/checkout@v5
@@ -180,9 +169,8 @@ jobs:
   # something is wrong there and the evidence has to come from that
   # hardware - and then run the part that answers the question.
   #
-  # ONE PYTHON, matching what the Pi actually runs. The x86 matrix
-  # above covers the version range; repeating it here would spend
-  # minutes re-proving that Python is Python.
+  # Same Python baseline as the amd64 container. Existing older native
+  # deployments may stay on their current release, but are not CI targets.
   arm64:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 20
@@ -191,9 +179,7 @@ jobs:
 
       - uses: actions/setup-python@v6
         with:
-          # Trixie on the deployed board ships 3.13. Docs/arm.md
-          # records the exact version measured there.
-          python-version: "3.13"
+          python-version: "3.15"
           cache: pip
           cache-dependency-path: requirements.txt
 

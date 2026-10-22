@@ -58,6 +58,43 @@ def test_it_refuses_to_run_as_root():
     return "root is refused"
 
 
+def test_old_python_is_refused_before_installing_anything():
+    for existing_venv in (False, True):
+        tmp, dest = _tree()
+        try:
+            bindir = os.path.join(tmp, 'bin')
+            os.makedirs(bindir)
+            selected = os.path.join(bindir, 'python3')
+            if existing_venv:
+                os.symlink(sys.executable, selected)
+                old = os.path.join(dest, 'venv', 'bin', 'python')
+                os.makedirs(os.path.dirname(old))
+            else:
+                old = selected
+            with open(old, 'w') as f:
+                f.write('#!'+sys.executable+'\n'
+                        'import sys\n'
+                        'if sys.argv[1:] == ["-V"]:\n'
+                        '    print("Python 3.14.0")\n'
+                        'elif len(sys.argv) == 3 and sys.argv[1] == "-c":\n'
+                        '    sys.version_info = (3, 14, 0)\n'
+                        '    exec(sys.argv[2])\n'
+                        'else:\n'
+                        '    raise SystemExit("Unexpected old-Python invocation")\n')
+            os.chmod(old, 0o755)
+            env = dict(os.environ, PATH=bindir+os.pathsep+os.environ['PATH'])
+            r = subprocess.run(['bash', os.path.join(dest, 'install.sh')],
+                               cwd=dest, env=env, capture_output=True, text=True)
+            assert r.returncode != 0, r.stdout+r.stderr
+            assert ('venv/ uses an older Python' if existing_venv else '3.15 is the floor') in r.stdout+r.stderr
+            assert not os.path.exists(os.path.join(dest, 'config.json'))
+            assert 'Dependencies' not in r.stdout
+            if not existing_venv:
+                assert not os.path.exists(os.path.join(dest, 'venv'))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 def test_a_fresh_install_produces_a_working_tree():
     tmp, dest = _tree()
     try:

@@ -1,8 +1,13 @@
 # Installation and first setup
 
-Use Python 3.10 or newer on x86-64 Debian/Ubuntu or a 64-bit Debian-based
+Use Python 3.15 or newer on x86-64 Debian/Ubuntu or a 64-bit Debian-based
 Raspberry Pi 3B+ image. See [ARM notes](arm.md) for board-specific limitations.
-Install Git and the distribution's `python3-venv` package if missing.
+Install Git and venv support for the chosen Python. The installer's `python3`
+on PATH must be 3.15+; a distribution's default Python may be older. Use an
+isolated runtime rather than replacing the operating system's Python, or use
+the [Docker image](docker.md), which includes the tested version. Existing
+older native installations can stay on their previous release; upgrading
+requires a supported Python in both PATH and the installation's venv.
 
 ## Install with systemd
 

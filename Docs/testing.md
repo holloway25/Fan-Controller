@@ -66,6 +66,11 @@ restart and ShellCheck coverage. Privacy checks run separately. A hosted ARM64
 runner does not reproduce Pi performance or attached hardware; see
 [ARM limitations](arm.md#remaining-hardware-validation).
 
+Python 3.15 is the minimum supported version and the tested runtime on both
+architectures. Older Python compatibility jobs have been retired; existing
+older native installations can remain on their previous release, but must
+upgrade Python before installing a new release. Docker includes Python 3.15.
+
 To limit hosted minutes, newer test runs cancel superseded runs for the same
 branch or pull request and event type. Branch pushes and pull requests retain
 the full Python/architecture matrix; release tags do not rerun source tests.

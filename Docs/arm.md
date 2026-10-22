@@ -6,7 +6,10 @@ Ubuntu remain first-class targets.
 
 ## Requirements
 
-Install the venv package supplied by the distribution:
+New releases require Python 3.15 or newer, and ARM64 CI uses Python 3.15.
+The Docker image supplies the tested runtime; see [Docker deployment](docker.md).
+For native installation, provide Python 3.15+ with venv support. The distribution
+package is sufficient only if its Python meets that requirement:
 
 ```sh
 sudo apt install -y python3-venv

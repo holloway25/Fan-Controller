@@ -107,18 +107,18 @@ step "Python"
 PY3="$(command -v python3 || true)"
 [ -n "$PY3" ] || die "python3 is not on PATH."
 
-# 3.10 is the floor: click, requests and urllib3 in requirements.txt all
-# declare requires-python >=3.10, so the pinned set cannot install below
-# it. Checked here rather than left to pip, whose error for this is a
-# wall of resolver output.
-if ! "$PY3" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)'; then
-  die "python3 is $("$PY3" -V 2>&1), and 3.10 is the floor."
+# Match the supported/CI baseline, not dependencies' older minimums.
+if ! "$PY3" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 15) else 1)'; then
+  die "python3 is $("$PY3" -V 2>&1), and 3.15 is the floor."
 fi
 say "$("$PY3" -V 2>&1) at $PY3"
 
 # ----------------------------------------------------------------- venv
 step "Virtual environment"
 if [ -x venv/bin/python ]; then
+  if ! venv/bin/python -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 15) else 1)'; then
+    die "venv/ uses an older Python. Create a Python 3.15+ environment before upgrading."
+  fi
   say "venv/ exists, reusing it"
 else
   "$PY3" -m venv venv || die "could not create venv/.
