@@ -92,7 +92,7 @@ def test_fault_retry_budget_and_spacing_survive_container_replacement():
 
 
 def test_bad_stale_changed_or_ambiguous_checkpoints_start_cold():
-    for damage in ('config', 'fault', 'large_gap', 'backwards', 'bad_latch', 'bad_clock', 'truncated'):
+    for damage in ('config', 'fault', 'large_gap', 'backwards', 'bad_latch', 'bad_clock', 'null_clock', 'truncated'):
         C, clock = setup()
         assert C._save_stop_state()
         D = replacement(C, clock, 'new-boot')
@@ -100,16 +100,29 @@ def test_bad_stale_changed_or_ambiguous_checkpoints_start_cold():
         if damage == 'fault': D.STATE['fault'] = {'msg': 'New standing fault'}
         if damage == 'large_gap': clock[0] += 86401
         if damage == 'backwards': clock[0] -= 1
-        if damage in ('bad_latch', 'bad_clock'):
+        if damage in ('bad_latch', 'bad_clock', 'null_clock'):
             p = Path(C.STOP_STATE_PATH)
             record = json.loads(p.read_text())
             if damage == 'bad_latch': record['payload']['latch']['co2'] = 'true'
-            else: record['payload']['elapsed_clocks']['reading_at'] = [100, float('inf')]
+            else: record['payload']['elapsed_clocks']['reading_at'] = [100, None if damage=='null_clock' else float('inf')]
             p.write_text(json.dumps(record))
         if damage == 'truncated': Path(C.STOP_STATE_PATH).write_text('{')
         assert not D._load_stop_state(), damage
         assert not D.STATE['latch']['co2'], damage
         assert not os.path.exists(C.STOP_STATE_PATH), damage
+
+
+def test_late_notification_completion_does_not_discard_saved_control_state():
+    C, clock = setup()
+    C.STATE['fault'] = dict(at=clock[0],msg='Draw fault',code='FC-003',stopped=False,
+                            attempted_at=None,delivered_at=None)
+    C.save_fault(C.STATE['fault'])
+    assert C._save_stop_state()
+    D = replacement(C, clock)
+    D.STATE['fault'].update(attempted_at=clock[0],delivered_at=clock[0])
+    assert D._load_stop_state()
+    assert D.STATE['latch']['co2']
+    assert D.STATE['fault']['delivered_at']==clock[0]
 
 
 def test_essential_fault_save_precedes_checkpoint_and_shutdown_freezes_actuation():

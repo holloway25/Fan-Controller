@@ -5889,6 +5889,14 @@ def _state_fingerprint(value):
                                     allow_nan=False).encode()).hexdigest()
 
 
+def _checkpoint_fault_fingerprint(fault):
+    # Email callbacks may finish after the snapshot. They cannot change its
+    # safety identity or make an otherwise valid lease checkpoint stale.
+    safety = None if fault is None else {k:v for k,v in fault.items()
+        if k not in ('attempted_at','delivered_at','relay_notice')}
+    return _state_fingerprint(safety)
+
+
 def _boot_id():
     try:
         with open('/proc/sys/kernel/random/boot_id') as stream:
@@ -5923,7 +5931,7 @@ def _save_stop_state():
         with _state_lock:
             snapshot = {'version': 1, 'wall': time.time(), 'mono': time.monotonic(),
                         'boot': _boot_id(), 'config': _state_fingerprint(CFG),
-                        'fault': _state_fingerprint(STATE['fault']),
+                        'fault': _checkpoint_fault_fingerprint(STATE['fault']),
                         'payload': _resume_payload()}
         write_json_durable(STOP_STATE_PATH, snapshot, mode=0o600)
         print('Orderly-stop state saved.', file=sys.stderr, flush=True)
@@ -5957,12 +5965,14 @@ def _load_stop_state():
         if len(raw) > 65536:
             raise ValueError('checkpoint too large')
         record = json.loads(raw, parse_constant=invalid_constant)
-        if (not isinstance(record, dict) or record.get('version') != 1
+        if (not isinstance(record, dict) or type(record.get('version')) is not int
+                or record['version'] != 1
                 or record.get('config') != _state_fingerprint(CFG)
-                or record.get('fault') != _state_fingerprint(STATE['fault'])
+                or record.get('fault') != _checkpoint_fault_fingerprint(STATE['fault'])
                 or not isinstance(record.get('payload'), dict)
                 or not _valid_fault_timestamp(record.get('wall'))
-                or not _finite(record.get('mono'))):
+                or not _finite(record.get('mono')) or record['mono'] < 0
+                or (record.get('boot') is not None and not isinstance(record['boot'], str))):
             raise ValueError('checkpoint does not match current configuration/fault')
         mono = time.monotonic()
         same_boot = _boot_id() is not None and record.get('boot') == _boot_id()
@@ -5996,14 +6006,16 @@ def _load_stop_state():
         for key in ('oob_monotonic', 'draw_grace'):
             pair = payload.get(key)
             if pair is not None:
-                if not isinstance(pair, list) or len(pair) != 2 or not _finite(pair[0]):
+                if (not isinstance(pair, list) or len(pair) != 2
+                        or not all(_finite(v) for v in pair)):
                     raise ValueError('invalid clock pair')
                 payload[key] = [pair[0], shifted(pair[1])]
         clocks = payload.get('elapsed_clocks', {})
         if not isinstance(clocks, dict):
             raise ValueError('invalid elapsed clocks')
         for key, pair in clocks.items():
-            if not isinstance(pair, list) or len(pair) != 2 or not _finite(pair[0]):
+            if (not isinstance(pair, list) or len(pair) != 2
+                    or not all(_finite(v) for v in pair)):
                 raise ValueError('invalid acquisition clock')
             clocks[key] = [pair[0], shifted(pair[1])]
         retry = payload.get('relay_retry_clock')
