@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       maintenance:
-        description: Rebuild approved code with patch-only updates (otherwise candidate)
+        description: Rebuild approved code with tested dependency updates (otherwise candidate)
         type: boolean
         default: false
   schedule:
@@ -89,11 +89,7 @@ jobs:
         env:
           CHANNEL: ${{ needs.prepare.outputs.channel }}
         run: |
-          if [[ "$CHANNEL" == maintenance ]]; then
-            python tools/container_dependencies.py
-          else
-            cp requirements.txt container/requirements.lock
-          fi
+          python tools/container_dependencies.py
           pip install -r container/requirements.lock
       - name: Check the resolved runtime dependencies
         run: |
@@ -144,7 +140,7 @@ jobs:
       group: container-publication
       cancel-in-progress: false
     permissions:
-      contents: read
+      contents: write
       packages: write
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -172,7 +168,10 @@ jobs:
           if [[ "$CHANNEL" == maintenance ]]; then
             approved=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/container-approved" --jq .object.sha)
             [[ "$approved" == "$REVISION" ]] # An intervening approval wins.
-            docker buildx imagetools create -t "$IMAGE:latest" "$IMAGE@$digest"
+            publish=$(python tools/container_publication.py --revision "$REVISION" --digest "$digest" --kind maintenance)
+            if [[ "$publish" == true ]]; then
+              docker buildx imagetools create -t "$IMAGE:latest" "$IMAGE@$digest"
+            fi
           else
             current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)
             if [[ "$current" == "$REVISION" ]]; then

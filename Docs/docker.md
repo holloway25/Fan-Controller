@@ -99,18 +99,27 @@ Weekly maintenance (or a manual maintenance dispatch) uses the exact commit
 referenced by `container-approved`, never the newest code on `main`. It:
 
 1. Refreshes `python:3.15-slim-bookworm` and stable-distribution OS packages.
-2. Resolves runtime Python packages within their existing major/minor version,
-   rejecting downgrades, prereleases and new dependency names.
+2. Resolves stable runtime Python packages within their existing major version,
+   accepting minor/patch updates. Certifi uses date-based releases, so newer
+   calendar versions are allowed. Downgrades, prereleases and new dependency
+   names are rejected. Candidate builds use this same resolver.
 3. Runs the complete suite against those resolved dependencies, maintenance
    mutations, actual-image integration and vulnerability checks.
 4. Publishes a dated/run-specific artifact and updates `latest` only if the
-   approved source pointer has not changed during the build.
+   approved source pointer has not changed during the build and the publication
+   is newer than the last reserved publication. Maintenance and approvals share
+   one publication lock and a durable `container-publication` metadata tag;
+   older/repeated builds cannot move `latest` backwards. The order is reserved
+   before moving the channel, so a failed publish requires a newer run/attempt.
 
 Python stays within 3.15; OS stays within Bookworm. Python minor/major changes,
-dependency minor/major changes and controller code changes require a candidate
-approval. Python dependencies are resolved into `container/requirements.lock`
-without modifying the approved `requirements.txt`. Patch updates are not assumed
-to be security-only or risk-free. If any check fails, `latest` remains unchanged.
+dependency major changes and controller code changes require a candidate
+approval. Exact baseline pins in `requirements.txt` make native installs
+reproducible; they are lower bounds for container updates, not permanently frozen
+image dependencies. Each build resolves exact versions into
+`container/requirements.lock` and tests that image without modifying the approved
+source requirements. Updates are not assumed to be security-only or risk-free.
+If any check fails, `latest` remains unchanged.
 
 After reviewing a successful candidate, run **approve container** in GitHub
 Actions, supply its full immutable candidate tag from the build summary, and

@@ -2578,7 +2578,7 @@ def tick():
     #
     # Relay adoption changes fault safety state: act -> fault -> state.
     with _act_lock:
-        if gen != _cfg_generation:
+        if _stale_client(gen):
             _wake.set()
             return
         actual = _fan_status(h)
@@ -2675,7 +2675,7 @@ def tick():
         # saved while the Protect read was in flight, h may address a
         # plug that is no longer ours. Discard the cycle rather than
         # command it, and wake the loop so the replacement runs at once.
-        if gen != _cfg_generation:
+        if _stale_client(gen):
             _wake.set()
             return
         # A COPY, COMMITTED ONLY ONCE THE RELAY HAS AGREED. decide()
@@ -2794,7 +2794,7 @@ def _failsafe():
     with _act_lock:
         # Same reasoning as tick(): a save during the plug read can leave
         # h pointing at a plug that is no longer configured.
-        if gen != _cfg_generation:
+        if _stale_client(gen):
             return
         cur = CFG["control"]
         mins = int(cur.get("stale_minutes") or 0)

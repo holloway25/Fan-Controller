@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import threading
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import harness
 
@@ -154,6 +155,70 @@ def test_native_install_default_paths_and_opt_in_data_directory():
         finally:
             if previous is None: os.environ.pop('FAN_CONTROLLER_DATA_DIR',None)
             else: os.environ['FAN_CONTROLLER_DATA_DIR'] = previous
+
+
+def shutdown_race(stage):
+    C = harness.load()
+    C.PERSIST_STOP_STATE = True
+    C.CFG['control'].update(mode='auto', stale_minutes=1, min_run_minutes=0)
+    C.CFG['protect']['sensor_id'] = 'fixture'
+    C.STATE['fan'] = False
+    C.STATE['reading_at'] = C.time.time()-120
+    entered, release = threading.Event(), threading.Event()
+    calls, errors = [], []
+    def pause():
+        entered.set()
+        assert release.wait(3), 'Checkpoint did not release the paused worker'
+    class Plug:
+        def state(self): return False
+        def set(self, value): calls.append(value)
+    class Protect:
+        def readings(self, _):
+            if stage == 'sensor': pause()
+            return {'co2':1200}, 'fixture'
+    C._clients = lambda: (Protect(), Plug())
+    if stage == 'decision':
+        def save_history(_):
+            pause()
+            return False
+        C.maybe_save_hist = save_history
+    if stage == 'failsafe':
+        snapshot = C._client_snapshot
+        def delayed_snapshot():
+            result = snapshot()
+            pause()
+            return result
+        C._client_snapshot = delayed_snapshot
+    def work():
+        try:
+            (C._failsafe if stage == 'failsafe' else C.tick)()
+        except BaseException as exc: errors.append(exc)
+    worker = threading.Thread(target=work)
+    worker.start()
+    try:
+        assert entered.wait(3), 'Worker did not reach its shutdown boundary'
+        C._stopping.set()
+        assert C._save_stop_state()
+        saved = json.loads(Path(C.STOP_STATE_PATH).read_text())['payload']
+    finally:
+        release.set()
+        worker.join(3)
+    assert not worker.is_alive() and not errors, errors
+    assert calls == [], 'Command issued after the shutdown checkpoint'
+    assert C.STATE['latch'] == saved['latch'], 'Latch changed after checkpoint'
+    assert C.STATE['reading_at'] == saved['reading_at'], 'Reading changed after checkpoint'
+
+
+def test_delayed_sensor_cannot_commit_after_shutdown_checkpoint():
+    shutdown_race('sensor')
+
+
+def test_auto_decision_cannot_actuate_after_shutdown_checkpoint():
+    shutdown_race('decision')
+
+
+def test_queued_failsafe_cannot_actuate_after_shutdown_checkpoint():
+    shutdown_race('failsafe')
 
 
 if __name__ == '__main__':
