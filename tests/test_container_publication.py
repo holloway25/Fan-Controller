@@ -169,5 +169,12 @@ def test_platform_artifacts_keep_successful_attempt_identity_and_validate_proven
         else: raise AssertionError('Missing architecture accepted')
 
 
+def test_approval_can_read_the_workflow_provenance_it_checks():
+    workflow = (ROOT/'.github/workflows/container-promote.yml').read_text()
+    job = workflow.split('  promote:\n',1)[1]
+    permissions = job.split('    permissions:\n',1)[1].split('    steps:',1)[0]
+    assert '      actions: read\n' in permissions, 'Approval needs Actions read permission for supplying-run verification'
+
+
 if __name__ == '__main__':
     sys.exit(harness.run(dict(globals())))
