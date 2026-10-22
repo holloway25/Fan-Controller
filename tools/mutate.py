@@ -728,6 +728,14 @@ MUTATIONS = [
      "        if (row != checked or type(row['version']) is not int",
      "        if (False and row != checked or False",
      "test_container_publication.py", "test_platform_artifacts_keep_successful_attempt_identity_and_validate_provenance"),
+    ("container-schedule-clock-failure-ignored", ".github/workflows/container.yml",
+     '            epoch_seconds=$(date -u +%s)',
+     '            epoch_seconds=$(date -u +%s) || true',
+     "test_container_publication.py", "test_scheduled_clock_failure_never_enables_build"),
+    ("container-schedule-clock-value-unchecked", ".github/workflows/container.yml",
+     '            [[ "$epoch_seconds" =~ ^[0-9]{1,12}$ ]]',
+     '            :',
+     "test_container_publication.py", "test_scheduled_clock_failure_never_enables_build"),
 
     # ---------------------------------------------------- log classes
     ("prefix-not-stripped", "controller.py",

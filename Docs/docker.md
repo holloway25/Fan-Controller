@@ -116,6 +116,8 @@ Maintenance builds run every second UTC day at 03:17 UTC (GitHub may delay
 scheduled starts). A daily trigger checks UTC epoch-day parity, preserving the
 two-day cadence across month/year boundaries; the intervening trigger skips
 the build. Manual maintenance is available on any day.
+Clock-command failures or invalid timestamps abort the scheduled job before
+it can enable a build.
 
 Scheduled maintenance (or a manual maintenance dispatch) uses the exact commit
 referenced by `container-approved`, never the newest code on `main`. It:

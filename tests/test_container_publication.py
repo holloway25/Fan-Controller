@@ -233,5 +233,42 @@ def test_two_day_schedule_crosses_month_end_and_does_not_gate_manual_builds():
         assert all((b-a).days==2 for a,b in zip(selected,selected[1:])), selected
 
 
+def test_scheduled_clock_failure_never_enables_build():
+    if not shutil.which('bash'):
+        harness.skip('bash is required to execute the schedule gate')
+    workflow = (ROOT/'.github/workflows/container.yml').read_text()
+    lines = workflow.split('      - id: source',1)[1].split('  build:',1)[0].split('        run: |',1)[1].splitlines()
+    script = '\n'.join(line[10:] for line in lines[1:] if line.startswith('          '))
+    with tempfile.TemporaryDirectory() as folder:
+        root = Path(folder)
+        for name,body in {
+            'date':"import os,sys; print(os.environ['FAKE_NOW']); sys.exit(int(os.environ['FAKE_DATE_EXIT']))",
+            'gh':"print('a'*40)", 'git':'pass',
+        }.items():
+            path = root/name
+            path.write_text('#!'+sys.executable+'\n'+body+'\n')
+            path.chmod(0o755)
+        env = dict(os.environ,PATH=str(root)+os.pathsep+os.environ['PATH'],
+                   EVENT='schedule',MAINTENANCE='false',GITHUB_SHA=SHA,HEAD_SHA='',
+                   GITHUB_REPOSITORY='example/fan',GH_TOKEN='placeholder')
+        # 172800 is a valid even epoch day: ignoring a failed clock command
+        # would incorrectly continue into a successful maintenance build.
+        cases = (('172800','7'),('','7'),('','0'),('not-a-time','0'),
+                 ('1+2','0'),('9'*100,'0'),('-1','0'),('123\n456','0'))
+        for value,status in cases:
+            output = root/'output'
+            output.write_text('')
+            env.update(FAKE_NOW=value,FAKE_DATE_EXIT=status,GITHUB_OUTPUT=str(output))
+            result = subprocess.run(['bash','-c',script],cwd=ROOT,env=env,
+                                    capture_output=True,text=True,timeout=10)
+            assert result.returncode != 0, (value,status,result.stdout,result.stderr)
+            assert 'build=true' not in output.read_text(), 'Failed clock enabled a build'
+        # Base-10 arithmetic also handles a valid value with leading zeroes.
+        env.update(FAKE_NOW='000172800',FAKE_DATE_EXIT='0')
+        result = subprocess.run(['bash','-c',script],cwd=ROOT,env=env,
+                                capture_output=True,text=True,timeout=10)
+        assert result.returncode==0 and 'build=true' in output.read_text()
+
+
 if __name__ == '__main__':
     sys.exit(harness.run(dict(globals())))

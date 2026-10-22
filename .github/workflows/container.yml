@@ -42,10 +42,15 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          if [[ "$EVENT" == schedule ]] && (( $(date -u +%s) / 86400 % 2 != 0 )); then
-            echo 'Not a maintenance build day; the next scheduled build is tomorrow.'
-            echo 'build=false' >> "$GITHUB_OUTPUT"
-            exit 0
+          if [[ "$EVENT" == schedule ]]; then
+            epoch_seconds=$(date -u +%s)
+            # Require a bounded decimal integer before shell arithmetic.
+            [[ "$epoch_seconds" =~ ^[0-9]{1,12}$ ]]
+            if (( 10#$epoch_seconds / 86400 % 2 != 0 )); then
+              echo 'Not a maintenance build day; the next scheduled build is tomorrow.'
+              echo 'build=false' >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
           fi
           channel=candidate
           revision="$GITHUB_SHA"
