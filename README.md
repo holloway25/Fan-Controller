@@ -5,6 +5,8 @@ Tasmota smart plug. CO2, temperature and humidity can trigger the fan
 independently, with hysteresis and a minimum run time. Optional power monitoring
 stops the fan and latches a fault when its draw remains outside the expected band.
 
+![Dashboard showing fan status, 24-hour CO2, temperature and humidity charts, and activity log](Docs/images/dashboard.png)
+
 Supported targets are x86-64 Debian/Ubuntu and Raspberry Pi 3B+ with a 64-bit
 Debian-based image. Python 3.15 or newer is required. Flask listens only on
 `127.0.0.1:8096`; use an SSH tunnel or nginx on the same host for access.
