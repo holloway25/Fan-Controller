@@ -800,6 +800,11 @@ MUTATIONS = [
      "                _manual_off(plug, gen)", "                pass",
      "test_protect_deadline.py", "test_manual_stop_runs_on_meter_thread_while_normal_protect_dns_is_blocked"),
 
+    ("protect-healthy-overlap-rejected", "controller.py",
+     "                        if time.monotonic() >= self._pending_request['deadline']:",
+     "                        if True:", "test_protect_deadline.py",
+     "test_healthy_polling_and_find_sensors_wait_for_separate_fresh_responses"),
+
     # ---------------------------------------------------- log classes
     ("prefix-not-stripped", "controller.py",
      '    m = _CODE_PREFIX.sub("", raw)',

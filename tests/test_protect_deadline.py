@@ -92,6 +92,91 @@ def test_worker_start_failure_does_not_leave_a_permanent_busy_request():
         assert p.sensors() == []
 
 
+def test_healthy_polling_and_find_sensors_wait_for_separate_fresh_responses():
+    C = harness.load()
+    C.PROTECT_REQUEST_SECONDS = 3
+    C.CFG['control']['mode'] = 'auto'
+    C.CFG['protect']['sensor_id'] = 'example-sensor'
+    p = C.Protect('console.invalid', '', '')
+    entered, release, discovery_checked = (threading.Event() for _ in range(3))
+    calls, responses, errors = [], [], []
+    real_lock = p._worker_lock
+    class WatchedLock:
+        def __enter__(self): real_lock.acquire()
+        def __exit__(self, *args):
+            real_lock.release()
+            if threading.current_thread().name == 'discovery': discovery_checked.set()
+    p._worker_lock = WatchedLock()
+    def fetch(path, retry=True):
+        calls.append(path)
+        sample = 700 if len(calls) == 1 else 800
+        if len(calls) == 1:
+            entered.set(); release.wait(5)
+        return {'sensors':[{'id':'example-sensor','name':'Example',
+                           'isConnected':True,'airQuality':{'co2':sample}}]}
+    class Plug:
+        def state(self): return False
+        def set(self, _): raise AssertionError('No fan demand in this test')
+    C._clients = lambda: (p, Plug())
+    def poll():
+        try: C.tick()
+        except Exception as error: errors.append(error)
+    def discover():
+        try:
+            with C.app.test_client() as client:
+                responses.append(client.post('/api/protect/sensors', json={}))
+        except Exception as error: errors.append(error)
+    with patch.object(p, '_get_direct', fetch):
+        polling = threading.Thread(target=poll, name='polling')
+        discovery = threading.Thread(target=discover, name='discovery')
+        polling.start()
+        try:
+            assert entered.wait(1.5)
+            discovery.start()
+            assert discovery_checked.wait(1.5), 'Discovery did not reach request admission'
+            assert len(calls) == 1, 'Concurrent discovery started another worker'
+            release.set()
+            polling.join(2); discovery.join(2)
+            assert not polling.is_alive() and not discovery.is_alive()
+            assert not errors, errors
+            assert len(responses) == 1 and responses[0].status_code == 200
+            assert responses[0].json['sensors'][0]['co2'] == 800
+            assert C.STATE['co2'] == 700 and len(calls) == 2
+        finally:
+            C._stopping.set(); release.set(); polling.join(2)
+            if discovery.ident is not None: discovery.join(2)
+
+
+def test_waiting_caller_uses_its_original_deadline_without_abandoning_healthy_owner():
+    C = harness.load()
+    C.PROTECT_REQUEST_SECONDS = 3
+    p = C.Protect('console.invalid', '', '')
+    entered, release = threading.Event(), threading.Event()
+    calls, values, errors = [], [], []
+    def fetch(path, retry=True):
+        calls.append(path); entered.set(); release.wait(5)
+        return {'sensors': []}
+    def owner():
+        try: values.append(p.sensors())
+        except Exception as error: errors.append(error)
+    with patch.object(p, '_get_direct', fetch):
+        thread = threading.Thread(target=owner)
+        thread.start()
+        try:
+            assert entered.wait(1.5)
+            original_deadline = p._pending_request['deadline']
+            C.PROTECT_REQUEST_SECONDS = 0.1
+            try: p.sensors()
+            except C.ProtectError as error: assert 'deadline' in str(error)
+            else: raise AssertionError('Waiting caller ignored its deadline')
+            assert len(calls) == 1 and not p._pending_request['done'].is_set()
+            assert p._pending_request['deadline'] == original_deadline
+            release.set(); thread.join(1.5)
+            assert values == [[]] and not errors, errors
+        finally:
+            C._stopping.set(); release.set(); thread.join(2)
+
+
 def test_manual_stop_runs_on_meter_thread_while_normal_protect_dns_is_blocked():
     C = harness.load()
     C.CFG['control']['mode'] = 'auto'

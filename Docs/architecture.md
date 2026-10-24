@@ -150,8 +150,10 @@ for libc or accepting its late result. The worker cannot actuate or update
 controller state. Dashboard heartbeat and refresh indicators use elapsed API ages.
 Normal Protect login/bootstrap requests also have a 30-second monotonic caller
 deadline including DNS and retries. One daemon worker per client owns its
-session; a still-running timed-out request rejects new calls instead of queuing
-more workers. Late responses are discarded, not treated as fresh readings.
+session. Healthy concurrent polling/discovery requests wait their turn without
+holding controller/session locks, within each caller's original deadline. A
+still-running timed-out request rejects new work instead of spawning more
+workers. Late responses are discarded, not treated as fresh readings.
 Pending Manual stops are also enforced by the independent meter loop, before
 its plug polling, so sensor DNS cannot postpone them. Existing actuation locks,
 fault retry budgets and the development interlock still apply.

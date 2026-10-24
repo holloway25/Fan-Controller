@@ -1264,35 +1264,46 @@ class Protect:
         self._pending_request = None
 
     def _request(self, operation):
-        """Bound caller latency including DNS; never queue or reuse late data.
+        """Bound caller latency including session contention, DNS and retries.
 
         requests' connect/read timeouts do not bound libc DNS. One daemon
         worker per client owns the session; an unfinished abandoned request
-        rejects further requests instead of accumulating threads or a queue.
+        rejects further work instead of accumulating workers. Healthy overlaps
+        wait outside the session/worker locks within their own caller deadline.
         The worker touches only this client's session/result, never fan state.
         """
         deadline = time.monotonic() + PROTECT_REQUEST_SECONDS
-        with self._worker_lock:
-            if self._pending_request is not None and not self._pending_request['done'].is_set():
-                raise ProtectError('Previous Protect request is still in progress')
-            outcome = dict(done=threading.Event(), value=None, error=None)
-            self._pending_request = outcome
-            def fetch():
-                try:
-                    outcome['value'] = operation()
-                except Exception as error:
-                    outcome['error'] = error
-                finally:
-                    outcome['done'].set()
-            try:
-                threading.Thread(target=fetch, daemon=True, name='protect-request').start()
-            except RuntimeError as error:
-                outcome['done'].set()
-                raise ProtectError('Could not start Protect request worker') from error
+        outcome = None
         while not _stopping.is_set():
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
+            if outcome is None:
+                with self._worker_lock:
+                    if time.monotonic() >= deadline or _stopping.is_set():
+                        break
+                    if self._pending_request is not None and not self._pending_request['done'].is_set():
+                        if time.monotonic() >= self._pending_request['deadline']:
+                            raise ProtectError('Previous Protect request is still in progress')
+                        previous = self._pending_request
+                    else:
+                        outcome = dict(done=threading.Event(), value=None, error=None, deadline=deadline)
+                        self._pending_request = outcome
+                        def fetch():
+                            try:
+                                outcome['value'] = operation()
+                            except Exception as error:
+                                outcome['error'] = error
+                            finally:
+                                outcome['done'].set()
+                        try:
+                            threading.Thread(target=fetch, daemon=True, name='protect-request').start()
+                        except RuntimeError as error:
+                            outcome['done'].set()
+                            raise ProtectError('Could not start Protect request worker') from error
+                if outcome is None:
+                    previous['done'].wait(min(0.1, remaining))
+                    continue
             if outcome['done'].wait(min(0.1, remaining)):
                 if time.monotonic() >= deadline:
                     break
