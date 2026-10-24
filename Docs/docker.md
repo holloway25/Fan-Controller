@@ -84,7 +84,8 @@ read at process startup; recreate the container after changing its environment.
 Compose exposes both variables through its environment or `.env` file.
 
 Only loopback GET/HEAD `/healthz` is exempt for Docker's local health check. It
-returns `{"ok":true}`, not controller data. Loopback dashboard/API access is
+returns `ok: true` and the process-generation timestamp used by `restart.sh`,
+not fan state, configuration or credentials. Loopback dashboard/API access is
 still blocked unless explicitly allowed. Check the actual peer address with
 your Docker networking: if NAT makes unrelated clients and the proxy appear
 as the same gateway, do not allow that shared gateway as a proxy restriction.

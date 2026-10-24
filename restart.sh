@@ -21,7 +21,10 @@ set -u
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REQ="$DIR/restart.request"
 EVENTS="$DIR/events.json"
-URL="http://127.0.0.1:8096/api/state"
+URL="http://127.0.0.1:8096/healthz"
+# Allows upgrading an older running process that predates /healthz. With an
+# enabled proxy-only allowlist, the new /healthz path is the local exception.
+LEGACY_URL="http://127.0.0.1:8096/api/state"
 # Overridable so the tests can exercise the failure paths without
 # waiting a minute for each one. Not intended for ordinary use.
 TAKE_TIMEOUT=${RESTART_TAKE_TIMEOUT:-15}  # wait for the trigger to be taken
@@ -31,7 +34,8 @@ BACK_TIMEOUT=${RESTART_BACK_TIMEOUT:-60}  # wait for a replacement to answer
 # Everything else is circumstantial: the port answering proves nothing,
 # because a failed exec leaves the ORIGINAL process serving on it.
 generation() {
-  curl -fsS --max-time 5 "$URL" 2>/dev/null \
+  { curl -fsS --max-time 5 "$URL" 2>/dev/null \
+      || curl -fsS --max-time 5 "$LEGACY_URL" 2>/dev/null; } \
     | python3 -c 'import json,sys
 try:
     print(json.load(sys.stdin).get("process_started_at") or "")

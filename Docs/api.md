@@ -21,7 +21,7 @@ is sufficient); rejected requests leave the safety latch intact.
 | Method | Path | Access | Purpose |
 |---|---|---|---|
 | GET | `/` | Open | Dashboard |
-| GET | `/healthz` | Open | HTTP process health only; no controller state |
+| GET | `/healthz` | Open | HTTP process health and `process_started_at`; no fan state/configuration |
 | GET | `/api/state` | Open | Current readings, fan state, latches, events, loop health and public configuration |
 | GET | `/api/history` | Open | Full 24-hour history or a revision delta |
 | GET | `/api/daily` | Open | Daily low/high summaries; `?days=N` limits the result |

@@ -26,6 +26,11 @@ SRC = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # service when the "down" marker exists.
 CURL_STUB = """#!/usr/bin/env bash
 if [ -e "{box}/down" ]; then exit 7; fi
+case "${{@: -1}}" in
+  */healthz) [ -e "{box}/legacy" ] && exit 22 ;;
+  */api/state) [ -e "{box}/legacy" ] || exit 22 ;;
+  *) exit 22 ;;
+esac
 printf '{{"process_started_at": %s}}' "$(cat "{box}/gen")"
 """
 
@@ -145,6 +150,17 @@ def test_a_new_generation_reports_success():
         % (r.returncode, r.stderr))
     assert "confirmed" in r.stdout, "success was not reported as proved"
     return "exit 0 on a changed generation"
+
+
+def test_an_older_process_without_healthz_can_be_upgraded():
+    box = sandbox(action="echo 2000 > gen")
+    try:
+        open(os.path.join(box, 'legacy'), 'x').close()
+        r = run(box)
+        assert r.returncode == 0, r.stdout+r.stderr
+        assert 'confirmed' in r.stdout
+    finally:
+        shutil.rmtree(box, ignore_errors=True)
 
 
 def test_an_unchanged_generation_is_not_success():

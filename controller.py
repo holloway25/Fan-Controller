@@ -4946,7 +4946,7 @@ if _allowed_proxy_ips:
 @app.get('/healthz')
 def healthz():
     """Process HTTP health only; contains no controller state or credentials."""
-    return jsonify(ok=True)
+    return jsonify(ok=True, process_started_at=_PROC_START)
 
 
 def _safe_cfg():

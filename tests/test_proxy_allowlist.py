@@ -3,6 +3,11 @@ import os
 import sys
 import http.client
 import threading
+import json
+import shutil
+import subprocess
+import time
+from pathlib import Path
 from unittest.mock import patch
 from werkzeug.serving import make_server
 
@@ -53,7 +58,7 @@ def test_loopback_exception_is_health_only_and_auth_independent():
                                         environ_overrides={'REMOTE_ADDR': peer})
             assert r.status_code == 200
             if method == 'GET':
-                assert r.json == {'ok': True}
+                assert r.json == {'ok': True, 'process_started_at': C._PROC_START}
         assert get(C, peer).status_code == 403
         assert get(C, peer, '/').status_code == 403
         assert C.app.test_client().post('/healthz', environ_overrides={'REMOTE_ADDR': peer}).status_code == 403
@@ -95,13 +100,54 @@ def test_real_socket_cannot_forge_a_proxy_connection():
         finally:
             c.close()
     try:
-        assert request('/healthz') == (200, b'{"ok":true}\n')
+        status, data = request('/healthz')
+        assert status == 200 and json.loads(data) == {'ok': True, 'process_started_at': C._PROC_START}
         assert request('/api/state')[0] == 403
         assert request('/api/state', headers={'X-Forwarded-For': '127.0.0.2'})[0] == 403
         assert request('/api/state', '127.0.0.2', {'X-Forwarded-For': '198.51.100.20'})[0] == 200
     finally:
         server.shutdown()
         thread.join(timeout=3)
+        server.server_close()
+
+
+def test_restart_helper_works_without_local_dashboard_access():
+    if os.name != 'posix' or not all(shutil.which(x) for x in ('bash', 'curl')):
+        harness.skip('Linux shell/curl restart integration check')
+    C = load('192.0.2.20')
+    server = make_server('127.0.0.1', 0, C.app)
+    serving = threading.Thread(target=server.serve_forever, daemon=True)
+    serving.start()
+    root = Path(C.DIR)
+    source = (Path(harness.SRC)/'restart.sh').read_text()
+    # Only redirect the fixed local port into this isolated HTTP server.
+    script = root/'restart.sh'
+    script.write_text(source.replace('127.0.0.1:8096', '127.0.0.1:'+str(server.server_port)))
+    initial = C._PROC_START
+    def watcher():
+        deadline = time.monotonic()+10
+        while time.monotonic()<deadline:
+            marker = root/'restart.request'
+            if marker.exists():
+                marker.unlink()
+                C._PROC_START = initial+1  # Simulate a replacement generation.
+                return
+            time.sleep(0.02)
+    watching = threading.Thread(target=watcher, daemon=True)
+    watching.start()
+    try:
+        assert get(C, '127.0.0.1').status_code == 403
+        result = subprocess.run(['bash', str(script)], capture_output=True, text=True,
+                                timeout=15, env=dict(os.environ, RESTART_TAKE_TIMEOUT='3',
+                                                     RESTART_BACK_TIMEOUT='4'))
+        assert result.returncode == 0, result.stdout+result.stderr
+        assert 'new process is serving' in result.stdout
+        assert C._PROC_START == initial+1
+        assert get(C, '127.0.0.1').status_code == 403
+    finally:
+        watching.join(timeout=11)
+        server.shutdown()
+        serving.join(timeout=3)
         server.server_close()
 
 

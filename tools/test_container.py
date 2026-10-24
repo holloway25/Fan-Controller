@@ -83,7 +83,9 @@ def get(path,source='127.0.0.1',headers=None):
     c.request('GET',path,headers=headers or {})
     r=c.getresponse(); status=r.status; data=r.read(); c.close()
     return status,data
-assert get('/healthz')==(200,b'{"ok":true}\\n')
+status,body=get('/healthz')
+assert status==200 and json.loads(body)['ok'] is True
+assert isinstance(json.loads(body)['process_started_at'],(int,float))
 assert get('/api/state')[0]==403
 assert get('/api/state',headers={'X-Forwarded-For':'127.0.0.2'})[0]==403
 assert get('/api/state','127.0.0.2',{'X-Forwarded-For':'198.51.100.20'})[0]==200

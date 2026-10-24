@@ -762,6 +762,15 @@ MUTATIONS = [
      '              [[ "$passed" == true ]]', '              :',
      "test_container_publication.py", "test_candidates_require_review_and_successful_exact_revision_checks"),
 
+    ("proxy-allowlist-health-generation-omitted", "controller.py",
+     "    return jsonify(ok=True, process_started_at=_PROC_START)",
+     "    return jsonify(ok=True)", "test_proxy_allowlist.py",
+     "test_restart_helper_works_without_local_dashboard_access"),
+    ("proxy-allowlist-helper-uses-protected-state", "restart.sh",
+     'URL="http://127.0.0.1:8096/healthz"',
+     'URL="http://127.0.0.1:8096/api/state"', "test_proxy_allowlist.py",
+     "test_restart_helper_works_without_local_dashboard_access"),
+
     # ---------------------------------------------------- log classes
     ("prefix-not-stripped", "controller.py",
      '    m = _CODE_PREFIX.sub("", raw)',

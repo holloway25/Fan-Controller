@@ -52,6 +52,10 @@ record, the minimum-run lease and safety timers. It refuses while a live fault
 has not been saved to disk; repair storage or safely resolve the fault rather
 than bypassing this protection.
 
+Generation checks use loopback `/healthz`, which is permitted by a proxy-only
+allowlist without opening local dashboard/API access. When upgrading an older
+process without that endpoint, the helper falls back to `/api/state`.
+
 A restart can also be temporarily refused while settings, a plug action or a
 fault write are in progress. The helper reports the logged reason; retry later
 for a busy refusal rather than clearing a fault that may not exist.
@@ -85,8 +89,15 @@ git pull --ff-only
 
 Compare the old and new revisions before deciding which steps are needed:
 
+- **Runtime first:** current releases require Python 3.15+. Check
+  `./venv/bin/python --version` and the interpreter named by the installed
+  systemd unit. An unchanged `requirements.txt` or unit does not mean the
+  runtime requirement is unchanged. `restart.sh` reuses the executable path;
+  it does not upgrade Python. Migrate an older venv as described below before
+  using the ordinary application-update path.
 - **Docs or metadata only:** no service restart or dependency installation.
-- **Application changes, dependencies and unit unchanged:** use `./restart.sh`.
+- **Application changes, runtime supported, dependencies and unit unchanged:**
+  use `./restart.sh`.
 - **`requirements.txt` changed:** run `./install.sh` before restarting. It
   installs dependencies and regenerates the local unit; review local unit
   customisations before doing so.
@@ -104,6 +115,43 @@ After an application update, confirm the service is active, readings advance,
 loop health is normal, and local settings remain correct. Review the journal
 and HTTPS dashboard. Avoid a full test suite or package installation on a
 production board unless the change actually requires it.
+
+### Migrate an older native Python environment
+
+Docker already supplies Python 3.15; do not modify a container's interpreter.
+An older native installation may stay on its previous release instead of
+upgrading. For a native upgrade, install an isolated Python 3.15+ runtime with
+venv support without replacing the operating system's Python. Prepare a separate
+environment and install the reviewed dependencies there:
+
+```sh
+/path/to/python3.15 -m venv venv-python315
+./venv-python315/bin/python -m pip install -r requirements.txt
+./venv-python315/bin/python -m pip check
+./venv-python315/bin/python --version
+```
+
+Use new, unused directory names; keep the old environment for rollback. For a
+standard native unit which launches this checkout's stable `venv/bin/python`
+path, switch that reference only after the new environment is ready:
+
+```sh
+test ! -e venv-before-python315 && test ! -L venv-before-python315 &&
+  mv venv venv-before-python315 && ln -s venv-python315 venv
+./venv/bin/python --version
+```
+
+Check every command succeeded before continuing. Review local unit
+customisations, then run `PATH="$PWD/venv/bin:$PATH" ./install.sh` so both the
+installer's PATH and its reused venv meet the minimum. For the standard stable
+executable path, use `./restart.sh` and confirm the new process is using Python
+3.15+ (for example, inspect `/proc/<MainPID>/exe` on Linux), as well as the
+normal dashboard/state checks. Keep the old code and environment together for
+rollback; an old environment alone is not a supported runtime for new code.
+
+If a custom unit launches a different interpreter path, do not assume a venv
+switch changes the running executable. Plan and review that unit/runtime change
+explicitly, including the state-loss warning for a systemd restart above.
 
 ## Local data
 
