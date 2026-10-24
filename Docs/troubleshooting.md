@@ -48,6 +48,11 @@ normal retry and error reporting. A literal IP skips this wait.
 Manual and Force on also skip it. A blocked resolver runs in a single daemon
 worker; the startup wait still ends at its deadline or when settings change,
 without waiting for that lookup to finish. Late results do not update state.
+Normal Protect requests have a separate 30-second end-to-end deadline that
+includes DNS; a timed-out request may finish in the background but cannot
+refresh readings. While it remains blocked, further Protect requests report
+that one is still in progress rather than starting more workers. Pending Manual
+stops continue through the meter loop independently of these sensor requests.
 
 If the error persists, verify the hostname and resolver:
 

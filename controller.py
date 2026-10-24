@@ -1247,6 +1247,9 @@ def _plug_issue(error):
     return type(error).__name__
 
 
+PROTECT_REQUEST_SECONDS = 30
+
+
 class Protect:
     """Local-account session against UniFi OS, reading Protect's bootstrap."""
 
@@ -1257,12 +1260,55 @@ class Protect:
         self._s = None
         self._csrf = None
         self._lock = threading.Lock()
+        self._worker_lock = threading.Lock()
+        self._pending_request = None
+
+    def _request(self, operation):
+        """Bound caller latency including DNS; never queue or reuse late data.
+
+        requests' connect/read timeouts do not bound libc DNS. One daemon
+        worker per client owns the session; an unfinished abandoned request
+        rejects further requests instead of accumulating threads or a queue.
+        The worker touches only this client's session/result, never fan state.
+        """
+        deadline = time.monotonic() + PROTECT_REQUEST_SECONDS
+        with self._worker_lock:
+            if self._pending_request is not None and not self._pending_request['done'].is_set():
+                raise ProtectError('Previous Protect request is still in progress')
+            outcome = dict(done=threading.Event(), value=None, error=None)
+            self._pending_request = outcome
+            def fetch():
+                try:
+                    outcome['value'] = operation()
+                except Exception as error:
+                    outcome['error'] = error
+                finally:
+                    outcome['done'].set()
+            try:
+                threading.Thread(target=fetch, daemon=True, name='protect-request').start()
+            except RuntimeError as error:
+                outcome['done'].set()
+                raise ProtectError('Could not start Protect request worker') from error
+        while not _stopping.is_set():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            if outcome['done'].wait(min(0.1, remaining)):
+                if time.monotonic() >= deadline:
+                    break
+                if outcome['error'] is not None:
+                    raise outcome['error']
+                return outcome['value']
+        raise ProtectError('Protect request did not complete within its deadline (including DNS)')
 
     @property
     def base(self):
         return "https://%s" % self.host
 
     def login(self):
+        return self._request(self._login_direct)
+
+    def _login_direct(self):
         s = requests.Session()
         s.verify = self.verify
         try:
@@ -1309,9 +1355,12 @@ class Protect:
         self._s = s
 
     def _get(self, path, retry=True):
+        return self._request(lambda: self._get_direct(path, retry))
+
+    def _get_direct(self, path, retry=True):
         with self._lock:
             if self._s is None:
-                self.login()
+                self._login_direct()
             h = {"Accept": "application/json"}
             if self._csrf:
                 h["X-CSRF-Token"] = self._csrf
@@ -1333,7 +1382,7 @@ class Protect:
                                    % _why(e))
         if r.status_code in (401, 403) and retry:
             self._s = None
-            return self._get(path, retry=False)
+            return self._get_direct(path, retry=False)
         if r.status_code >= 400:
             raise ProtectError("Protect returned HTTP %d for %s"
                                % (r.status_code, path))
@@ -4628,15 +4677,22 @@ def watts_loop():
         plug = None
         gen = None
         relay_fallback = False
+        relay_phase = "relay read"
         try:
             _, plug, gen = _client_snapshot()
+            if CFG['control']['mode'] == 'manual':
+                # Independent of Protect: its DNS/session may still be stuck
+                # while the control thread waits for a bounded sensor fetch.
+                relay_phase = "Manual OFF"
+                _manual_off(plug, gen)
+            relay_phase = "relay read"
             relay_fallback = (CFG['control']['mode'] != 'on'
                               and _relay_fallback_needed(plug, gen))
             relay_issue = None
             if relay_fallback:
                 _refresh_relay(plug, gen, poll=True)
         except Exception as e:
-            relay_issue = "relay read: %s" % _plug_issue(e)
+            relay_issue = "%s: %s" % (relay_phase, _plug_issue(e))
         # A power-only success cannot announce recovery of a relay failure.
         issue = issue or relay_issue
         try:

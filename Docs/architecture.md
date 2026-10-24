@@ -148,6 +148,13 @@ deadline with a single daemon resolver worker. Manual and Force on skip that
 wait; settings/shutdown/deadline signals abandon a slow lookup without waiting
 for libc or accepting its late result. The worker cannot actuate or update
 controller state. Dashboard heartbeat and refresh indicators use elapsed API ages.
+Normal Protect login/bootstrap requests also have a 30-second monotonic caller
+deadline including DNS and retries. One daemon worker per client owns its
+session; a still-running timed-out request rejects new calls instead of queuing
+more workers. Late responses are discarded, not treated as fresh readings.
+Pending Manual stops are also enforced by the independent meter loop, before
+its plug polling, so sensor DNS cannot postpone them. Existing actuation locks,
+fault retry budgets and the development interlock still apply.
 Physical switching time is retained when leaving
 Force on; only its lease is cancelled. Restart triggers are compared with the
 file observed at startup, not with adjustable wall-clock timestamps;
