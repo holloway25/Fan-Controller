@@ -77,6 +77,29 @@ def test_an_empty_run_is_a_failure():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_completed_browser_deadlines_are_cleared_and_hangs_still_fail():
+    why = _why_not()
+    if why:
+        harness.skip(why)
+    import tempfile
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as folder:
+        fixture = Path(folder)/'fixture.test.cjs'
+        fixture.write_text('module.exports = { quick: async () => {} };')
+        # An unused 20-second deadline must not keep a completed runner alive.
+        r = subprocess.run(['node', RUNNER, folder], capture_output=True,
+                           text=True, cwd=ROOT, timeout=8)
+        assert r.returncode == 0 and 'all 1 passed' in r.stdout, r.stdout
+        fixture.write_text('module.exports = { stuck: () => new Promise(() => {}) };')
+        preload = Path(folder)/'deadline.cjs'
+        preload.write_text('const original = global.setTimeout; '
+                           'global.setTimeout = (fn, ms, ...args) => '
+                           'original(fn, ms === 20000 ? 50 : ms, ...args);')
+        r = subprocess.run(['node', '--require', str(preload), RUNNER, folder],
+                           capture_output=True, text=True, cwd=ROOT, timeout=8)
+        assert r.returncode == 1 and 'FAIL  stuck: timed out' in r.stdout, r.stdout
+
+
 def test_the_dependency_is_declared_and_dev_only():
     """jsdom must never become a runtime dependency: the controller
     needs Python and nothing else, and the board has no Node."""

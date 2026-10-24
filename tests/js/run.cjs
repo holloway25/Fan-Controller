@@ -26,14 +26,15 @@ async function main() {
     const tests = require(path.join(here, file));
     for (const name of Object.keys(tests).sort()) {
       ran++;
+      let timeout;
       try {
         // A HANG MUST REPORT, NOT STALL. Without this a test that never
         // settles takes the whole CI job down with a timeout and no
         // indication of which one it was.
         await Promise.race([
           tests[name](),
-          new Promise((_, rej) => setTimeout(
-            () => rej(new Error("timed out after 20s")), 20000)),
+          new Promise((_, rej) => { timeout = setTimeout(
+            () => rej(new Error("timed out after 20s")), 20000); }),
         ]);
         console.log("PASS  " + name);
       } catch (e) {
@@ -42,6 +43,7 @@ async function main() {
           .split("\n").slice(0, 4).join(" ");
         console.log("FAIL  " + name + ": " + msg);
       } finally {
+        clearTimeout(timeout);
         // Close the windows this test opened. The page installs a
         // five-second interval and an unclosed window keeps it - and
         // the process - alive.

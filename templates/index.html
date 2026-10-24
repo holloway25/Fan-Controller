@@ -949,12 +949,19 @@ document.addEventListener("change",e=>{
 
 async function saveAll(msgEl){
   const submittedRevision=editRevision;
-  for(const [id,label] of [["min_run_minutes","Minimum run time"],
+  for(const [id,label] of [["on_at","CO2 on threshold"],["off_at","CO2 off threshold"],
+      ["min_run_minutes","Minimum run time"],
       ["cold_start_minutes","Cold-start run time"],
-      ["stale_minutes","Ventilate if readings stop"]]){
+      ["poll_seconds","Polling interval"],
+      ["temp_on","Temperature on threshold"],["temp_off","Temperature off threshold"],
+      ["humidity_on","Humidity on threshold"],["humidity_off","Humidity off threshold"],
+      ["stale_minutes","Ventilate if readings stop"],
+      ["watts_min","Expected draw, low"],["watts_max","Expected draw, high"],
+      ["watts_off_max","Maximum draw when OFF"],["watts_fault_seconds","Fault after"],
+      ["e_port","Mail server port"]]){
     const value=$(id).value.trim();
     if(value===""||!Number.isFinite(Number(value)))
-      throw new Error(label+" must be a number. Enter 0 explicitly to disable it.");
+      throw new Error(label+" must be a number. Enter a value explicitly.");
   }
   const body={control:{
       on_at:+$("on_at").value, off_at:+$("off_at").value,
