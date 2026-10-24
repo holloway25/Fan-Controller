@@ -45,7 +45,9 @@ Activity entries use the server-provided `cls` value. The server decides what
 an event means; CSS decides how that class appears. Fault entries are red;
 successful DNS, poll and draw-loop recoveries are green. `FC-101` (Fault
 cleared) and `FC-102` (Fault saved) are amber: acknowledgement or persistence
-does not itself establish hardware recovery. Other `FC-1xx` entries are green.
+does not itself establish hardware recovery. `FC-103` is also amber: the relay
+reports OFF with acceptable measured draw, but the hard fault remains latched.
+`FC-100` (sensor readings returned) is green.
 `FC-300` depends on the mode recorded with the event.
 
 `FC-301` and `FC-302` are neutral: they report a cold start and its optional

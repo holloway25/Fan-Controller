@@ -30,7 +30,7 @@ CASES = [
     ("FC-100 Readings returned \u2014 normal control resumed", "ok"),
     ("FC-101 Fault cleared \u2014 FC-003", "notice"),
     ("FC-102 Fault saved \u2014 will survive a restart", "notice"),
-    ("FC-103 Relay reports OFF — hard fault remains", "ok"),
+    ("FC-103 Relay reports OFF — hard fault remains", "notice"),
     # 2xx failures are red: something went wrong, nobody was emailed.
     ("FC-200 TypeError: something odd", "fault"),
     ("FC-201 Protect unreachable", "fault"),

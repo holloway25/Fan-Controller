@@ -659,8 +659,9 @@ def event_class(msg):
     # The prefix comes off before the text rules run, so a coded line
     # and an uncoded one take the same branch.
     m = _CODE_PREFIX.sub("", raw)
-    if raw.startswith((FC_FAULT_PERSISTED + " ", FC_HARD_CLEARED + " ")):
-        return "notice"  # Persistence/acknowledgement, not observed recovery.
+    if raw.startswith((FC_FAULT_PERSISTED + " ", FC_HARD_CLEARED + " ",
+                       FC_RELAY_RECOVERED + " ")):
+        return "notice"  # Persistence, acknowledgement or a still-latched fault.
     if (raw == FC_POLL_ERROR + " Draw loop recovered"
             or (raw in (code + " Poll recovered" for code in
                         (FC_POLL_ERROR, FC_SENSOR_DOWN, FC_PLUG_DOWN)))):
