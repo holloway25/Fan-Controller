@@ -247,7 +247,7 @@ MUTATIONS = [
      '                remaining = SETTLE_SECONDS - (now - since)',
      "test_clock_rollback.py", "test_forward_step_before_first_draw_check_preserves_full_grace"),
     ("dns-deadline-follows-wall-clock", "controller.py",
-     '    deadline = time.monotonic() + timeout',
+     '    deadline = started + timeout',
      '    deadline = time.time() + timeout',
      "test_clock_rollback.py", "test_dns_startup_wait_is_bounded_after_clock_rollback"),
     ("dns-comparison-follows-wall-clock", "controller.py",

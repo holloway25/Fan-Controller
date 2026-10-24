@@ -4788,7 +4788,8 @@ def _wait_for_dns(timeout=30, interval=3):
     Bounded, not infinite: a genuinely wrong hostname must still reach the
     normal error path so the UI can report it. True if it resolved.
     """
-    deadline = time.monotonic() + timeout
+    started = time.monotonic()
+    deadline = started + timeout
     waited = False
     pending = None
     next_attempt = time.monotonic()
@@ -4840,7 +4841,9 @@ def _wait_for_dns(timeout=30, interval=3):
             threading.Thread(target=resolve,
                              args=(host, pending, socket.getaddrinfo),
                              daemon=True, name='startup-dns').start()
-        if not waited:
+        # Normal DNS success should not add two activity rows per restart.
+        # Report a real delay, and pair its recovery with that notice only.
+        if not waited and time.monotonic() - started >= 3:
             _log("%s Waiting for DNS to resolve %s" % (FC_STARTUP, host))
             waited = True
         if _wake.wait(min(0.1, max(0, deadline - time.monotonic()))):

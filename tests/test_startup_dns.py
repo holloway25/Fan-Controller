@@ -142,5 +142,33 @@ def test_success_and_failed_lookup_retry_still_work():
         assert calls == ['console.invalid'] * (2 if fail_first else 1)
 
 
+def test_fast_startup_dns_is_quiet_but_delays_and_failures_are_reported():
+    for delayed in (False, True):
+        C = configured()
+        messages, calls = [], []
+        clock = [100.0]
+        C._log = messages.append
+        def resolver(*args):
+            calls.append(1)
+            if delayed and len(calls) == 1:
+                clock[0] += 4
+                raise C.socket.gaierror('temporary startup outage')
+            return []
+        with patch.object(C.time, 'monotonic', lambda: clock[0]), \
+                patch.object(C.socket, 'getaddrinfo', resolver):
+            assert C._wait_for_dns(timeout=30, interval=0)
+        if delayed:
+            assert len(messages) == 2, messages
+            assert 'Waiting for DNS' in messages[0]
+            assert 'Resolved console.invalid' in messages[1]
+        else:
+            assert messages == [], messages
+    C = configured()
+    messages = []
+    C._log = messages.append
+    assert C._wait_for_dns(timeout=0) is False
+    assert len(messages) == 1 and 'Could not resolve' in messages[0]
+
+
 if __name__ == '__main__':
     sys.exit(harness.run(dict(globals())))
