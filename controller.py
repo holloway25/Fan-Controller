@@ -4843,7 +4843,7 @@ def _wait_for_dns(timeout=30, interval=3):
                              daemon=True, name='startup-dns').start()
         # Normal DNS success should not add two activity rows per restart.
         # Report a real delay, and pair its recovery with that notice only.
-        if not waited and time.monotonic() - started >= 3:
+        if not waited and time.monotonic() - started >= 5:
             _log("%s Waiting for DNS to resolve %s" % (FC_STARTUP, host))
             waited = True
         if _wake.wait(min(0.1, max(0, deadline - time.monotonic()))):

@@ -151,7 +151,7 @@ def test_fast_startup_dns_is_quiet_but_delays_and_failures_are_reported():
         def resolver(*args):
             calls.append(1)
             if delayed and len(calls) == 1:
-                clock[0] += 4
+                clock[0] += 6
                 raise C.socket.gaierror('temporary startup outage')
             return []
         with patch.object(C.time, 'monotonic', lambda: clock[0]), \
