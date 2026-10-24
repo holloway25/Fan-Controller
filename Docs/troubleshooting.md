@@ -45,6 +45,9 @@ update `CO2_HINTS` or `EXTRA_HINTS` in `controller.py` if required.
 The network may have an address before DNS is ready. The poll thread waits up to
 30 seconds for the configured Protect hostname to resolve, then continues into
 normal retry and error reporting. A literal IP skips this wait.
+Manual and Force on also skip it. A blocked resolver runs in a single daemon
+worker; the startup wait still ends at its deadline or when settings change,
+without waiting for that lookup to finish. Late results do not update state.
 
 If the error persists, verify the hostname and resolver:
 

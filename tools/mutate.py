@@ -776,6 +776,18 @@ MUTATIONS = [
      '  for endpoint in "$URL"; do', "test_restart_sh.py",
      "test_health_without_a_valid_generation_falls_back_to_state"),
 
+    ("startup-dns-blocks-calling-thread", "controller.py",
+     "            threading.Thread(target=resolve,\n                             args=(host, pending, socket.getaddrinfo),\n                             daemon=True, name='startup-dns').start()",
+     "            resolve(host, pending, socket.getaddrinfo)",
+     "test_startup_dns.py", "test_slow_lookup_obeys_deadline_without_spawning_retries"),
+    ("startup-dns-manual-bypass-removed", "controller.py",
+     "        if mode != 'auto':", "        if False:",
+     "test_startup_dns.py", "test_pending_manual_stop_runs_without_waiting_for_startup_dns"),
+    ("startup-dns-overlapping-retry-workers", "controller.py",
+     "        if pending is None and time.monotonic() >= next_attempt:",
+     "        if time.monotonic() >= next_attempt:",
+     "test_startup_dns.py", "test_slow_lookup_obeys_deadline_without_spawning_retries"),
+
     # ---------------------------------------------------- log classes
     ("prefix-not-stripped", "controller.py",
      '    m = _CODE_PREFIX.sub("", raw)',

@@ -4708,12 +4708,11 @@ def _wait_for_dns(timeout=30, interval=3):
     alone, instead of duplicating it into /etc/hosts or an ExecStartPre
     where an edit made in the UI would never reach it.
 
-    Nothing else may be held up by this. Mode changes are applied by the
-    poll loop, not by the route that sets them, so the wait ends early on
-    `_wake`: Manual and Force on reach tick() in about a second instead of
-    queueing behind a resolver that is not answering. The host is re-read
-    each attempt for the same reason - correcting a wrong hostname in the
-    UI must not leave the wait chasing the old one.
+    Manual and Force on bypass this wait. An Auto lookup runs in one
+    daemon worker, without controller locks or state/log callbacks: libc's
+    resolver cannot be interrupted, but it must not hold up the poll loop.
+    Settings changes, shutdown and the monotonic deadline abandon its
+    result promptly. A stuck lookup never creates overlapping retry workers.
 
     The ceiling sits below 60s, the shortest fail-safe window
     `stale_minutes` can express, so ventilating on stale readings is never
@@ -4724,37 +4723,66 @@ def _wait_for_dns(timeout=30, interval=3):
     """
     deadline = time.monotonic() + timeout
     waited = False
-    while True:
-        host = (CFG.get("protect") or {}).get("host")
+    pending = None
+    next_attempt = time.monotonic()
+
+    def resolve(target, outcome, resolver):
+        try:
+            resolver(target, None)
+            outcome['ok'] = True
+        except Exception:
+            # Normal polling owns detailed error reporting after startup.
+            pass
+        finally:
+            outcome['done'].set()
+
+    while not _stopping.is_set():
+        with _cfg_lock:
+            host = (CFG.get("protect") or {}).get("host")
+            mode = (CFG.get("control") or {}).get("mode")
+        if mode != 'auto':
+            return False       # Actuation must not wait for Protect DNS.
+        if _wake.is_set():
+            _wake.clear()
+            return False
         if not host:
             return False       # unconfigured; tick() reports that properly
         try:
-            # A literal address needs no resolver. AI_NUMERICHOST fails
-            # fast on anything else, so this never queries DNS.
-            socket.getaddrinfo(host, None, flags=socket.AI_NUMERICHOST)
+            # Pure parsing: even a resolver call with AI_NUMERICHOST need
+            # not be trusted to return promptly in every implementation.
+            ipaddress.ip_address(host)
             return True
-        except socket.gaierror:
-            pass
-        try:
-            socket.getaddrinfo(host, None)
-            if waited:
-                _log("%s Resolved %s, starting normally" % (FC_STARTUP, host))
-            return True
-        except socket.gaierror:
+        except ValueError:
             pass
         if time.monotonic() >= deadline:
             _log("%s Could not resolve %s after %ds, starting anyway"
                  % (FC_STARTUP, host, timeout))
             return False
+        if pending is not None:
+            if pending['host'] != host:
+                return False   # Never consume a result for an old host.
+            if pending['done'].is_set():
+                if pending['ok']:
+                    if waited:
+                        _log("%s Resolved %s, starting normally" % (FC_STARTUP, host))
+                    return True
+                pending = None
+                next_attempt = time.monotonic() + interval
+        if pending is None and time.monotonic() >= next_attempt:
+            pending = dict(host=host, ok=False, done=threading.Event())
+            threading.Thread(target=resolve,
+                             args=(host, pending, socket.getaddrinfo),
+                             daemon=True, name='startup-dns').start()
         if not waited:
             _log("%s Waiting for DNS to resolve %s" % (FC_STARTUP, host))
             waited = True
-        if _wake.wait(interval):
+        if _wake.wait(min(0.1, max(0, deadline - time.monotonic()))):
             # Settings changed. Cleared here rather than left for loop(),
             # which would otherwise consume it after its first tick() and
             # poll a second time immediately. That tick applies the change.
             _wake.clear()
             return False
+    return False
 
 
 def _fail(msg, last, code=None):

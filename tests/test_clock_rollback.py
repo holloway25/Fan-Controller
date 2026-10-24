@@ -236,6 +236,7 @@ def test_forward_step_before_first_draw_check_preserves_full_grace():
 
 def test_dns_startup_wait_is_bounded_after_clock_rollback():
     C = harness.load()
+    C.CFG['control']['mode'] = 'auto'
     wall, mono = [10000.0], [1000.0]
     C.CFG['protect']['host'] = 'console.invalid'
     def unavailable(*a, **k): raise C.socket.gaierror('simulated unavailable DNS')
