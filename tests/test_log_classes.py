@@ -33,6 +33,10 @@ CASES = [
     # 2xx failures are red: something went wrong, nobody was emailed.
     ("FC-200 TypeError: something odd", "fault"),
     ("FC-201 Protect unreachable", "fault"),
+    ("FC-206 Resolved console.invalid, starting normally", "ok"),
+    ("FC-206 Waiting for DNS to resolve console.invalid", "fault"),
+    ("FC-206 Could not resolve console.invalid after 30s, starting anyway", "fault"),
+    ("FC-206 Fault record is damaged", "fault"),
     ("FC-207 Fail-safe failed: PlugError: no route", "fault"),
     # 3xx depends on the mode recorded IN THE LINE.
     ("FC-300 Fan off \u2014 changed outside (Manual)", "ok"),
