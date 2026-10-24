@@ -1571,11 +1571,75 @@ def _close_failed_plug_socket(sock, key):
                 _plug_ports[key] = time.monotonic()
 
 
+PLUG_DNS_SECONDS = 3
+_plug_dns_lock = threading.Lock()
+_plug_dns_pending = {}
+
+
+def _plug_addresses(host, port, family):
+    """Bound DNS only: abandoned workers can never connect or send commands."""
+    try:
+        literal = ipaddress.ip_address(host)
+    except ValueError:
+        literal = None
+    if literal is not None:
+        af = socket.AF_INET if literal.version == 4 else socket.AF_INET6
+        if family not in (socket.AF_UNSPEC, af):
+            raise socket.gaierror('Plug address family is unavailable')
+        if literal.version == 4:
+            address = (str(literal), port)
+        else:
+            scope = literal.scope_id
+            scope = (int(scope) if str(scope).isdigit() else
+                     socket.if_nametoindex(scope)) if scope else 0
+            address = (str(literal).split('%')[0], port, 0, scope)
+        return [(af, socket.SOCK_STREAM, socket.IPPROTO_TCP, '', address)]
+
+    def resolve(outcome, resolver):
+        try:
+            outcome['addresses'] = resolver(host, port, family, socket.SOCK_STREAM)
+        except Exception as exc:
+            outcome['error'] = exc
+        finally:
+            outcome['done'].set()
+
+    key = (host, port, family)
+    with _plug_dns_lock:
+        for old in list(_plug_dns_pending):
+            if _plug_dns_pending[old]['done'].is_set():
+                del _plug_dns_pending[old]
+        outcome = _plug_dns_pending.get(key)
+        if outcome is None:
+            # Configuration changes must not accumulate unlimited stuck libc
+            # lookups. Healthy concurrent callers for one host share its worker.
+            if len(_plug_dns_pending) >= 4:
+                raise socket.timeout('Plug DNS workers are still busy')
+            outcome = dict(done=threading.Event(), addresses=[], error=None,
+                           deadline=time.monotonic() + PLUG_DNS_SECONDS)
+            _plug_dns_pending[key] = outcome
+            try:
+                threading.Thread(target=resolve, args=(outcome, socket.getaddrinfo),
+                                 daemon=True, name='plug-dns').start()
+            except RuntimeError:
+                del _plug_dns_pending[key]
+                raise OSError('Could not start plug DNS lookup') from None
+    while not _stopping.is_set():
+        remaining = outcome['deadline'] - time.monotonic()
+        if remaining <= 0:
+            break
+        if outcome['done'].wait(min(0.1, remaining)):
+            if time.monotonic() >= outcome['deadline'] or _stopping.is_set():
+                break
+            if outcome['error'] is not None:
+                raise outcome['error']
+            return outcome['addresses']
+    raise socket.timeout('Plug DNS lookup timed out')
+
+
 class _PlugHTTPConnection(HTTPConnection):
     def _new_conn(self):
         try:
-            addresses = socket.getaddrinfo(self._dns_host, self.port,
-                                          allowed_gai_family(), socket.SOCK_STREAM)
+            addresses = _plug_addresses(self._dns_host, self.port, allowed_gai_family())
             error = OSError('No usable plug address or source port')
             for family, kind, proto, _, address in addresses:
                 for _ in range(128):

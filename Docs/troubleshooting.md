@@ -76,6 +76,14 @@ without two-factor authentication.
 
 ## Plug and fan problems
 
+Plug hostnames have a three-second DNS deadline, separate from the HTTP
+connection/read timeout. Numeric addresses skip DNS. A stalled lookup cannot
+hold settings or mode changes indefinitely: only name resolution runs in its
+daemon worker, and late results cannot connect to the plug or send a command.
+Concurrent requests share an active lookup for the same host. An expired,
+unfinished lookup is not duplicated; changing hosts is limited to four pending
+DNS workers until they finish. A timeout reports a plug connection error.
+
 ### Plug returns HTTP 401
 
 The configured Tasmota web credentials are missing or incorrect. Re-enter them
