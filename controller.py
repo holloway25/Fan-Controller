@@ -659,6 +659,10 @@ def event_class(msg):
     # The prefix comes off before the text rules run, so a coded line
     # and an uncoded one take the same branch.
     m = _CODE_PREFIX.sub("", raw)
+    if (raw == FC_POLL_ERROR + " Draw loop recovered"
+            or (raw in (code + " Poll recovered" for code in
+                        (FC_POLL_ERROR, FC_SENSOR_DOWN, FC_PLUG_DOWN)))):
+        return "ok"
     # Startup DNS uses the same code for waiting, failure and recovery.
     if (raw.startswith(FC_STARTUP + " Resolved ")
             and m.endswith(", starting normally")):

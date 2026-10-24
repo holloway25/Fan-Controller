@@ -33,6 +33,13 @@ CASES = [
     # 2xx failures are red: something went wrong, nobody was emailed.
     ("FC-200 TypeError: something odd", "fault"),
     ("FC-201 Protect unreachable", "fault"),
+    ("FC-200 Draw loop recovered", "ok"),
+    ("FC-200 Poll recovered", "ok"),
+    ("FC-201 Poll recovered", "ok"),
+    ("FC-202 Poll recovered", "ok"),
+    ("FC-200 Draw loop error - power read: PlugError", "fault"),
+    ("FC-202 Plug unreachable", "fault"),
+    ("FC-201 Poll recovered but failed again", "fault"),
     ("FC-206 Resolved console.invalid, starting normally", "ok"),
     ("FC-206 Waiting for DNS to resolve console.invalid", "fault"),
     ("FC-206 Could not resolve console.invalid after 30s, starting anyway", "fault"),
