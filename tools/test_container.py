@@ -69,6 +69,34 @@ def main():
                 time.sleep(0.25)
             else: raise AssertionError('Docker stop/start did not restore its checkpoint')
             print('PASS actual Docker SIGTERM stop/start and persistent-volume replacement')
+            # Exercise the real socket peer and Docker health command, not
+            # just Flask's synthetic REMOTE_ADDR. No external network/devices.
+            run('docker','stop','--timeout','60',container)
+            run('docker','rm',container)
+            run('docker','run','-d','--name',container,'--network','none',
+                '-e','FAN_CONTROLLER_ALLOWED_PROXY_IPS=127.0.0.2',
+                '-e','FAN_CONTROLLER_TRUST_PROXY=1',
+                '--mount','type=volume,src='+name+',dst=/data',args.image)
+            restricted = """import http.client,json
+def get(path,source='127.0.0.1',headers=None):
+    c=http.client.HTTPConnection('127.0.0.1',8096,timeout=4,source_address=(source,0))
+    c.request('GET',path,headers=headers or {})
+    r=c.getresponse(); status=r.status; data=r.read(); c.close()
+    return status,data
+assert get('/healthz')==(200,b'{"ok":true}\\n')
+assert get('/api/state')[0]==403
+assert get('/api/state',headers={'X-Forwarded-For':'127.0.0.2'})[0]==403
+assert get('/api/state','127.0.0.2',{'X-Forwarded-For':'198.51.100.20'})[0]==200
+"""
+            for _ in range(40):
+                r=subprocess.run(['docker','exec',container,'python','-c',restricted],capture_output=True)
+                if r.returncode==0: break
+                time.sleep(0.25)
+            else: raise AssertionError('Real socket proxy restriction failed: '+r.stderr.decode())
+            health=json.loads(subprocess.check_output(['docker','inspect',container]))[0]['Config']['Healthcheck']['Test']
+            assert health[0]=='CMD' and '/healthz' in health[-1], health
+            run('docker','exec',container,*health[1:])
+            print('PASS real-socket proxy source restriction and local Docker health check')
     finally:
         subprocess.run(['docker','rm','-f',container],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
         run('docker','volume','rm',name)

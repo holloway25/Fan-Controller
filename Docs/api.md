@@ -7,6 +7,10 @@ JSON requests are limited to 8 KB. State-changing endpoints require
 Authentication is optional. When a UI password is configured, endpoints marked
 **protected** require HTTP Basic authentication.
 
+An optional `FAN_CONTROLLER_ALLOWED_PROXY_IPS` source allowlist applies before
+authentication and forwarded headers to every endpoint. Only loopback GET/HEAD
+`/healthz` is exempt. See [proxy restrictions](docker.md#restrict-access-to-a-lan-reverse-proxy).
+
 Non-public API writes also reject browser requests from another origin,
 regardless of whether a password is set. `Origin`, or `Referer` when Origin is absent, must
 match the request's scheme, host and port; cross-site and same-site fetches
@@ -17,6 +21,7 @@ is sufficient); rejected requests leave the safety latch intact.
 | Method | Path | Access | Purpose |
 |---|---|---|---|
 | GET | `/` | Open | Dashboard |
+| GET | `/healthz` | Open | HTTP process health only; no controller state |
 | GET | `/api/state` | Open | Current readings, fan state, latches, events, loop health and public configuration |
 | GET | `/api/history` | Open | Full 24-hour history or a revision delta |
 | GET | `/api/daily` | Open | Daily low/high summaries; `?days=N` limits the result |

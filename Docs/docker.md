@@ -61,7 +61,38 @@ forwarded headers and is the only path into this port. Native installs retain
 their existing loopback/nginx defaults. The container currently uses the same
 threaded Flask server as the native service, with one controller process.
 
-The health check tests the local API, not whether the plug/Protect is reachable.
+### Restrict access to a LAN reverse proxy
+
+Set `FAN_CONTROLLER_ALLOWED_PROXY_IPS` to the proxy's exact connection IP, or
+comma-separated IPs for multiple proxies. IPv4 and IPv6 literals are accepted;
+hostnames, CIDRs and wildcards are not. For example:
+
+```text
+FAN_CONTROLLER_ALLOWED_PROXY_IPS=192.0.2.20
+FAN_CONTROLLER_TRUST_PROXY=1
+```
+
+The first setting permits only those socket peers, returning JSON HTTP 403 to
+other sources for every dashboard/API/static request. It runs before forwarded
+headers are interpreted, so forging `X-Forwarded-For` cannot bypass it. The
+second setting separately enables the existing single-hop forwarded-header
+handling; the proxy must overwrite client-supplied forwarded headers.
+
+Unset or empty allowlists preserve unrestricted source access. Invalid nonempty
+lists stop startup rather than silently disabling protection. Settings are
+read at process startup; recreate the container after changing its environment.
+Compose exposes both variables through its environment or `.env` file.
+
+Only loopback GET/HEAD `/healthz` is exempt for Docker's local health check. It
+returns `{"ok":true}`, not controller data. Loopback dashboard/API access is
+still blocked unless explicitly allowed. Check the actual peer address with
+your Docker networking: if NAT makes unrelated clients and the proxy appear
+as the same gateway, do not allow that shared gateway as a proxy restriction.
+Preserve the proxy's distinct source address or enforce a network firewall rule.
+This restriction does not provide HTTPS itself; certificates belong at the proxy.
+
+The health check tests local HTTP responsiveness, not whether the plug/Protect
+is reachable.
 A network outage must not cause a controller restart loop. Docker restart
 policies restart exited containers; they do not by themselves restart an
 unhealthy but running container.

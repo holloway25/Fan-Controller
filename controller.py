@@ -9,7 +9,7 @@ private /proxy/protect/api/bootstrap endpoint. That is undocumented and may
 break on firmware updates; use the Debug view to inspect the live payload.
 """
 import atexit, copy, hashlib, hmac, json, math, os, re, signal, smtplib
-import socket, ssl, sys, tempfile
+import socket, ssl, sys, tempfile, ipaddress
 import threading, time
 import logging
 from email.message import EmailMessage
@@ -4899,6 +4899,56 @@ if os.environ.get("FAN_CONTROLLER_TRUST_PROXY", "1") == "1":
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 
 
+def _proxy_ip(value):
+    """Exact IP literals only; normalize IPv4 peers on dual-stack sockets."""
+    if not isinstance(value, str) or '%' in value:
+        raise ValueError('Expected an unscoped IP address')
+    address = ipaddress.ip_address(value)
+    return getattr(address, 'ipv4_mapped', None) or address
+
+
+def _parse_proxy_ips(value):
+    if value == '':
+        return frozenset()
+    try:
+        return frozenset(_proxy_ip(part.strip()) for part in value.split(','))
+    except ValueError as exc:
+        raise ValueError('FAN_CONTROLLER_ALLOWED_PROXY_IPS must contain comma-separated IP addresses') from exc
+
+
+class _ProxySourceAllowlist:
+    """Gate the socket peer BEFORE ProxyFix can replace REMOTE_ADDR."""
+    def __init__(self, application, allowed):
+        self.application, self.allowed = application, allowed
+
+    def __call__(self, environ, start_response):
+        try:
+            peer = _proxy_ip(environ.get('REMOTE_ADDR'))
+        except ValueError:
+            peer = None
+        local_health = (peer is not None and peer.is_loopback
+                        and environ.get('PATH_INFO') == '/healthz'
+                        and environ.get('REQUEST_METHOD') in ('GET', 'HEAD'))
+        if peer not in self.allowed and not local_health:
+            return Response('{"error":"Request source is not an allowed proxy"}',
+                            status=403, mimetype='application/json',
+                            headers={'Cache-Control': 'no-store'})(environ, start_response)
+        return self.application(environ, start_response)
+
+
+_allowed_proxy_ips = _parse_proxy_ips(os.environ.get('FAN_CONTROLLER_ALLOWED_PROXY_IPS', ''))
+if _allowed_proxy_ips:
+    # Outermost middleware: do not move this inside ProxyFix or use
+    # request.remote_addr / forwarded headers as the access-control identity.
+    app.wsgi_app = _ProxySourceAllowlist(app.wsgi_app, _allowed_proxy_ips)
+
+
+@app.get('/healthz')
+def healthz():
+    """Process HTTP health only; contains no controller state or credentials."""
+    return jsonify(ok=True)
+
+
 def _safe_cfg():
     with _cfg_lock:
         c = copy.deepcopy(CFG)
@@ -4940,6 +4990,7 @@ def check_ui_password(plain, stored):
 # /api/debug/sensor is deliberately not public: it returns the raw
 # Protect payload, which is diagnostic data, not dashboard data.
 PUBLIC_GET = {"/", "/api/state", "/api/history", "/api/daily",
+              "/healthz",
               "/favicon.ico", "/apple-touch-icon.png",
               "/apple-touch-icon-precomposed.png"}
 PUBLIC_POST = {"/api/clienterror"}

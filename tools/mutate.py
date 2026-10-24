@@ -737,6 +737,23 @@ MUTATIONS = [
      '            :',
      "test_container_publication.py", "test_scheduled_clock_failure_never_enables_build"),
 
+    ("proxy-allowlist-wrapper-skipped", "controller.py",
+     "    app.wsgi_app = _ProxySourceAllowlist(app.wsgi_app, _allowed_proxy_ips)",
+     "    pass", "test_proxy_allowlist.py",
+     "test_only_original_peer_is_allowed_even_with_spoofed_headers"),
+    ("proxy-allowlist-trusts-forwarded-source", "controller.py",
+     "            peer = _proxy_ip(environ.get('REMOTE_ADDR'))",
+     "            peer = _proxy_ip(environ.get('HTTP_X_FORWARDED_FOR', environ.get('REMOTE_ADDR')))",
+     "test_proxy_allowlist.py", "test_only_original_peer_is_allowed_even_with_spoofed_headers"),
+    ("proxy-allowlist-loopback-api-exempt", "controller.py",
+     "                        and environ.get('PATH_INFO') == '/healthz'",
+     "                        and True", "test_proxy_allowlist.py",
+     "test_loopback_exception_is_health_only_and_auth_independent"),
+    ("proxy-allowlist-invalid-config-opens-access", "controller.py",
+     "        raise ValueError('FAN_CONTROLLER_ALLOWED_PROXY_IPS must contain comma-separated IP addresses') from exc",
+     "        return frozenset()", "test_proxy_allowlist.py",
+     "test_invalid_config_fails_closed_at_startup"),
+
     # ---------------------------------------------------- log classes
     ("prefix-not-stripped", "controller.py",
      '    m = _CODE_PREFIX.sub("", raw)',

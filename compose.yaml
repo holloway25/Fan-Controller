@@ -7,6 +7,8 @@ services:
       - "8096:8096"
     environment:
       TZ: ${TZ:-UTC}
+      FAN_CONTROLLER_ALLOWED_PROXY_IPS: ${FAN_CONTROLLER_ALLOWED_PROXY_IPS:-}
+      FAN_CONTROLLER_TRUST_PROXY: ${FAN_CONTROLLER_TRUST_PROXY:-0}
     volumes:
       - fan-data:/data
     read_only: true
