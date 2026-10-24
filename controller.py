@@ -3005,7 +3005,7 @@ def _send_mail(subject, body, email_cfg=None):
         s = smtplib.SMTP(e["host"], int(e["port"] or 25),
                          timeout=SMTP_TIMEOUT)
     except Exception as exc:
-        return "connect failed: %s" % exc
+        return "connect failed (%s)" % type(exc).__name__
     try:
         s.ehlo()
         secure = False
@@ -3032,8 +3032,7 @@ def _send_mail(subject, body, email_cfg=None):
                 if "CRAM-MD5" not in mechs:
                     return ("refusing to authenticate: the relay offers "
                             "neither STARTTLS nor CRAM-MD5, so the "
-                            "password would cross the network in clear. "
-                            "Offered: %s" % (" ".join(mechs) or "nothing"))
+                            "password would cross the network in clear.")
                 # Called directly rather than through login(), which
                 # falls back to PLAIN when this fails.
                 s.user = e["username"]
@@ -3050,7 +3049,9 @@ def _send_mail(subject, body, email_cfg=None):
                     % (len(to) - len(refused), len(to), len(refused)))
         return None
     except Exception as exc:
-        return "%s: %s" % (type(exc).__name__, exc)
+        # Relay text may echo credentials from this send's old snapshot.
+        # Never expose it, even after current settings have changed.
+        return "SMTP send failed (%s)" % type(exc).__name__
     finally:
         try:
             s.quit()
@@ -3102,7 +3103,7 @@ def _notify(subject, body, on_complete=None):
         except Exception as exc:
             try:
                 _log("%s Alert bookkeeping failed: %s"
-                     % (FC_ALERT_FAILED, exc))
+                     % (FC_ALERT_FAILED, type(exc).__name__))
             except Exception:
                 pass
 
@@ -3120,7 +3121,7 @@ def _notify(subject, body, on_complete=None):
             try:
                 why = _send_mail(subject, body)
             except Exception as exc:
-                why = "%s: %s" % (type(exc).__name__, exc)
+                why = "SMTP send failed (%s)" % type(exc).__name__
             if why:
                 # Redacted: a relay's rejection can quote what it was
                 # given, and the activity log is served without a
@@ -3138,7 +3139,7 @@ def _notify(subject, body, on_complete=None):
         complete(False)
         try:
             _log("%s Alert email could not be queued: %s"
-                 % (FC_ALERT_FAILED, exc))
+                 % (FC_ALERT_FAILED, type(exc).__name__))
         except Exception:
             pass
 

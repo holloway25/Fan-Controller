@@ -470,6 +470,46 @@ def test_email_test_recipient_report_uses_send_snapshot():
     return "reported recipients are the ones passed to SMTP, not the later config"
 
 
+def test_inflight_smtp_errors_never_expose_previous_passwords():
+    import json
+    import threading
+    for phase in ('connect', 'auth', 'send'):
+        C = harness.load()
+        old = 'synthetic-old-secret-123'
+        original_smtp = C.smtplib.SMTP
+        fake = with_fake(C, FakeSMTP(), password=old)
+        entered, release, completed = (threading.Event() for _ in range(3))
+        result = []
+        def fail(*args, **kwargs):
+            entered.set()
+            assert release.wait(3), 'test did not release SMTP'
+            raise C.smtplib.SMTPException('relay echoed ' + old)
+        if phase == 'connect':
+            C.smtplib.SMTP = fail
+        elif phase == 'auth':
+            fake.auth = fail
+        else:
+            fake.sendmail = fail
+        def complete(ok):
+            result.append(ok)
+            completed.set()
+        C._notify('Test alert', 'Test body', on_complete=complete)
+        try:
+            assert entered.wait(3), phase
+            with C._cfg_lock:
+                C.CFG['email']['password'] = 'synthetic-new-secret-456'
+        finally:
+            release.set()
+            C.smtplib.SMTP = original_smtp
+        assert completed.wait(3), phase
+        assert result == [False]
+        events = json.load(open(C.EVENTS_PATH))
+        response = C.app.test_client().get('/api/state').get_data(as_text=True)
+        assert old not in json.dumps(events), phase
+        assert old not in response, phase
+        assert any('SMTPException' in e['msg'] for e in events), events
+
+
 def test_cram_md5_is_used_and_login_is_never_called():
     """login() would fall back to PLAIN. It must not be used."""
     C = harness.load()

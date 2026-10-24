@@ -949,6 +949,13 @@ document.addEventListener("change",e=>{
 
 async function saveAll(msgEl){
   const submittedRevision=editRevision;
+  for(const [id,label] of [["min_run_minutes","Minimum run time"],
+      ["cold_start_minutes","Cold-start run time"],
+      ["stale_minutes","Ventilate if readings stop"]]){
+    const value=$(id).value.trim();
+    if(value===""||!Number.isFinite(Number(value)))
+      throw new Error(label+" must be a number. Enter 0 explicitly to disable it.");
+  }
   const body={control:{
       on_at:+$("on_at").value, off_at:+$("off_at").value,
       min_run_minutes:+$("min_run_minutes").value,
