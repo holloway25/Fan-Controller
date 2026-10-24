@@ -42,9 +42,11 @@ power is green inside the configured band and red outside it, even when
 `watts_enabled` is off. The setting controls fault action, not visibility.
 
 Activity entries use the server-provided `cls` value. The server decides what
-an event means; CSS decides how that class appears. `FC-0xx` and `FC-2xx`
-are faults, `FC-1xx` is an all-clear, and `FC-300` depends on the mode
-recorded with the event.
+an event means; CSS decides how that class appears. Fault entries are red;
+successful DNS, poll and draw-loop recoveries are green. `FC-101` (Fault
+cleared) and `FC-102` (Fault saved) are amber: acknowledgement or persistence
+does not itself establish hardware recovery. Other `FC-1xx` entries are green.
+`FC-300` depends on the mode recorded with the event.
 
 `FC-301` and `FC-302` are neutral: they report a cold start and its optional
 already-ON recovery hold, not faults. An unexpected or

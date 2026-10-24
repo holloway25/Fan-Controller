@@ -26,10 +26,11 @@ CASES = [
     ("FC-004 Draw fault - 27.6 W outside 14-22 W for 30s", "fault"),
     ("FC-005 WARNING: fault could not be saved (disk full).", "fault"),
     ("FC-006 Fault still standing after restart \u2014 FC-003", "fault"),
-    # 1xx all-clears are green.
+    # Recovery is green; acknowledgement and persistence are amber.
     ("FC-100 Readings returned \u2014 normal control resumed", "ok"),
-    ("FC-101 Fault cleared \u2014 FC-003", "ok"),
-    ("FC-102 Fault saved \u2014 will survive a restart", "ok"),
+    ("FC-101 Fault cleared \u2014 FC-003", "notice"),
+    ("FC-102 Fault saved \u2014 will survive a restart", "notice"),
+    ("FC-103 Relay reports OFF — hard fault remains", "ok"),
     # 2xx failures are red: something went wrong, nobody was emailed.
     ("FC-200 TypeError: something odd", "fault"),
     ("FC-201 Protect unreachable", "fault"),

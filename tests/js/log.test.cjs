@@ -65,6 +65,18 @@ tests["a missing class leaves the row uncoloured"] = async () => {
   assert.strictEqual(r[1].className, "", "absent cls: " + r[1].className);
 };
 
+tests["fault saved and cleared notices render in amber"] = async () => {
+  const { document } = await H.open({ state: H.baseState({ events: [
+    { at: H.now(), msg: "FC-102 Fault saved", cls: "notice" },
+    { at: H.now() - 1, msg: "FC-101 Fault cleared", cls: "notice" },
+  ] }) });
+  assert.ok(rows(document).every(row => row.className === "notice"));
+  const rule = [...document.styleSheets].flatMap(sheet => [...sheet.cssRules])
+    .find(rule => rule.selectorText && rule.selectorText.includes(".log div.notice,"));
+  assert.ok(rule, "missing amber notice styling");
+  assert.strictEqual(rule.style.color, "var(--trig)");
+};
+
 tests["event text is never treated as markup"] = async () => {
   // /api/clienterror is open even once a UI password is set, so a LAN
   // device can put text into the activity log. Interpolating that into
