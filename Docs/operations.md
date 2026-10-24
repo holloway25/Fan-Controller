@@ -54,7 +54,9 @@ than bypassing this protection.
 
 Generation checks use loopback `/healthz`, which is permitted by a proxy-only
 allowlist without opening local dashboard/API access. When upgrading an older
-process without that endpoint, the helper falls back to `/api/state`.
+process without that endpoint or a valid positive numeric generation in its
+response, the helper falls back to `/api/state`. HTTP 200 alone is not proof
+that the process can identify its generation.
 
 A restart can also be temporarily refused while settings, a plug action or a
 fault write are in progress. The helper reports the logged reason; retry later

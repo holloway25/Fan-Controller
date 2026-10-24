@@ -34,13 +34,21 @@ BACK_TIMEOUT=${RESTART_BACK_TIMEOUT:-60}  # wait for a replacement to answer
 # Everything else is circumstantial: the port answering proves nothing,
 # because a failed exec leaves the ORIGINAL process serving on it.
 generation() {
-  { curl -fsS --max-time 5 "$URL" 2>/dev/null \
-      || curl -fsS --max-time 5 "$LEGACY_URL" 2>/dev/null; } \
-    | python3 -c 'import json,sys
+  local endpoint generation_value
+  for endpoint in "$URL" "$LEGACY_URL"; do
+    generation_value=$(curl -fsS --max-time 5 "$endpoint" 2>/dev/null \
+      | python3 -c 'import json,math,sys
 try:
-    print(json.load(sys.stdin).get("process_started_at") or "")
+    value = json.load(sys.stdin).get("process_started_at")
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value > 0:
+        print(value)
 except Exception:
-    print("")' 2>/dev/null
+    pass' 2>/dev/null)
+    if [ -n "$generation_value" ]; then
+      printf '%s\n' "$generation_value"
+      return
+    fi
+  done
 }
 
 before=$(generation)

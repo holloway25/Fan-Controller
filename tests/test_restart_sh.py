@@ -26,9 +26,12 @@ SRC = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # service when the "down" marker exists.
 CURL_STUB = """#!/usr/bin/env bash
 if [ -e "{box}/down" ]; then exit 7; fi
+printf '%s\\n' "${{@: -1}}" >> "{box}/calls"
 case "${{@: -1}}" in
-  */healthz) [ -e "{box}/legacy" ] && exit 22 ;;
-  */api/state) [ -e "{box}/legacy" ] || exit 22 ;;
+  */healthz)
+    [ -e "{box}/legacy" ] && exit 22
+    if [ -e "{box}/health-body" ]; then cat "{box}/health-body"; exit 0; fi ;;
+  */api/state) [ -e "{box}/legacy" ] || [ -e "{box}/health-body" ] || exit 22 ;;
   *) exit 22 ;;
 esac
 printf '{{"process_started_at": %s}}' "$(cat "{box}/gen")"
@@ -134,7 +137,13 @@ def run(box, start_watcher=True):
             cwd=box, env=env, capture_output=True, text=True, timeout=40)
     finally:
         if watcher is not None:
-            watcher.wait(timeout=20)
+            try:
+                watcher.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                # A helper that refuses before writing a marker must fail its
+                # behaviour assertion, not time out waiting for this fixture.
+                watcher.terminate()
+                watcher.wait(timeout=5)
 
 
 def test_a_new_generation_reports_success():
@@ -159,6 +168,36 @@ def test_an_older_process_without_healthz_can_be_upgraded():
         r = run(box)
         assert r.returncode == 0, r.stdout+r.stderr
         assert 'confirmed' in r.stdout
+    finally:
+        shutil.rmtree(box, ignore_errors=True)
+
+
+def test_health_without_a_valid_generation_falls_back_to_state():
+    for body in ('{"ok":true}', '{}', '[]', 'not-json',
+                 '{"process_started_at":null}', '{"process_started_at":true}',
+                 '{"process_started_at":"old"}', '{"process_started_at":Infinity}',
+                 '{"process_started_at":0}', '{"process_started_at":-1}'):
+        box = sandbox(action='echo 2000 > gen')
+        try:
+            with open(os.path.join(box, 'health-body'), 'w') as f:
+                f.write(body)
+            r = run(box)
+            assert r.returncode == 0, (body,r.stdout,r.stderr)
+            assert 'confirmed' in r.stdout
+            with open(os.path.join(box, 'calls')) as f:
+                assert '/api/state' in f.read()
+        finally:
+            shutil.rmtree(box, ignore_errors=True)
+
+
+def test_invalid_generations_never_request_a_restart():
+    box = sandbox(gen='false')
+    try:
+        with open(os.path.join(box, 'health-body'), 'w') as f:
+            f.write('{"ok":true}')
+        r = run(box, start_watcher=False)
+        assert r.returncode == 2, r.stdout+r.stderr
+        assert not os.path.exists(os.path.join(box, 'restart.request'))
     finally:
         shutil.rmtree(box, ignore_errors=True)
 

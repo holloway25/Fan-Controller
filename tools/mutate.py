@@ -771,6 +771,11 @@ MUTATIONS = [
      'URL="http://127.0.0.1:8096/api/state"', "test_proxy_allowlist.py",
      "test_restart_helper_works_without_local_dashboard_access"),
 
+    ("restart-health-missing-generation-no-fallback", "restart.sh",
+     '  for endpoint in "$URL" "$LEGACY_URL"; do',
+     '  for endpoint in "$URL"; do', "test_restart_sh.py",
+     "test_health_without_a_valid_generation_falls_back_to_state"),
+
     # ---------------------------------------------------- log classes
     ("prefix-not-stripped", "controller.py",
      '    m = _CODE_PREFIX.sub("", raw)',
