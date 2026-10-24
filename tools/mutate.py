@@ -754,6 +754,14 @@ MUTATIONS = [
      "        return frozenset()", "test_proxy_allowlist.py",
      "test_invalid_config_fails_closed_at_startup"),
 
+    ("container-candidate-review-confirmation-ignored", ".github/workflows/container.yml",
+     '            [[ "$EVENT" == workflow_dispatch && "${REVIEWED:-false}" == true ]] || {',
+     '            [[ "$EVENT" == workflow_dispatch ]] || {',
+     "test_container_publication.py", "test_candidates_require_review_and_successful_exact_revision_checks"),
+    ("container-candidate-source-checks-ignored", ".github/workflows/container.yml",
+     '              [[ "$passed" == true ]]', '              :',
+     "test_container_publication.py", "test_candidates_require_review_and_successful_exact_revision_checks"),
+
     # ---------------------------------------------------- log classes
     ("prefix-not-stripped", "controller.py",
      '    m = _CODE_PREFIX.sub("", raw)',

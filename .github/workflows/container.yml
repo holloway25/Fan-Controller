@@ -1,13 +1,13 @@
 name: container
 on:
-  workflow_run:
-    workflows: [tests]
-    types: [completed]
-    branches: [main]
   workflow_dispatch:
     inputs:
       maintenance:
         description: Rebuild approved code with tested dependency updates (otherwise candidate)
+        type: boolean
+        default: false
+      reviewed:
+        description: Confirm code review passed for this main revision (required for candidate)
         type: boolean
         default: false
   schedule:
@@ -16,13 +16,10 @@ on:
     - cron: '17 3 * * *'
 permissions:
   contents: read
+  actions: read
 
 jobs:
   prepare:
-    if: >-
-      github.event_name != 'workflow_run' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-latest
     outputs:
       build: ${{ steps.source.outputs.build }}
@@ -38,7 +35,7 @@ jobs:
         env:
           EVENT: ${{ github.event_name }}
           MAINTENANCE: ${{ inputs.maintenance }}
-          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          REVIEWED: ${{ inputs.reviewed }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
@@ -62,9 +59,19 @@ jobs:
               echo 'build=false' >> "$GITHUB_OUTPUT"
               exit 0
             fi
-          elif [[ "$EVENT" == workflow_run ]]; then
-            revision="$HEAD_SHA"
-            git merge-base --is-ancestor "$revision" origin/main
+          else
+            [[ "$EVENT" == workflow_dispatch && "${REVIEWED:-false}" == true ]] || {
+              echo 'Candidate builds require manual confirmation that code review passed.'
+              exit 1
+            }
+            [[ "$GITHUB_REF" == refs/heads/main ]]
+            [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+            # Review acknowledgement is not a substitute for passing source CI.
+            for workflow in tests.yml privacy.yml; do
+              passed=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs?head_sha=$revision&branch=main&event=push&status=completed&per_page=100" \
+                --jq '[.workflow_runs[] | select(.conclusion == "success")] | length > 0')
+              [[ "$passed" == true ]]
+            done
           fi
           [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
           git cat-file -e "$revision:Dockerfile"

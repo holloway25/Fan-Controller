@@ -120,8 +120,13 @@ Restoring an old backup does not prove the current physical relay is OFF.
 
 ## Build, maintenance and approval
 
-GitHub's `container` workflow builds after successful source tests, or by manual
-dispatch. It builds and tests the image on native x86-64 and ARM64 runners.
+Source tests and privacy checks still run on pushes, but do not automatically
+build Docker candidates. After code review passes, manually run the `container`
+workflow on `main`, leave `maintenance` off and enable `reviewed`. The operator
+confirms the external code review; GitHub does not infer that review from a
+green test run. The workflow also requires successful source tests and privacy
+checks for that exact revision before building. It builds and tests the image
+on native x86-64 and ARM64 runners.
 Runtime integration tests use an isolated network with HTTPS Protect fixtures
 and the repository plug emulator: no production hardware or real email.
 Tests replace containers while retaining a volume, exercise clean-stop latches

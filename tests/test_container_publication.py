@@ -207,12 +207,12 @@ def test_three_day_schedule_crosses_month_end_and_does_not_gate_manual_builds():
     with tempfile.TemporaryDirectory() as folder:
         root = Path(folder)
         for name, body in {'date':"import os; print(os.environ['FAKE_NOW'])",
-                           'gh':"print('a'*40)", 'git':'pass'}.items():
+                           'gh':"import sys; print('true' if 'actions/workflows/' in sys.argv[2] else 'a'*40)", 'git':'pass'}.items():
             path = root/name
             path.write_text('#!'+sys.executable+'\n'+body+'\n')
             path.chmod(0o755)
         env = dict(os.environ,PATH=str(root)+os.pathsep+os.environ['PATH'],
-                   GITHUB_SHA=SHA,GITHUB_REPOSITORY='example/fan',HEAD_SHA='',
+                   GITHUB_SHA=SHA,GITHUB_REPOSITORY='example/fan',GITHUB_REF='refs/heads/main',REVIEWED='true',
                    GH_TOKEN='placeholder',MAINTENANCE='false')
         days = [start+datetime.timedelta(days=i)
                 for start in (datetime.date(2026,10,29),datetime.date(2026,12,29))
@@ -236,6 +236,59 @@ def test_three_day_schedule_crosses_month_end_and_does_not_gate_manual_builds():
             boundary = [day for day in selected if day.month in (month,month%12+1)]
             assert len(boundary)>=2
             assert all((b-a).days==3 for a,b in zip(boundary,boundary[1:])), boundary
+
+
+def test_candidates_require_review_and_successful_exact_revision_checks():
+    if not shutil.which('bash'):
+        harness.skip('bash is required to execute the build gate')
+    workflow = (ROOT/'.github/workflows/container.yml').read_text()
+    assert 'workflow_run:' not in workflow, 'Source checks must not auto-trigger images'
+    assert '  actions: read' in workflow.split('jobs:',1)[0]
+    assert '      reviewed:' in workflow
+    lines = workflow.split('      - id: source',1)[1].split('  build:',1)[0].split('        run: |',1)[1].splitlines()
+    script = '\n'.join(line[10:] for line in lines[1:] if line.startswith('          '))
+    with tempfile.TemporaryDirectory() as folder:
+        root = Path(folder)
+        for name,body in {
+            'date':"print('259200')", 'git':'pass',
+            'gh':'''import os,sys
+from pathlib import Path
+url=sys.argv[2]
+if 'actions/workflows/' in url:
+    with Path(os.environ['QUERY_LOG']).open('a') as f: f.write(url+'\\n')
+    assert 'head_sha='+os.environ['GITHUB_SHA'] in url
+    assert 'branch=main&event=push&status=completed' in url
+    if os.environ['API_FAIL']=='true': raise SystemExit(1)
+    print(os.environ['TESTS_PASS' if '/tests.yml/' in url else 'PRIVACY_PASS'])
+else: print('a'*40)
+''',
+        }.items():
+            path = root/name
+            path.write_text('#!'+sys.executable+'\n'+body+'\n')
+            path.chmod(0o755)
+        base = dict(os.environ,PATH=str(root)+os.pathsep+os.environ['PATH'],
+                    GITHUB_SHA=SHA,GITHUB_REPOSITORY='example/fan',GH_TOKEN='placeholder',
+                    GITHUB_REF='refs/heads/main',EVENT='workflow_dispatch',
+                    REVIEWED='true',MAINTENANCE='false',TESTS_PASS='true',
+                    PRIVACY_PASS='true',API_FAIL='false',QUERY_LOG=str(root/'queries'))
+        cases = [({},True),({'REVIEWED':'false'},False),({'REVIEWED':''},False),
+                 ({'TESTS_PASS':'false'},False),({'PRIVACY_PASS':'false'},False),
+                 ({'API_FAIL':'true'},False),({'GITHUB_REF':'refs/heads/topic'},False),
+                 ({'EVENT':'workflow_run'},False),
+                 ({'MAINTENANCE':'true','REVIEWED':'false','TESTS_PASS':'false'},True),
+                 ({'EVENT':'schedule','REVIEWED':'false','TESTS_PASS':'false'},True)]
+        for changes,expected in cases:
+            output,queries = root/'output',root/'queries'
+            output.write_text(''); queries.write_text('')
+            env = dict(base,**changes,GITHUB_OUTPUT=str(output))
+            result = subprocess.run(['bash','-c',script],cwd=ROOT,env=env,
+                                    capture_output=True,text=True,timeout=10)
+            assert (result.returncode==0)==expected, (changes,result.stdout,result.stderr)
+            assert ('build=true\n' in output.read_text())==expected
+            if not changes:
+                assert '/tests.yml/' in queries.read_text() and '/privacy.yml/' in queries.read_text()
+            if changes.get('MAINTENANCE')=='true' or changes.get('EVENT')=='schedule':
+                assert not queries.read_text(), 'Approved-source maintenance required a new review'
 
 
 def test_scheduled_clock_failure_never_enables_build():
