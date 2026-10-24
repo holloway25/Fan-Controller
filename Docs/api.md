@@ -115,6 +115,7 @@ Each event in `/api/state` includes a server-selected `cls` value:
 |---|---|
 | `fault` | Alarm or operational failure |
 | `ok` | All-clear, normal switch, or a Manual-mode external change |
+| `notice` | Amber notice: fault acknowledged (FC-101), fault durably saved (FC-102), or OFF confirmed while the hard fault remains latched (FC-103). It does not mean all faults are cleared. |
 | `m-manual` | Manual mode or an unexpected external switch |
 | `m-auto` | Auto mode |
 | `m-on` | Force on |
