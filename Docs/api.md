@@ -87,6 +87,15 @@ may already have received the message; repeating the test can send duplicates.
 Relay acceptance is not proof of final inbox delivery.
 Validation, sending and the `sent_to` response use one email-settings snapshot,
 so changing recipients during the send cannot change the reported destination.
+Only one unfinished test send is allowed across all clients; repeats return
+409 immediately. The request has a 30-second elapsed-time limit including DNS
+and returns 504 if delivery is still unconfirmed. That worker retains its slot
+until it finishes, so a stalled resolver cannot create an unlimited backlog.
+Late DNS completion is checked before sending SMTP commands. A message already
+being transmitted at expiry may still be accepted; a timeout is not proof of
+non-delivery. Shutdown interrupts the waiting request with 503, and a worker
+that cannot be started also returns 503. The dashboard disables its test button
+until the current request completes.
 
 `/api/protect/sensors` includes `isConnected` (`true`, `false`, or `null` when
 the payload omits it). CO2 values may be retained for disconnected sensors;

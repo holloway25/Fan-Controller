@@ -147,9 +147,23 @@ if os.environ.get('WSGI_SIGNAL_IN_CALLBACK'):
         if data.startswith(b'GET /idle '):
             (root/'idle-entered').touch()
         if data.startswith(b'GET /signal-in-callback '):
+            if os.environ.get('WSGI_CALLBACK_PHASE')=='write':
+                self._signal_on_flush=True
+                # Keep the request incomplete: this 100 response is flushed
+                # by the main socket callback, never by a web worker.
+                self.outbufs[-1].append(b'HTTP/1.1 100 Continue\r\n\r\n')
+                self.total_outbufs_len+=25
+                return
             os.kill(os.getpid(),getattr(signal,os.environ['WSGI_SIGNAL_IN_CALLBACK']))
         return received(self,data)
     HTTPChannel.received=signal_callback
+    original_flush=HTTPChannel._flush_some
+    def flush_callback(self,do_close=True):
+        if getattr(self,'_signal_on_flush',False):
+            self._signal_on_flush=False
+            os.kill(os.getpid(),getattr(signal,os.environ['WSGI_SIGNAL_IN_CALLBACK']))
+        return original_flush(self,do_close=do_close)
+    HTTPChannel._flush_some=flush_callback
 @C.app.route('/wsgi-threads')
 def threads():
     return C.jsonify(pid=os.getpid(),names=[t.name for t in threading.enumerate()])
@@ -162,7 +176,7 @@ C._run_controller()
 '''
 
 
-def test_signal_inside_socket_callback_exits_with_another_connection_open():
+def socket_callback_shutdown(phase):
     import socket
     for sig in ('SIGTERM', 'SIGINT'):
         C = harness.load(plug_access_disabled=True)
@@ -173,6 +187,7 @@ def test_signal_inside_socket_callback_exits_with_another_connection_open():
         env = dict(os.environ, FAN_CONTROLLER_DATA_DIR=str(root),
                    FAN_CONTROLLER_PERSIST_STATE='1', FAN_CONTROLLER_TRUST_PROXY='0',
                    FAN_CONTROLLER_ALLOWED_PROXY_IPS='', WSGI_SIGNAL_IN_CALLBACK=sig,
+                   WSGI_CALLBACK_PHASE=phase,
                    PYTHONUNBUFFERED='1')
         env.pop(C.RESUME_ENV, None)
         sockets = []
@@ -207,6 +222,14 @@ def test_signal_inside_socket_callback_exits_with_another_connection_open():
                 if process.poll() is None:
                     process.kill()
                     process.wait(timeout=5)
+
+
+def test_signal_inside_socket_callback_exits_with_another_connection_open():
+    socket_callback_shutdown('read')
+
+
+def test_signal_inside_response_flush_exits_with_another_connection_open():
+    socket_callback_shutdown('write')
 
 
 def test_real_process_retains_latch_lease_and_fault_and_stops_during_busy_requests():

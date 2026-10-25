@@ -2998,6 +2998,9 @@ _stale_inflight = False
 _stale_episode = None
 
 SMTP_TIMEOUT = 20
+EMAIL_TEST_SECONDS = 30
+_email_test_lock = threading.Lock()
+_email_test_pending = None
 # Long enough that a slow relay still delivers, short enough that a
 # wedged one cannot pile threads up: at one alert per fault transition
 # there is no realistic way to accumulate them.
@@ -3025,7 +3028,7 @@ def _email_ready():
                 and _recipients())
 
 
-def _send_mail(subject, body, email_cfg=None):
+def _send_mail(subject, body, email_cfg=None, deadline=None):
     """Send one message. Returns None on success or a reason string.
 
     Runs on a throwaway thread, never on the control path. AUTH is chosen
@@ -3055,6 +3058,15 @@ def _send_mail(subject, body, email_cfg=None):
     to = _split_recipients(e.get("recipients"))
     if not to:
         return "no recipients configured"
+    def expired():
+        return deadline is not None and (_stopping.is_set()
+                                        or time.monotonic() >= deadline)
+    def budget(s=None):
+        if expired():
+            raise TimeoutError('Email test deadline reached')
+        sock = getattr(s, 'sock', None)
+        if deadline is not None and sock is not None:
+            sock.settimeout(max(0.001, min(SMTP_TIMEOUT, deadline-time.monotonic())))
     try:
         # Validate raw recipients before splitting, which would hide newlines.
         if any(ch in value for value in (e["sender"], e.get("recipients", ""), subject)
@@ -3067,12 +3079,16 @@ def _send_mail(subject, body, email_cfg=None):
     except Exception as exc:
         return "Invalid email message headers or content (%s)" % type(exc).__name__
     try:
+        budget()
         s = smtplib.SMTP(e["host"], int(e["port"] or 25),
-                         timeout=SMTP_TIMEOUT)
+                         timeout=SMTP_TIMEOUT if deadline is None else
+                         max(0.001, min(SMTP_TIMEOUT, deadline-time.monotonic())))
     except Exception as exc:
         return "connect failed (%s)" % type(exc).__name__
     try:
+        budget(s)  # A DNS result arriving after the test expired cannot send.
         s.ehlo()
+        budget(s)
         secure = False
         if s.has_extn("starttls"):
             # Not exercised against this relay, which offers none. Here
@@ -3087,7 +3103,9 @@ def _send_mail(subject, body, email_cfg=None):
             # its own certificate and collect the password, which is the
             # exact outcome the CRAM-MD5 branch below exists to prevent.
             s.starttls(context=ssl.create_default_context())
+            budget(s)
             s.ehlo()
+            budget(s)
             secure = True
         if e.get("username"):
             if secure:
@@ -3103,6 +3121,7 @@ def _send_mail(subject, body, email_cfg=None):
                 s.user = e["username"]
                 s.password = e["password"]
                 s.auth("CRAM-MD5", s.auth_cram_md5)
+        budget(s)
         refused = s.sendmail(e["sender"], to, payload)
         if refused:
             # smtplib returns normally when SOME recipients accepted the
@@ -3119,9 +3138,16 @@ def _send_mail(subject, body, email_cfg=None):
         return "SMTP send failed (%s)" % type(exc).__name__
     finally:
         try:
-            s.quit()
+            if expired():
+                s.close()
+            else:
+                budget(s)
+                s.quit()
         except Exception:
-            pass
+            try:
+                s.close()
+            except Exception:
+                pass
 
 
 def _notify(subject, body, on_complete=None):
@@ -5891,13 +5917,14 @@ def api_plug_test():
 
 @app.route("/api/email/test", methods=["POST"])
 def api_email_test():
-    """Send a test message, synchronously, and report what happened.
+    """Wait within a deadline for one globally bounded test-send worker.
 
     Deliberately NOT routed through _notify: that returns immediately and
     swallows failures, which is right for the fault path and useless for
     a button whose whole purpose is to show the error. An untested mail
     path is the kind that fails exactly when it is needed.
     """
+    global _email_test_pending
     with _cfg_lock:
         e = copy.deepcopy(CFG["email"])
     recipients = _split_recipients(e.get("recipients"))
@@ -5909,15 +5936,43 @@ def api_email_test():
     if missing:
         return jsonify(
             error="Not configured yet: %s." % ", ".join(missing)), 400
-    why = _send_mail(
-        "Fan controller test message",
-        "This is a test from the fan controller.\n\nIf you are reading "
-        "it, alerts will reach you: a stopped fan, a fault that could not "
-        "be saved, readings drying up, and the all-clear when they "
-        "return.", email_cfg=e)
-    if why:
-        return jsonify(error="Send failed - %s" % why), 400
-    return jsonify(ok=True, sent_to=recipients)
+    with _email_test_lock:
+        if _email_test_pending is not None and not _email_test_pending['done'].is_set():
+            return jsonify(error="A test email is already in progress. Wait for it to finish."), 409
+        outcome = dict(done=threading.Event(), why=None,
+                       deadline=time.monotonic()+EMAIL_TEST_SECONDS)
+        _email_test_pending = outcome
+        def send():
+            try:
+                outcome['why'] = _send_mail(
+                    "Fan controller test message",
+                    "This is a test from the fan controller.\n\nIf you are reading "
+                    "it, alerts will reach you: a stopped fan, a fault that could not "
+                    "be saved, readings drying up, and the all-clear when they "
+                    "return.", email_cfg=e, deadline=outcome['deadline'])
+            except Exception as exc:
+                outcome['why'] = 'SMTP test failed (%s)' % type(exc).__name__
+            finally:
+                outcome['done'].set()
+        try:
+            threading.Thread(target=send, daemon=True, name='email-test').start()
+        except RuntimeError:
+            _email_test_pending = None
+            return jsonify(error="Could not start the email test. Try again."), 503
+    while not _stopping.is_set():
+        remaining = outcome['deadline']-time.monotonic()
+        if remaining <= 0:
+            break
+        if outcome['done'].wait(min(0.1, remaining)):
+            if time.monotonic() >= outcome['deadline'] or _stopping.is_set():
+                break
+            if outcome['why']:
+                return jsonify(error="Send failed - %s" % outcome['why']), 400
+            return jsonify(ok=True, sent_to=recipients)
+    if _stopping.is_set():
+        return jsonify(error="Controller is stopping; retry after startup."), 503
+    return jsonify(error="Email test timed out; delivery is unconfirmed. "
+                   "A new test is blocked until the previous attempt finishes."), 504
 
 
 @app.route("/api/debug/sensor")
@@ -6510,7 +6565,7 @@ def restart_loop():
 
 
 class _HTTPServerStopped(ExitNow):
-    """Exit the web loop without Waitress swallowing our signal-handler exit."""
+    """Use Waitress's explicit exit path after closing all socket channels."""
 
 
 def _close_http_server(server, channels, dispatcher):
@@ -6567,7 +6622,7 @@ def _make_http_server(host=None, port=8096):
 def _run_controller():
     server, channels, dispatcher = _make_http_server()
     try:
-        _start_controller(server)
+        _start_controller(server, channels)
     except _HTTPServerStopped:
         pass
     finally:
@@ -6575,7 +6630,7 @@ def _run_controller():
         _close_http_server(server, channels, dispatcher)
 
 
-def _start_controller(server):
+def _start_controller(server, channels):
     # Before any thread starts, so the first decide() sees the lease and
     # the latches the previous process was holding.
     resumed = _apply_resume() or _load_stop_state()
@@ -6600,6 +6655,11 @@ def _start_controller(server):
         _stopping.set()
         _wake.set()
         server.close()  # Stop accepting connections before checkpointing.
+        # Response flushing catches Exception, including ExitNow. Empty the
+        # async map first so even a swallowed exit cannot leave idle sockets
+        # keeping the event loop alive after controller loops have stopped.
+        for channel in list(channels.values()):
+            channel.close()
         try:
             flush_hist(signum, frame)
         except SystemExit:

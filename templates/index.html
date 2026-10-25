@@ -89,6 +89,7 @@ button:hover{background:#2a3a4c}
 button.primary{background:var(--air);border-color:var(--air);color:#08121e;
 font-weight:600}
 button.primary:hover{filter:brightness(1.1)}
+#emailtest:disabled{opacity:.55;cursor:wait}
 .seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;
 overflow:hidden}
 .seg button{border:0;border-radius:0;padding:8px 14px;background:transparent;
@@ -1091,6 +1092,9 @@ $("save4").addEventListener("click",()=>saveAll("emsg")
 // saved is the whole point, and the password only reaches the server
 // through a save.
 $("emailtest").addEventListener("click",async()=>{
+  const button=$("emailtest");
+  if(button.disabled)return;
+  button.disabled=true;
   say("emsg","Sending...","ok");
   let notice="";
   try{
@@ -1099,6 +1103,7 @@ $("emailtest").addEventListener("click",async()=>{
     say("emsg",(notice?notice+"\n":"")+
         "Sent to "+j.sent_to.join(", ")+".",notice?"err":"ok");
   }catch(e){say("emsg",(notice?notice+"\n":"")+e.message,"err")}
+  finally{button.disabled=false}
 });
 
 let HIST=[], HIST_REV=null, HIST_BUSY=false, HIST_GEN=null;

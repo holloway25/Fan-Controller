@@ -117,7 +117,8 @@ identity and obtains fresh device readings rather than trusting a cached relay
 or wattage. Downtime counts toward the remaining lease. Clock rollback across
 a host reboot or a checkpoint older than 24 hours uses cold-start recovery.
 
-The web listener closes before the stop checkpoint is written. Controller loops
+The web listener and remaining web connections close before the stop checkpoint
+is written, including when a signal interrupts response flushing. Controller loops
 observe the stopping flag, and web-worker cleanup has an additional 2.5-second
 elapsed-time bound; a busy request must not extend that wait indefinitely.
 The existing checkpoint lock deadline is 25 seconds. Keep the 60-second Docker

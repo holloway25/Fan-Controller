@@ -49,6 +49,35 @@ async function testEmailResult(notice, mailOk = true, saveOk = true) {
 }
 
 module.exports = {
+  async test_email_button_blocks_repeated_clicks_and_recovers_after_completion() {
+    for(const mailOk of [true,false]){
+      const requests=[];
+      let finish;
+      const page=await H.open({beforeParse(w){
+        const original=w.fetch;
+        w.fetch=(url,opts)=>{
+          if(opts&&url==="/api/config")requests.push(url);
+          if(opts&&url==="/api/email/test"){
+            requests.push(url);
+            return new Promise(resolve=>{finish=()=>resolve({ok:mailOk,status:mailOk?200:504,
+              json:async()=>mailOk?{ok:true,sent_to:["a@example.com"]}:{error:"Email test timed out."}})});
+          }
+          return original(url,opts);
+        };
+      }});
+      const button=page.document.getElementById("emailtest");
+      button.click();
+      button.click();
+      await H.settle(page.window);
+      assert(button.disabled,"button remains enabled while sending");
+      button.click();
+      assert.deepStrictEqual(requests,["/api/config","/api/email/test"]);
+      finish();
+      await H.settle(page.window);
+      assert(!button.disabled,"button did not recover after completion");
+      assert(page.document.getElementById("emsg").textContent.includes(mailOk?"Sent to":"timed out"));
+    }
+  },
   async test_email_test_keeps_save_warnings_with_success() {
     for (const notice of [
       "Saved and in use, but the disk did not confirm the write will survive a power cut.",
