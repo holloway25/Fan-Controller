@@ -2,7 +2,6 @@
 import os
 import sys
 import threading
-import time
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))

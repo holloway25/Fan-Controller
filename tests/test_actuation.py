@@ -12,7 +12,6 @@ Nothing here contacts a plug or a Protect console.
 import os
 import sys
 import threading
-import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import harness

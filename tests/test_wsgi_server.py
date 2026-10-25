@@ -44,7 +44,15 @@ def test_waitress_preserves_proxy_boundary_and_serves_concurrent_requests():
         release.wait(3)
         return 'done'
     server, channels, dispatcher = C._make_http_server('127.0.0.1', 0)
-    serving = threading.Thread(target=server.run, daemon=True)
+    stop_serving, serving_errors = threading.Event(), []
+    def serve():
+        try:
+            while not stop_serving.is_set():
+                server.asyncore.loop(timeout=0.05, map=channels, count=1,
+                                     use_poll=server.adj.asyncore_use_poll)
+        except Exception as exc:
+            serving_errors.append(exc)
+    serving = threading.Thread(target=serve, daemon=True)
     serving.start()
     port = int(server.effective_port)
     blocked = None
@@ -77,9 +85,13 @@ def test_waitress_preserves_proxy_boundary_and_serves_concurrent_requests():
         release.set()
         if blocked is not None:
             blocked.join(3)
-        C._close_http_server(server, channels, dispatcher)
+        # Stop the fixture's socket loop before closing its descriptors.
+        # Subprocess tests below still exercise the production server.run().
+        stop_serving.set()
         serving.join(3)
+        C._close_http_server(server, channels, dispatcher)
         assert not serving.is_alive()
+        assert not serving_errors, serving_errors
 
 
 def test_http_cleanup_is_bounded_even_if_dispatcher_shutdown_stalls():
@@ -136,7 +148,9 @@ C._clients=lambda:(Protect(),C.Tasmota(C.CFG['plug']['host']))
 original=C._make_http_server
 def make():
     result=original('127.0.0.1',0)
-    (root/'http-port').write_text(str(result[0].effective_port))
+    tmp=root/'http-port.tmp'
+    tmp.write_text(str(result[0].effective_port))
+    os.replace(tmp,root/'http-port')  # atomic: readers never see an empty file
     return result
 C._make_http_server=make
 if os.environ.get('WSGI_SIGNAL_IN_CALLBACK'):

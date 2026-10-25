@@ -2989,8 +2989,6 @@ def _failsafe():
     with _state_lock:
         if STATE["fault"]:
             return
-    with _state_lock:
-        last = STATE["reading_at"]
     # "Never read anything" is measured from startup, not treated as fresh:
     # otherwise a service that never got a first reading stayed passive.
     with _state_lock:
@@ -3020,8 +3018,6 @@ def _failsafe():
         with _state_lock:
             if STATE["fault"]:
                 return
-            last = STATE["reading_at"]
-        with _state_lock:
             age = _elapsed_age_locked("reading_at", startup=True)
         if age < mins * 60:
             return
@@ -4602,7 +4598,7 @@ def _draw_check(plug, gen=None):
             now = time.time()
             with _state_lock:
                 fan, w = STATE["fan"], STATE["watts"]
-                w_at, changed = STATE["watts_at"], STATE["changed_at"]
+                changed = STATE["changed_at"]
                 watt_age = _elapsed_age_locked("watts_at")
             # A motor spinning up draws nothing yet, and a fan meant to
             # be off is not a fault. changed_at is deliberately left
@@ -5089,8 +5085,6 @@ def _failsafe_cap(delay):
         return delay
     if mins <= 0:
         return delay                 # fail-safe disabled
-    with _state_lock:
-        last = STATE["reading_at"]
     # Measured from startup when nothing has been read, matching _failsafe.
     with _state_lock:
         remaining = mins * 60 - _elapsed_age_locked("reading_at", startup=True)

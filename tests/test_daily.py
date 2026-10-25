@@ -351,7 +351,6 @@ def test_a_non_finite_reading_never_reaches_the_file():
     Reported by review of 099b249.
     """
     import json as _json
-    import math as _m
     import time as _t
     C = harness.load()
     C._daily_note(_t.time(), float("nan"), float("inf"), 51.0)

@@ -64,6 +64,9 @@ MODULE_TIMEOUT_SECONDS = 120
 # by hand for the right FAILURE, not merely a failure: a mutation
 # caught by an unrelated crash is not evidence.
 MUTATIONS = [
+    ("structure-event-set-counted-as-command", "tests/test_structure.py",
+     '            if f.attr == "set" and not sub.args:', '            if False:',
+     "test_structure.py", "test_the_checker_can_actually_fail"),
     ("plug-body-teardown-port-hold-skipped", "controller.py",
      '            for sock, key in self.sockets:\n                _close_failed_plug_socket(sock, key)',
      '            for sock, key in self.sockets:\n                pass',

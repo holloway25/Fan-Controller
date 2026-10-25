@@ -1,7 +1,6 @@
 """Inside the built image, network-isolated simulated devices and real processes."""
 import importlib.util
 import json
-import os
 from pathlib import Path
 import signal
 import ssl

@@ -382,7 +382,7 @@ def test_the_unsaved_alert_names_the_fault_it_could_not_save():
 def test_the_restart_notice_does_not_say_the_code_twice():
     C = harness.load()
     sent = E.wire(C)
-    f = E.raise_draw_fault(C, 27.6, lo=15.0, hi=22.0)
+    E.raise_draw_fault(C, 27.6, lo=15.0, hi=22.0)
     with C._state_lock:
         C.STATE["fault"]["delivered_at"] = C.time.time() - 7200
     C._notify_restart_fault()

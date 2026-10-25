@@ -84,29 +84,31 @@ PLUG_HELPERS = {"_fan_status", "_enforce_stop", "_force_on", "_manual_off",
                 "_draw_check"}
 
 
+def _touches_plug(node):
+    """Classify one function using the same rules as the source walk."""
+    for sub in ast.walk(node):
+        if not isinstance(sub, ast.Call):
+            continue
+        f = sub.func
+        if isinstance(f, ast.Attribute) and f.attr in PLUG_CALLS:
+            # plug.set(True), h.state(), plug.power_w()
+            if not isinstance(f.value, ast.Name):
+                continue
+            if f.value.id in NOT_PLUGS:
+                continue
+            if f.attr == "set" and not sub.args:
+                continue            # Event.set(), not plug.set(v)
+            return True
+        elif isinstance(f, ast.Name) and f.id in PLUG_HELPERS:
+            return True
+    return False
+
+
 def _plug_touching_functions():
     """Every top-level function whose body can reach a plug."""
     tree = ast.parse(open(SRC, encoding="utf-8").read())
-    found = {}
-    for node in tree.body:
-        if not isinstance(node, ast.FunctionDef):
-            continue
-        for sub in ast.walk(node):
-            if not isinstance(sub, ast.Call):
-                continue
-            f = sub.func
-            if isinstance(f, ast.Attribute) and f.attr in PLUG_CALLS:
-                # plug.set(True), h.state(), plug.power_w()
-                if not isinstance(f.value, ast.Name):
-                    continue
-                if f.value.id in NOT_PLUGS:
-                    continue
-                if f.attr == "set" and not sub.args:
-                    continue            # Event.set(), not plug.set(v)
-                found.setdefault(node.name, node)
-            elif isinstance(f, ast.Name) and f.id in PLUG_HELPERS:
-                found.setdefault(node.name, node)
-    return found
+    return {node.name: node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and _touches_plug(node)}
 
 
 def _checks_generation(node):
@@ -246,8 +248,11 @@ def test_the_checker_can_actually_fail():
         "def rogue(plug):\n    plug.set(True)\n").body[0]
     eventish = ast.parse(
         "def waker():\n    _wake.set()\n").body[0]
-    assert any(isinstance(n, ast.Call) for n in ast.walk(commanding))
-    assert "rogue" not in EXEMPT and "waker" not in EXEMPT
+    assert _touches_plug(commanding), 'Real plug command was ignored'
+    assert not _touches_plug(eventish), 'Wake event was counted as a plug command'
+    # Use a receiver outside NOT_PLUGS to exercise the argument check too.
+    other_event = ast.parse("def waker():\n    notifier.set()\n").body[0]
+    assert not _touches_plug(other_event), 'Event.set() was counted as a command'
 
     # A function that commands a plug with no generation at all.
     rogue = ast.parse("def rogue(plug):\n    plug.set(True)\n").body[0]
