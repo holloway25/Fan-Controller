@@ -26,7 +26,11 @@ ports used in the preceding 180 seconds. This prevents reusing a closed TCP
 tuple while the plug still retains it. The hold is shared across plug-client
 replacements and carried by a preserving restart; a cold start has no previous
 in-memory port history. No system TCP settings or plug firmware are changed.
-Normal requests may overlap; the connection timeout and fault delay are unchanged.
+Normal requests may overlap. Each plug request has a 12-second overall elapsed
+deadline covering DNS, connection, response headers and body. A trickling reply
+cannot extend that deadline: expiry closes the socket and reports a plug timeout.
+Commands stay on the calling thread and are not automatically retried by the
+transport. The configured fault delay is unchanged.
 
 ```sh
 systemctl status office-fan-controller

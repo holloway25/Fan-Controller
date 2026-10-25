@@ -1575,6 +1575,54 @@ def _close_failed_plug_socket(sock, key):
 PLUG_DNS_SECONDS = 3
 _plug_dns_lock = threading.Lock()
 _plug_dns_pending = {}
+_plug_request_context = threading.local()
+
+
+class _PlugRequestDeadline:
+    """Interrupt socket I/O, never run a relay command in a worker thread."""
+    def __init__(self, seconds):
+        self.until = time.monotonic() + seconds
+        self.lock = threading.Lock()
+        self.sockets = []
+        self.expired = False
+        self.finished = False
+        self.timer = threading.Timer(seconds, self.expire)
+        self.timer.daemon = True
+
+    def remaining(self):
+        remaining = self.until - time.monotonic()
+        if self.expired or remaining <= 0:
+            raise socket.timeout('Plug request deadline expired')
+        return remaining
+
+    def register(self, sock):
+        with self.lock:
+            self.remaining()
+            self.sockets.append(sock)
+
+    def expire(self):
+        with self.lock:
+            if self.finished:
+                return
+            self.expired = True
+            for sock in self.sockets:
+                # close alone does not interrupt a makefile() body/header read.
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                sock.close()
+
+    def finish(self):
+        with self.lock:
+            self.timer.cancel()
+            self.remaining()
+            self.finished = True
+
+    def cancel(self):
+        with self.lock:
+            self.finished = True
+            self.timer.cancel()
 
 
 def _plug_addresses(host, port, family):
@@ -1626,6 +1674,9 @@ def _plug_addresses(host, port, family):
                 raise OSError('Could not start plug DNS lookup') from None
     while not _stopping.is_set():
         remaining = outcome['deadline'] - time.monotonic()
+        request = getattr(_plug_request_context, 'deadline', None)
+        if request is not None:
+            remaining = min(remaining, request.remaining())
         if remaining <= 0:
             break
         if outcome['done'].wait(min(0.1, remaining)):
@@ -1644,6 +1695,9 @@ class _PlugHTTPConnection(HTTPConnection):
             error = OSError('No usable plug address or source port')
             for family, kind, proto, _, address in addresses:
                 for _ in range(128):
+                    deadline = getattr(_plug_request_context, 'deadline', None)
+                    if deadline is not None:
+                        deadline.remaining()
                     sock = socket.socket(family, kind, proto)
                     key = None
                     try:
@@ -1656,7 +1710,12 @@ class _PlugHTTPConnection(HTTPConnection):
                             sock.close()
                             continue
                         self._plug_port_key = key
+                        if deadline is not None:
+                            deadline.register(sock)
+                            sock.settimeout(min(self.timeout, deadline.remaining()))
                         sock.connect(address)
+                        if deadline is not None:
+                            deadline.remaining()
                         return sock
                     except OSError as exc:
                         _close_failed_plug_socket(sock, key)
@@ -1695,10 +1754,24 @@ class _PlugHTTPAdapter(requests.adapters.HTTPAdapter):
 def _plug_http_get(url, **kwargs):
     # A local plug must be reached directly, never through an environment
     # proxy. No automatic retries of commands that may already have landed.
-    with requests.Session() as session:
-        session.trust_env = False
-        session.mount('http://', _PlugHTTPAdapter(max_retries=0))
-        return session.get(url, **kwargs)
+    deadline = _PlugRequestDeadline(kwargs['timeout'])
+    previous = getattr(_plug_request_context, 'deadline', None)
+    _plug_request_context.deadline = deadline
+    try:
+        deadline.timer.start()
+        with requests.Session() as session:
+            session.trust_env = False
+            session.mount('http://', _PlugHTTPAdapter(max_retries=0))
+            response = session.get(url, allow_redirects=False, **kwargs)
+            deadline.finish()
+            return response
+    except (requests.RequestException, OSError):
+        if deadline.expired or time.monotonic() >= deadline.until:
+            raise requests.Timeout('Plug request deadline expired') from None
+        raise
+    finally:
+        deadline.cancel()
+        _plug_request_context.deadline = previous
 
 
 def _plug_port_handover():

@@ -64,6 +64,12 @@ MODULE_TIMEOUT_SECONDS = 120
 # by hand for the right FAILURE, not merely a failure: a mutation
 # caught by an unrelated crash is not evidence.
 MUTATIONS = [
+    ("plug-overall-deadline-not-armed", "controller.py",
+     '        deadline.timer.start()', '        pass',
+     "test_plug_deadline.py", "test_trickling_headers_and_body_release_mode_save_without_server_release"),
+    ("plug-deadline-socket-shutdown-skipped", "controller.py",
+     '                    sock.shutdown(socket.SHUT_RDWR)', '                    pass',
+     "test_plug_deadline.py", "test_trickling_headers_and_body_release_mode_save_without_server_release"),
     ("emulator-batch-count-not-consumed", "tools/plug_emulator.py",
      '                state.failures_remaining -= 1', '                pass',
      "test_plug_emulator.py", "test_fail_next_batch_is_targeted_exact_and_recovers_without_rearming"),
