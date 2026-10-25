@@ -1595,23 +1595,23 @@ class _PlugRequestDeadline:
             raise socket.timeout('Plug request deadline expired')
         return remaining
 
-    def register(self, sock):
+    def register(self, sock, key):
         with self.lock:
             self.remaining()
-            self.sockets.append(sock)
+            self.sockets.append((sock, key))
 
     def expire(self):
         with self.lock:
             if self.finished:
                 return
             self.expired = True
-            for sock in self.sockets:
+            for sock, key in self.sockets:
                 # close alone does not interrupt a makefile() body/header read.
                 try:
                     sock.shutdown(socket.SHUT_RDWR)
                 except OSError:
                     pass
-                sock.close()
+                _close_failed_plug_socket(sock, key)
 
     def finish(self):
         with self.lock:
@@ -1623,6 +1623,11 @@ class _PlugRequestDeadline:
         with self.lock:
             self.finished = True
             self.timer.cancel()
+            # Connection.close() can run at headers while HTTPResponse's
+            # makefile still owns the socket. The session/body has unwound
+            # before this final teardown, so restart the hold HERE as well.
+            for sock, key in self.sockets:
+                _close_failed_plug_socket(sock, key)
 
 
 def _plug_addresses(host, port, family):
@@ -1711,7 +1716,7 @@ class _PlugHTTPConnection(HTTPConnection):
                             continue
                         self._plug_port_key = key
                         if deadline is not None:
-                            deadline.register(sock)
+                            deadline.register(sock, key)
                             sock.settimeout(min(self.timeout, deadline.remaining()))
                         sock.connect(address)
                         if deadline is not None:
@@ -1758,7 +1763,10 @@ def _plug_http_get(url, **kwargs):
     previous = getattr(_plug_request_context, 'deadline', None)
     _plug_request_context.deadline = deadline
     try:
-        deadline.timer.start()
+        try:
+            deadline.timer.start()
+        except RuntimeError as exc:
+            raise requests.ConnectionError('Could not start plug deadline timer') from exc
         with requests.Session() as session:
             session.trust_env = False
             session.mount('http://', _PlugHTTPAdapter(max_retries=0))

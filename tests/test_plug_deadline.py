@@ -153,5 +153,96 @@ def test_overall_deadline_includes_dns_and_discards_late_resolution():
         worker.join(2)
 
 
+def test_slow_connection_close_holds_port_from_body_teardown_on_success_and_timeout():
+    for timeout in (False, True):
+        C = harness.load()
+        C.PLUG_PORT_HOLD_SECONDS = 0.2
+        release = threading.Event()
+        ports = []
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                ports.append(self.client_address[1])
+                body = b'{"POWER":"ON"}'
+                self.send_response(200)
+                self.send_header('Connection', 'close')
+                self.send_header('Content-Length', str(100000 if timeout else len(body)))
+                self.end_headers()
+                try:
+                    if timeout:
+                        self.wfile.write(body[:1])
+                        self.wfile.flush()
+                        # Also bound the fixture when mutation testing removes
+                        # the client deadline; report a failure instead of hang.
+                        stop = time.monotonic() + 1.2
+                        while time.monotonic() < stop and not release.wait(0.02):
+                            self.wfile.write(b' ')
+                            self.wfile.flush()
+                    else:
+                        release.wait(0.35)
+                        self.wfile.write(body)
+                except (OSError, ValueError):
+                    pass
+            def log_message(self, *args): pass
+        server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        serving = threading.Thread(target=server.serve_forever, daemon=True)
+        serving.start()
+        class ReusedPort:
+            family = C.socket.AF_INET
+            def bind(self, _): pass
+            def getsockname(self): return ('127.0.0.1', ports[0])
+        try:
+            try:
+                reply = C._plug_http_get('http://127.0.0.1:%d/cm' % server.server_port,
+                                         timeout=0.4 if timeout else 1)
+            except C.requests.Timeout:
+                assert timeout, 'Healthy slow response timed out'
+            else:
+                assert not timeout, 'Trickling body escaped deadline'
+                assert reply.json() == {'POWER': 'ON'}
+            ended = time.monotonic()
+            key = (int(C.socket.AF_INET), ports[0])
+            assert ended - C._plug_ports[key] < 0.1, 'Hold started before body teardown'
+            assert C._bind_plug_socket(ReusedPort()) is None, 'Port was reusable too early'
+        finally:
+            release.set()
+            server.shutdown()
+            server.server_close()
+            serving.join(2)
+
+
+def test_timer_start_failure_is_a_plug_error_and_manual_fault_without_http():
+    C = harness.load()
+    attempted = []
+    def fail_start(_):
+        raise RuntimeError('No thread capacity')
+    def unexpected_http(*args, **kwargs):
+        attempted.append(True)
+        raise AssertionError('HTTP ran without deadline protection')
+    C.CFG['plug']['host'] = '127.0.0.1:9'
+    plug = C.Tasmota(C.CFG['plug']['host'])
+    C._clients = lambda: (None, plug)
+    C.CFG['control']['mode'] = 'manual'
+    C.STATE['manual_off_pending'] = True
+    with patch.object(C.threading.Timer, 'start', fail_start), \
+            patch.object(C.requests.Session, 'get', unexpected_http):
+        response = C.app.test_client().post('/api/plug/test', json={})
+        assert response.status_code == 400 and response.is_json, response.data
+        assert 'ConnectionError' in response.get_json()['error']
+        try:
+            C._manual_off(plug, C._cfg_generation)
+        except C.PlugError as exc:
+            assert exc.reason == 'ConnectionError'
+        else:
+            raise AssertionError('Failed Manual OFF was not reported')
+    assert not attempted
+    assert C.STATE['manual_off_pending']
+    assert C.STATE['fault']['code'] == 'FC-009'
+    assert not C.STATE['fault']['stopped']
+    assert C.load_fault()['code'] == 'FC-009'
+    assert getattr(C._plug_request_context, 'deadline', None) is None
+    assert C._plug_request_lock.acquire(timeout=0.1)
+    C._plug_request_lock.release()
+
+
 if __name__ == '__main__':
     sys.exit(harness.run(dict(globals())))

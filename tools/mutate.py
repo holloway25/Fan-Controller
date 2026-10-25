@@ -64,6 +64,14 @@ MODULE_TIMEOUT_SECONDS = 120
 # by hand for the right FAILURE, not merely a failure: a mutation
 # caught by an unrelated crash is not evidence.
 MUTATIONS = [
+    ("plug-body-teardown-port-hold-skipped", "controller.py",
+     '            for sock, key in self.sockets:\n                _close_failed_plug_socket(sock, key)',
+     '            for sock, key in self.sockets:\n                pass',
+     "test_plug_deadline.py", "test_slow_connection_close_holds_port_from_body_teardown_on_success_and_timeout"),
+    ("plug-timer-start-error-unclassified", "controller.py",
+     "            raise requests.ConnectionError('Could not start plug deadline timer') from exc",
+     '            raise',
+     "test_plug_deadline.py", "test_timer_start_failure_is_a_plug_error_and_manual_fault_without_http"),
     ("plug-overall-deadline-not-armed", "controller.py",
      '        deadline.timer.start()', '        pass',
      "test_plug_deadline.py", "test_trickling_headers_and_body_release_mode_save_without_server_release"),
