@@ -119,6 +119,8 @@ and `switch_age`, plus `min_run_remaining`. Use these for freshness and
 countdowns; wall timestamps are for display, not comparison with a client's
 clock. The refresh countdown is `poll_seconds - sensor_age`, reduced by
 elapsed local time since receiving the response.
+Reading ages start when acquisition finishes, including any later relay I/O or
+lock wait before committing the sample. Power expiry uses the same elapsed age.
 
 Each event in `/api/state` includes a server-selected `cls` value:
 

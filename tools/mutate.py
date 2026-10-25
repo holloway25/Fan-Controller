@@ -64,6 +64,14 @@ MODULE_TIMEOUT_SECONDS = 120
 # by hand for the right FAILURE, not merely a failure: a mutation
 # caught by an unrelated crash is not evidence.
 MUTATIONS = [
+    ("sensor-acquisition-age-reset-on-commit", "controller.py",
+     '            _stamp_elapsed_locked("reading_at", acquired_wall, acquired_mono)',
+     '            _stamp_elapsed_locked("reading_at", acquired_wall)',
+     "test_acquisition_age.py", "test_sensor_age_includes_relay_delay_even_when_wall_clock_steps"),
+    ("power-acquisition-age-reset-on-commit", "controller.py",
+     '                if _stale_client(gen):\n                    continue\n                with _state_lock:\n                    STATE["watts"] = w\n                    _stamp_elapsed_locked("watts_at", acquired_wall, acquired_mono)',
+     '                if _stale_client(gen):\n                    continue\n                with _state_lock:\n                    STATE["watts"] = w\n                    _stamp_elapsed_locked("watts_at", acquired_wall)',
+     "test_acquisition_age.py", "test_power_age_includes_actuation_lock_wait_and_expires_in_api"),
     ("structure-event-set-counted-as-command", "tests/test_structure.py",
      '            if f.attr == "set" and not sub.args:', '            if False:',
      "test_structure.py", "test_the_checker_can_actually_fail"),

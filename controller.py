@@ -2033,11 +2033,11 @@ START_TIME = time.time()
 _elapsed_clocks = {"startup": (START_TIME, time.monotonic())}
 
 
-def _stamp_elapsed_locked(key, wall=None):
-    """Record acquisition/switch time in both clocks under the state lock."""
+def _stamp_elapsed_locked(key, wall=None, mono=None):
+    """Record both clocks; readings may supply their earlier acquisition pair."""
     wall = time.time() if wall is None else wall
     STATE[key] = wall
-    _elapsed_clocks[key] = (wall, time.monotonic())
+    _elapsed_clocks[key] = (wall, time.monotonic() if mono is None else mono)
 
 
 def _elapsed_age_locked(key, startup=False):
@@ -2743,6 +2743,7 @@ def tick():
     if not sid:
         raise ProtectError("No air-quality sensor selected yet")
     vals, path = p.readings(sid)
+    acquired_wall, acquired_mono = time.time(), time.monotonic()
     co2 = vals.get('co2')
     # Judged against the rules that are ENABLED, not against CO2. With
     # CO2 disabled and humidity driving the fan, a payload carrying no
@@ -2766,7 +2767,7 @@ def tick():
     if not usable:
         raise ProtectError("No reading for %s. Open Debug to see what "
                            "Protect is returning." % why)
-    now = time.time()
+    now = acquired_wall
     # BEFORE anything derived from this cycle's clients is consumed. The
     # generation used to be checked only at the actuation block below,
     # which left everything between here and there acting on a
@@ -2808,7 +2809,7 @@ def tick():
                          temperature=vals.get('temperature'),
                          humidity=vals.get('humidity'),
                          pm25=vals.get('pm25'))
-            _stamp_elapsed_locked("reading_at", now)
+            _stamp_elapsed_locked("reading_at", acquired_wall, acquired_mono)
             if STATE["history"] and now < STATE["history"][-1]["t"]:
                 # Inserting before the tail is not an append delta. Rotate the
                 # history epoch so all existing clients request a full trace.
@@ -4315,9 +4316,10 @@ def _relay_release_step(plug, gen=None):
                 _record_relay_observation(actual)
                 if actual is False:
                     watts = plug.power_w()
+                    acquired_wall, acquired_mono = time.time(), time.monotonic()
                     with _state_lock:
                         STATE["watts"] = watts
-                        _stamp_elapsed_locked("watts_at")
+                        _stamp_elapsed_locked("watts_at", acquired_wall, acquired_mono)
                     confirmed = (watts is not None and _finite(watts)
                                  and watts <= CFG["plug"]["watts_off_max"])
             except PlugError:
@@ -4359,9 +4361,10 @@ def _relay_release_step(plug, gen=None):
                 _remember_relay(plug, False)
                 _record_relay_observation(False)
                 w = plug.power_w()
+                acquired_wall, acquired_mono = time.time(), time.monotonic()
                 with _state_lock:
                     STATE["watts"] = w
-                    _stamp_elapsed_locked("watts_at")
+                    _stamp_elapsed_locked("watts_at", acquired_wall, acquired_mono)
                 confirmed = w is not None and _finite(w) and w <= CFG["plug"]["watts_off_max"]
             except PlugError:
                 confirmed = False
@@ -4450,9 +4453,10 @@ def _enforce_stop(plug, gen=None):
             # cannot certify a stop when monitoring is enabled.
             if CFG["plug"].get("watts_enabled"):
                 w = plug.power_w()
+                acquired_wall, acquired_mono = time.time(), time.monotonic()
                 with _state_lock:
                     STATE["watts"] = w
-                    _stamp_elapsed_locked("watts_at")
+                    _stamp_elapsed_locked("watts_at", acquired_wall, acquired_mono)
                 if w is None or not _finite(w) or w > CFG["plug"]["watts_off_max"]:
                     _invalidate_fault_stop()
                     return False
@@ -4890,6 +4894,7 @@ def watts_loop():
             if plug is None:
                 raise PlugError("No plug client available")
             w = plug.power_w()
+            acquired_wall, acquired_mono = time.time(), time.monotonic()
             # A reading from a plug that is no longer configured is not
             # this fan's draw. Discarding it here covers the stored value
             # AND the draw check below, which would otherwise raise a
@@ -4904,7 +4909,7 @@ def watts_loop():
                     continue
                 with _state_lock:
                     STATE["watts"] = w
-                    _stamp_elapsed_locked("watts_at")
+                    _stamp_elapsed_locked("watts_at", acquired_wall, acquired_mono)
         except Exception as e:
             # Left for the staleness check rather than cleared here: one
             # missed request should not blank a valid reading, but a
