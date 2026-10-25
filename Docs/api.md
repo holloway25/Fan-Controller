@@ -93,9 +93,11 @@ and returns 504 if delivery is still unconfirmed. That worker retains its slot
 until it finishes, so a stalled resolver cannot create an unlimited backlog.
 Late DNS completion is checked before sending SMTP commands. A message already
 being transmitted at expiry may still be accepted; a timeout is not proof of
-non-delivery. Shutdown interrupts the waiting request with 503, and a worker
-that cannot be started also returns 503. The dashboard disables its test button
-until the current request completes.
+non-delivery. A waiting request returns 503 if it can still respond after
+shutdown begins, but normal shutdown closes active connections first: clients
+may receive a connection error instead of an HTTP response. A worker that
+cannot be started returns 503. The dashboard disables its test button until
+the current request completes.
 
 `/api/protect/sensors` includes `isConnected` (`true`, `false`, or `null` when
 the payload omits it). CO2 values may be retained for disconnected sensors;
