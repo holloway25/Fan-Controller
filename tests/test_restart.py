@@ -961,8 +961,16 @@ def test_resumed_manual_reconciles_durable_stop_promise():
     import ast
     with open(C.__file__, encoding="utf-8") as source:
         tree = ast.parse(source.read())
-    main = tree.body[-1]
-    assert isinstance(main, ast.If)
+    entry = tree.body[-1]
+    assert isinstance(entry, ast.If)
+    assert any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+               and node.func.id == '_run_controller' for node in ast.walk(entry))
+    run = next(node for node in tree.body
+               if isinstance(node, ast.FunctionDef) and node.name == '_run_controller')
+    assert any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+               and node.func.id == '_start_controller' for node in ast.walk(run))
+    main = next(node for node in tree.body
+                if isinstance(node, ast.FunctionDef) and node.name == '_start_controller')
     prefix = []
     for statement in main.body:
         if isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Call) \

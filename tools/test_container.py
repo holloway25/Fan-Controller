@@ -27,7 +27,7 @@ def main():
         "assert not Path('/app/.git').exists(); "
         "assert all(importlib.util.find_spec(name) is None for name in "
         "('pip','ensurepip','setuptools','wheel')); "
-        "import flask,requests,urllib3; print('PASS Debian 13 Trixie non-root runtime without live configuration or packaging tools')")
+        "import flask,requests,urllib3,waitress; print('PASS Debian 13 Trixie non-root runtime without live configuration or packaging tools')")
     name='fan-integration-'+uuid.uuid4().hex[:12]
     container=name+'-service'
     run('docker','volume','create',name)

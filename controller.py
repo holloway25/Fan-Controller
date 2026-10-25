@@ -1100,8 +1100,8 @@ def _persist_fault_locked(cleanup=True):
 def flush_hist(signum=None, frame=None):
     """Persist on shutdown so batching never costs a restart's samples."""
     if signum is not None:
+        _stopping.set()
         if PERSIST_STOP_STATE:
-            _stopping.set()
             _save_stop_state()
         # Before the history write, which can be 20,000 points against a
         # stop deadline. The fault matters more than the graph.
@@ -6508,7 +6508,73 @@ def restart_loop():
         time.sleep(RESTART_POLL_SECONDS)
 
 
-if __name__ == "__main__":
+class _HTTPServerStopped(BaseException):
+    """Exit the web loop without Waitress swallowing our signal-handler exit."""
+
+
+def _close_http_server(server, channels, dispatcher):
+    """Close listeners/channels and bound Waitress worker cleanup.
+
+    Waitress workers are daemon threads. Its own shutdown uses wall time;
+    wait on a separate daemon so a clock correction or busy request cannot
+    extend the controller's stop indefinitely. State has already been saved
+    by the signal handler before this cleanup starts.
+    """
+    if server is not None:
+        server.close()
+    for channel in list(channels.values()):
+        channel.close()
+    finished = threading.Event()
+    def close_workers():
+        try:
+            dispatcher.shutdown(timeout=2)
+        finally:
+            finished.set()
+    try:
+        threading.Thread(target=close_workers, daemon=True,
+                         name='http-shutdown').start()
+        if not finished.wait(2.5):
+            print('Web worker cleanup deadline reached; exiting.',
+                  file=sys.stderr, flush=True)
+    except RuntimeError:
+        dispatcher.shutdown(timeout=0)
+
+
+def _make_http_server(host=None, port=8096):
+    from waitress.server import create_server
+    from waitress.task import ThreadedTaskDispatcher
+    channels = {}
+    dispatcher = ThreadedTaskDispatcher()
+    server = None
+    try:
+        # Keep one process. Bind successfully before starting any controller
+        # loops or web workers, so a port collision cannot run a second fan.
+        server = create_server(app, map=channels, _dispatcher=dispatcher,
+                               host=host or os.environ.get('FAN_CONTROLLER_BIND', '127.0.0.1'),
+                               port=port, threads=4,
+                               max_request_body_size=app.config['MAX_CONTENT_LENGTH'],
+                               clear_untrusted_proxy_headers=False)
+        # Waitress must leave the original socket peer intact. Our outer
+        # allowlist runs before ProxyFix and owns all forwarded-header trust.
+        dispatcher.set_thread_count(4)
+        return server, channels, dispatcher
+    except BaseException:
+        _close_http_server(server, channels, dispatcher)
+        raise
+
+
+def _run_controller():
+    server, channels, dispatcher = _make_http_server()
+    try:
+        _start_controller(server)
+    except _HTTPServerStopped:
+        pass
+    finally:
+        _stopping.set()
+        _close_http_server(server, channels, dispatcher)
+
+
+def _start_controller(server):
     # Before any thread starts, so the first decide() sees the lease and
     # the latches the previous process was holding.
     resumed = _apply_resume() or _load_stop_state()
@@ -6527,10 +6593,29 @@ if __name__ == "__main__":
     _notify_restart_fault()
     atexit.register(flush_hist)
     atexit.register(_persist_fault_on_exit)
+    def stop(signum, frame):
+        if _stopping.is_set():
+            return
+        _stopping.set()
+        _wake.set()
+        server.close()  # Stop accepting connections before checkpointing.
+        try:
+            flush_hist(signum, frame)
+        except SystemExit:
+            # server.run catches SystemExit itself and performs an unbounded
+            # wall-clock-based cleanup. Use our bounded cleanup instead.
+            raise _HTTPServerStopped()
     for _sig in (signal.SIGTERM, signal.SIGINT):
-        signal.signal(_sig, flush_hist)
-    threading.Thread(target=loop, daemon=True).start()
-    threading.Thread(target=watts_loop, daemon=True).start()
-    threading.Thread(target=restart_loop, daemon=True).start()
-    app.run(host=os.environ.get("FAN_CONTROLLER_BIND", "127.0.0.1"),
-            port=8096, threaded=True)
+        signal.signal(_sig, stop)
+    threading.Thread(target=loop, daemon=True, name='fan-control').start()
+    threading.Thread(target=watts_loop, daemon=True, name='fan-power').start()
+    threading.Thread(target=restart_loop, daemon=True, name='fan-restart').start()
+    print('Serving dashboard with Waitress (one process, four web threads).',
+          file=sys.stderr, flush=True)
+    server.run()
+    if not _stopping.is_set():
+        raise RuntimeError('Dashboard server stopped unexpectedly')
+
+
+if __name__ == "__main__":
+    _run_controller()

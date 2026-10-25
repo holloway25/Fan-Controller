@@ -59,7 +59,11 @@ use a properly configured HTTPS reverse proxy if needed. Set
 `FAN_CONTROLLER_TRUST_PROXY=1` only behind one trusted proxy which overwrites
 forwarded headers and is the only path into this port. Native installs retain
 their existing loopback/nginx defaults. The container currently uses the same
-threaded Flask server as the native service, with one controller process.
+Waitress server as the native service: one controller process, four web-request
+threads and one set of background controller loops. Flask remains the application
+framework. The controller owns proxy-header handling; Waitress preserves those
+headers without interpreting them, so the source allowlist still checks the
+actual socket peer before ProxyFix runs.
 
 ### Restrict access to a LAN reverse proxy
 
@@ -112,6 +116,14 @@ latched. Startup consumes the checkpoint once, checks configuration/fault
 identity and obtains fresh device readings rather than trusting a cached relay
 or wattage. Downtime counts toward the remaining lease. Clock rollback across
 a host reboot or a checkpoint older than 24 hours uses cold-start recovery.
+
+The web listener closes before the stop checkpoint is written. Controller loops
+observe the stopping flag, and web-worker cleanup has an additional 2.5-second
+elapsed-time bound; a busy request must not extend that wait indefinitely.
+The existing checkpoint lock deadline is 25 seconds. Keep the 60-second Docker
+stop allowance: filesystem writes can still be delayed by unhealthy storage.
+Only one controller process is supported; do not launch extra WSGI workers or
+start the module using a generic multi-process server command.
 
 Unexpected power loss or a forced kill cannot save current transient state;
 the existing cold-start logic applies. Durable faults and Manual-stop promises
