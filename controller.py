@@ -26,6 +26,7 @@ import requests, urllib3
 from flask import Flask, Response, jsonify, request, render_template
 from werkzeug.exceptions import RequestEntityTooLarge
 from werkzeug.middleware.proxy_fix import ProxyFix
+from waitress.wasyncore import ExitNow
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -6508,7 +6509,7 @@ def restart_loop():
         time.sleep(RESTART_POLL_SECONDS)
 
 
-class _HTTPServerStopped(BaseException):
+class _HTTPServerStopped(ExitNow):
     """Exit the web loop without Waitress swallowing our signal-handler exit."""
 
 

@@ -139,6 +139,17 @@ def make():
     (root/'http-port').write_text(str(result[0].effective_port))
     return result
 C._make_http_server=make
+if os.environ.get('WSGI_SIGNAL_IN_CALLBACK'):
+    import signal
+    from waitress.channel import HTTPChannel
+    received=HTTPChannel.received
+    def signal_callback(self,data):
+        if data.startswith(b'GET /idle '):
+            (root/'idle-entered').touch()
+        if data.startswith(b'GET /signal-in-callback '):
+            os.kill(os.getpid(),getattr(signal,os.environ['WSGI_SIGNAL_IN_CALLBACK']))
+        return received(self,data)
+    HTTPChannel.received=signal_callback
 @C.app.route('/wsgi-threads')
 def threads():
     return C.jsonify(pid=os.getpid(),names=[t.name for t in threading.enumerate()])
@@ -149,6 +160,53 @@ def block():
     return 'done'
 C._run_controller()
 '''
+
+
+def test_signal_inside_socket_callback_exits_with_another_connection_open():
+    import socket
+    for sig in ('SIGTERM', 'SIGINT'):
+        C = harness.load(plug_access_disabled=True)
+        root = Path(C.DIR)
+        C.CFG['control']['mode'] = 'manual'
+        (root/'config.json').write_text(json.dumps(C.CFG))
+        (root/'reading').write_text('850')
+        env = dict(os.environ, FAN_CONTROLLER_DATA_DIR=str(root),
+                   FAN_CONTROLLER_PERSIST_STATE='1', FAN_CONTROLLER_TRUST_PROXY='0',
+                   FAN_CONTROLLER_ALLOWED_PROXY_IPS='', WSGI_SIGNAL_IN_CALLBACK=sig,
+                   PYTHONUNBUFFERED='1')
+        env.pop(C.RESUME_ENV, None)
+        sockets = []
+        with (root/'callback.log').open('w+') as log:
+            process = subprocess.Popen([sys.executable, '-c', CHILD], env=env,
+                                       stdout=log, stderr=log)
+            def wait_for(path):
+                deadline = time.monotonic()+5
+                while not path.exists() and time.monotonic() < deadline:
+                    assert process.poll() is None, 'Controller exited before callback'
+                    time.sleep(0.01)
+                assert path.exists(), path.name+' was not reached'
+            try:
+                wait_for(root/'http-port')
+                port = int((root/'http-port').read_text())
+                idle = socket.create_connection(('127.0.0.1', port), timeout=2)
+                sockets.append(idle)
+                # Incomplete headers keep a separate channel in the async map.
+                idle.sendall(b'GET /idle HTTP/1.1\r\nHost: localhost\r\n')
+                wait_for(root/'idle-entered')
+                trigger = socket.create_connection(('127.0.0.1', port), timeout=2)
+                sockets.append(trigger)
+                started = time.monotonic()
+                trigger.sendall(b'GET /signal-in-callback HTTP/1.1\r\nHost: localhost\r\n\r\n')
+                assert process.wait(timeout=5) == 0
+                assert time.monotonic()-started < 5
+                assert (root/'resume.json').exists(), 'No clean-stop checkpoint'
+                assert idle.recv(1) == b'', 'Idle connection survived shutdown'
+                assert 'Orderly-stop state saved.' in (root/'callback.log').read_text()
+            finally:
+                for conn in sockets: conn.close()
+                if process.poll() is None:
+                    process.kill()
+                    process.wait(timeout=5)
 
 
 def test_real_process_retains_latch_lease_and_fault_and_stops_during_busy_requests():
