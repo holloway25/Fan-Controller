@@ -20,7 +20,7 @@ from urllib3.connectionpool import HTTPConnectionPool
 from urllib3.exceptions import ConnectTimeoutError, NameResolutionError, NewConnectionError
 from urllib3.util.connection import allowed_gai_family
 from datetime import date
-from contextlib import nullcontext, contextmanager
+from contextlib import contextmanager
 from urllib.parse import urlsplit
 import requests, urllib3
 from flask import Flask, Response, jsonify, request, render_template
@@ -191,11 +191,6 @@ def _coerce(name, spec, v):
             raise ValueError("%s is not valid text" % name)
         if name in ("email.sender", "email.recipients") and any(ch in v for ch in "\r\n"):
             raise ValueError("%s must not contain line breaks" % name)
-        return v
-    if kind == "list_str":
-        if not isinstance(v, list) or len(v) > spec[2] or \
-                not all(isinstance(x, str) and x for x in v):
-            raise ValueError("%s must be a list of ids" % name)
         return v
     raise ValueError("%s cannot be set" % name)
 
@@ -1329,9 +1324,6 @@ class Protect:
     def base(self):
         return "https://%s" % self.host
 
-    def login(self):
-        return self._request(self._login_direct)
-
     def _login_direct(self):
         s = requests.Session()
         s.verify = self.verify
@@ -1470,18 +1462,6 @@ class Protect:
             if hit is not None:
                 out[name] = hit[0]
         return out, (co2[1] if co2 else None)
-
-    def co2(self, sid):
-        """Current CO2 in ppm plus the payload path it came from."""
-        s = self.sensor(sid)
-        if s.get("isConnected") is False:
-            raise ProtectError("Selected sensor is disconnected")
-        hit = find_metric(s, CO2_HINTS)
-        if hit is None:
-            raise ProtectError("No CO2 field in this sensor's payload. Open "
-                               "Debug to see what Protect is returning.")
-        return hit
-
 
 # One installed controller drives one plug. Share across client replacements
 # and dashboard tests, not per client instance. Lock order is actuation then
@@ -2000,7 +1980,7 @@ STATE = {
     "plug_polling_enabled": not PLUG_ACCESS_DISABLED,
     "co2": None, "co2_path": None, "fan": None, "reading_at": None,
     "relay_revision": 0,  # Process-local sequence for confirmed observations/actions.
-    "changed_at": None, "error": None, "sensor_name": None,
+    "changed_at": None, "error": None, "sensor_name": None,  # Legacy API placeholder.
     # Demand may renew a lease without physically starting the motor.
     "min_run_at": None,
     # Sensor acquisition health is separate from plug/control failures that
@@ -5904,52 +5884,41 @@ def _api_config_locked(act_locked=False):
     except OSError as e:
         return jsonify(error="Could not save settings (%s). Nothing "
                              "was changed." % e), 500
-    # Committed under _act_lock so the mode cannot change midway through
-    # an actuation. Without it, a Force on that had already passed its
-    # mode check could land after manual's one-time stop had run and
-    # cleared its flag, leaving the fan on with nothing to correct it.
-    # Waits for an in-flight switch, so a save can block for as long as
-    # the plug takes to answer. Order is _act_lock then _state_lock
-    # everywhere, which is why this cannot deadlock.
-    with nullcontext() if act_locked else _act_lock:
-        was = CFG["control"].get("mode")
-        recovery_changed = any(cand[key] != CFG[key]
-                               for key in ("plug", "protect", "control"))
-        draw_changed = (cand["plug"] != CFG["plug"] or
-                        (was == "on") !=
-                        (cand["control"].get("mode") == "on"))
-        global _cfg_generation, _oob_generation, _oob_since, _off_draw_since
-        old_generation = _cfg_generation
-        for section in cand:
-            CFG[section] = cand[section]
-        _cfg_generation += 1
-        if draw_changed:
-            _oob_since = None
-            _off_draw_since = None
-            _oob_generation = _cfg_generation
-        elif _oob_generation == old_generation:
-            # Still reject every stale client, but do not give an unhealthy
-            # fan a fresh grace period for an email, UI or no-op save.
-            # Carry only a timer known to belong to the previous settings.
-            _oob_generation = _cfg_generation
-        now_mode = CFG["control"].get("mode")
-        if recovery_changed:
-            with _state_lock:
-                STATE["cold_start_pending"] = False
-                STATE["cold_start_hold_until"] = None
-        if now_mode == "manual" and was != "manual":
-            # Entering manual switches the fan off once, then hands to the
-            # plug's own controls or Google Home without interference.
-            with _state_lock:
-                STATE["manual_off_pending"] = True
-        if was == "on" and now_mode != "on":
-            # Leaving a forced state: do not let the minimum-run timer
-            # from the forced switch hold the fan on once auto resumes.
-            with _state_lock:
-                # Cancel only the lease, retaining physical switch timing.
-                expired = time.time() - CFG["control"]["min_run_minutes"]*60 - 1
-                _stamp_elapsed_locked("min_run_at", expired)
-                _elapsed_clocks["min_run_at"] = (expired, time.monotonic() - CFG["control"]["min_run_minutes"]*60 - 1)
+    # The recursive entry above already holds _act_lock through validation,
+    # durable marker creation, persistence and commit. Keep state locks inside it.
+    was = CFG["control"].get("mode")
+    recovery_changed = any(cand[key] != CFG[key]
+                           for key in ("plug", "protect", "control"))
+    draw_changed = (cand["plug"] != CFG["plug"] or
+                    (was == "on") !=
+                    (cand["control"].get("mode") == "on"))
+    global _cfg_generation, _oob_generation, _oob_since, _off_draw_since
+    old_generation = _cfg_generation
+    for section in cand:
+        CFG[section] = cand[section]
+    _cfg_generation += 1
+    if draw_changed:
+        _oob_since = None
+        _off_draw_since = None
+        _oob_generation = _cfg_generation
+    elif _oob_generation == old_generation:
+        # Unrelated saves must not renew a developing draw fault's timer.
+        _oob_generation = _cfg_generation
+    now_mode = CFG["control"].get("mode")
+    if recovery_changed:
+        with _state_lock:
+            STATE["cold_start_pending"] = False
+            STATE["cold_start_hold_until"] = None
+    if now_mode == "manual" and was != "manual":
+        # Manual owes one confirmed stop, then hands control to the plug.
+        with _state_lock:
+            STATE["manual_off_pending"] = True
+    if was == "on" and now_mode != "on":
+        with _state_lock:
+            # Cancel only the lease, retaining physical switch timing/grace.
+            expired = time.time() - CFG["control"]["min_run_minutes"]*60 - 1
+            _stamp_elapsed_locked("min_run_at", expired)
+            _elapsed_clocks["min_run_at"] = (expired, time.monotonic() - CFG["control"]["min_run_minutes"]*60 - 1)
     if summary:
         _log(summary)
     _wake.set()
@@ -6484,22 +6453,8 @@ def _consume_restart_request():
 def _mark_fds_close_on_exec():
     """Stop open descriptors surviving into the replacement process.
 
-    Werkzeug marks its listening socket inheritable so the reloader can
-    hand the fd to a child, and nothing clears that on the way into
-    execv. The replacement therefore inherited a socket already bound
-    to 8096, died with "Address already in use", and the service only
-    came back because Restart=on-failure caught the non-zero exit ten
-    seconds later. Observed in the journal on 08-10, not theorised:
-    PEP 446 makes Python's own descriptors non-inheritable, but
-    werkzeug opts this one back in.
-
-    0, 1 and 2 are deliberately left alone. stdout and stderr are the
-    journal, and closing them would cost the replacement its own
-    startup logging - the first thing anyone reads when a restart goes
-    wrong.
-
-    Setting the flag is not destructive. If the exec then fails, this
-    process carries on with every descriptor still open and usable.
+    Keep stdin/stdout/stderr. Other descriptors close only on successful exec,
+    avoiding inherited listeners while leaving a failed restart usable.
     """
     try:
         fds = sorted(int(n) for n in os.listdir("/proc/self/fd"))
@@ -6522,54 +6477,15 @@ def _mark_fds_close_on_exec():
 def _restart_now():
     """Replace this process with a fresh one. Same PID, same unit.
 
-    Returns False if the restart was refused. On success it does not
-    return at all - the process image is gone.
-
-    execv rather than exiting: the unit is Restart=on-failure and
-    flush_hist exits zero, so anything that merely stops would stay
-    stopped. Replacing the image keeps systemd's main PID valid and
-    needs no privilege, which is the point - a restart should not
-    depend on sudo being reachable.
-
-    History is flushed first because the batch writer holds up to
-    HIST_FLUSH_SECONDS of samples in memory and exec discards them.
-    THE DAILY SUMMARY GOES WITH IT - flush_hist writes both, for the
-    same reason and on the same schedule, and a lost day of extremes is
-    the one thing here that cannot be reconstructed afterwards.
-    config, fault and events are each written atomically as they
-    change, so they need nothing here.
-
-    The relay is not touched, and the fan keeps doing whatever it was
-    doing. The fault survives in fault.json. The in-memory timing state
-    - latches, the minimum-run lease, the draw-fault and stale-reading
-    clocks - is handed to the replacement through the environment, so a
-    requested restart does not release a latched fan or short-cycle the
-    motor. See _resume_payload. A crash or a systemd restart carries
-    none of it and correctly starts clean.
+    Refusal or shutdown cancellation returns False; successful exec never
+    returns. History/daily are flushed first and latches, leases, safety clocks
+    and recent source ports pass through the environment; the relay is untouched.
+    Clean signalled stops can separately save the opt-in disk checkpoint.
     """
-    # _fault_lock is held from the check right through the exec.
-    #
-    # Reading the flag under _state_lock alone was not enough.
-    # _store_fault holds _fault_lock across BOTH the memory update and
-    # the write, so a restart could land in the middle of raising a
-    # fault: live in memory, flag still False because the write had not
-    # failed yet, and the exec then discards the only copy. The
-    # replacement loads nothing and Auto is free to start a fan that was
-    # stopped for drawing wrong.
-    #
-    # Holding a lock across execv costs nothing, because the process
-    # image goes and the lock with it. For the same reason the rule in
-    # _store_fault - never extend a _fault_lock hold with an event write
-    # - does not apply here: there is no later contender to starve. If
-    # the exec fails, the finally releases it on the way out.
-    #
-    # Bounded, like _persist_fault_on_exit. If a fault transaction is
-    # already in flight, refusing and being asked again is better than
-    # queueing behind a disk that may be failing.
-    # Freeze settings and plug actions before taking the fault lock.
-    # This matches configuration/actuation lock ordering and closes the
-    # gap between handover capture and exec where Manual could be saved
-    # with a stop promise that was absent from the captured handover.
+    # Hold config -> actuation -> plug requests -> fault through handover/exec.
+    # This freezes Manual promises and recent ports, and prevents discarding a
+    # fault whose disk write is in flight. Bounded waits refuse busy transactions;
+    # finally releases every lock if exec fails or shutdown cancels the restart.
     if _stopping.is_set():
         return False
     acquired = []
@@ -6717,7 +6633,7 @@ def _close_http_channels(channels):
         channel.close()
 
 
-def _close_http_server(server, channels, dispatcher):
+def _close_http_server(channels, dispatcher):
     """Close listeners/channels and bound Waitress worker cleanup.
 
     Waitress workers are daemon threads. Its own shutdown uses wall time;
@@ -6747,7 +6663,6 @@ def _make_http_server(host=None, port=8096):
     from waitress.task import ThreadedTaskDispatcher
     channels = {}
     dispatcher = ThreadedTaskDispatcher()
-    server = None
     try:
         # Keep one process. Bind successfully before starting any controller
         # loops or web workers, so a port collision cannot run a second fan.
@@ -6761,7 +6676,7 @@ def _make_http_server(host=None, port=8096):
         dispatcher.set_thread_count(4)
         return server, channels, dispatcher
     except BaseException:
-        _close_http_server(server, channels, dispatcher)
+        _close_http_server(channels, dispatcher)
         raise
 
 
@@ -6773,7 +6688,7 @@ def _run_controller():
         pass
     finally:
         _stopping.set()
-        _close_http_server(server, channels, dispatcher)
+        _close_http_server(channels, dispatcher)
 
 
 def _start_controller(server, channels):

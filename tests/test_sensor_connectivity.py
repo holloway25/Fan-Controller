@@ -66,14 +66,14 @@ def test_connected_and_legacy_payloads_remain_usable():
         assert not plug.commands, connectivity
 
 
-def test_disconnected_co2_helper_rejects_retained_measurement():
+def test_disconnected_readings_reject_retained_measurement():
     C, protect, plug, sensor = setup()
     try:
-        protect.co2("selected")
+        protect.readings("selected")
     except C.ProtectError as exc:
         assert "disconnected" in str(exc)
     else:
-        assert False, "legacy CO2 helper accepted disconnected readings"
+        assert False, "active reading path accepted disconnected readings"
     assert protect.sensor("selected") is sensor, "raw diagnostics must remain available"
 
 

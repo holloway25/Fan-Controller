@@ -337,7 +337,7 @@ def test_a_login_http_failure_is_a_protect_failure():
 
     C.requests.Session = Session
     try:
-        C.Protect("console.invalid", "u", "p", False).login()
+        C.Protect("console.invalid", "u", "p", False).sensors()
     except C.ProtectError as exc:
         assert "503" in str(exc), exc
         assert "https://" not in str(exc), exc

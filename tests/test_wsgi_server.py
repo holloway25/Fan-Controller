@@ -89,7 +89,7 @@ def test_waitress_preserves_proxy_boundary_and_serves_concurrent_requests():
         # Subprocess tests below still exercise the production server.run().
         stop_serving.set()
         serving.join(3)
-        C._close_http_server(server, channels, dispatcher)
+        C._close_http_server(channels, dispatcher)
         assert not serving.is_alive()
         assert not serving_errors, serving_errors
 
@@ -105,7 +105,7 @@ def test_http_cleanup_is_bounded_even_if_dispatcher_shutdown_stalls():
                 finished.set()
     started = time.monotonic()
     try:
-        C._close_http_server(None, {}, Dispatcher())
+        C._close_http_server({}, Dispatcher())
         assert time.monotonic() - started < 4
         assert not finished.is_set()
     finally:

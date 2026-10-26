@@ -23,7 +23,7 @@
 <style>
 :root{--bg:#0e1218;--panel:#161c26;--panel2:#1c2530;--line:#27313f;
 --txt:#e8edf3;--dim:#aab6c6;--faint:#97a3b4;--ok:#34d399;--warn:#f87171;
---air:#4a9eff;--fan:#a78bfa;--trig:#f5a623;
+--air:#4a9eff;--trig:#f5a623;
 --mono:'JetBrains Mono',ui-monospace,Menlo,monospace;
 --sans:'Inter',system-ui,-apple-system,sans-serif;}
 *{box-sizing:border-box;margin:0;padding:0}
@@ -109,10 +109,6 @@ border:1px solid rgba(248,113,113,.35);border-radius:9px;
 padding:9px 11px;margin-bottom:12px;font-size:13px;line-height:1.5}
 .msg.ok{display:block;background:rgba(52,211,153,.12);color:var(--ok);
 border:1px solid rgba(52,211,153,.35)}
-.lights{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
-.lights label{font-size:13.5px;display:flex;align-items:center;gap:7px;
-background:#0f1520;border:1px solid var(--line);border-radius:8px;
-padding:8px 11px;cursor:pointer}
 .log{font-family:var(--mono);font-size:13px;color:var(--dim);line-height:1.9}
 .log div{display:flex;gap:10px;align-items:baseline}
 .log time.when{flex:0 0 auto;white-space:nowrap;color:var(--faint);
@@ -348,7 +344,7 @@ function _report(msg,src,line,kind){
   try{fetch("/api/clienterror",{method:"POST",
     headers:{"Content-Type":"application/json"},
     body:JSON.stringify({msg:String(msg),src:String(src||""),line:line||0,
-      kind:kind||"error"})})}
+      kind:kind||"error"})}).catch(()=>{})}
   catch(e){}
 }
 window.addEventListener("error",e=>_report(
@@ -943,10 +939,6 @@ $("p_sensor").addEventListener("change",()=>{sensorSelectionTouched=true});
     $("norules").style.display=
       ($("co2_enabled").checked||$("temp_enabled").checked
         ||$("humidity_enabled").checked)?"none":"";});});
-
-// Light checkboxes are created after load, so delegate.
-document.addEventListener("change",e=>{
-  if(e.target&&e.target.closest&&e.target.closest(".lights"))dirty();});
 
 async function saveAll(msgEl){
   const submittedRevision=editRevision;

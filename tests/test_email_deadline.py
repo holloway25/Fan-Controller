@@ -114,7 +114,7 @@ def test_smtp_dns_timeout_and_repeat_clicks_do_not_block_waitress_or_send_late()
             if worker.ident is not None: worker.join(5)
         if C._email_test_pending is not None:
             C._email_test_pending['done'].wait(3)
-        C._close_http_server(web, channels, dispatcher)
+        C._close_http_server(channels, dispatcher)
         web_serving.join(3)
         smtp.shutdown(); smtp.server_close(); smtp_serving.join(3)
 

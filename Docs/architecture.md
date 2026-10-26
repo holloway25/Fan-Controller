@@ -197,8 +197,9 @@ Lock waits are bounded and refusal leaves the running process in place.
 Startup reconciles a durable pending Manual stop even after handover; a carried
 false flag cannot erase a committed stop promise.
 
-Before `execv`, inherited file descriptors above standard input/output/error
-are closed so the replacement can bind port 8096. A SIGTERM/systemd restart
+Before `execv`, file descriptors above standard input/output/error are marked
+non-inheritable so successful replacement closes them and can bind port 8096.
+A SIGTERM/systemd restart
 cannot refuse; it makes one final fault-persistence attempt and reports failure
 to the journal.
 
@@ -210,8 +211,9 @@ to the journal.
 | `history.json` | Last 24 hours of readings | Atomic; flushed periodically and on SIGTERM |
 | `daily.json` | Two years of daily low/high values | Durable |
 | `events.json` | Activity log, up to 1000 entries | Atomic |
-| `fault.json` | Latched draw fault | Durable |
+| `fault.json` | Latched safety fault | Durable |
 | `manual-off.pending` | Manual stop promised but not confirmed | Durable |
+| `resume.json` | Opt-in clean-stop checkpoint for latches and timing | Durable; validated and consumed once |
 
 These files are local runtime data and are excluded from Git.
 
@@ -220,8 +222,11 @@ file, file sync, atomic rename and directory sync. History and events use atomic
 replacement without a directory sync because a small loss is recoverable and
 does not control the fan.
 
-Latch state and timing leases are normally memory-only. Only a requested restart
-hands them to the replacement process.
+Latch state and timing leases are normally memory-only. Requested restarts
+carry them through the environment; with `FAN_CONTROLLER_PERSIST_STATE=1`, an
+orderly signalled stop also saves them in `resume.json`. Startup validates the
+checkpoint against configuration, fault state and downtime before restoration.
+Crashes and power cuts do not create a checkpoint.
 
 Confirmed switch replies and relay reads establish the fan state. Normal
 polling observes changes made at the device or by another controller; safety

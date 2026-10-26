@@ -121,6 +121,7 @@ clock. The refresh countdown is `poll_seconds - sensor_age`, reduced by
 elapsed local time since receiving the response.
 Reading ages start when acquisition finishes, including any later relay I/O or
 lock wait before committing the sample. Power expiry uses the same elapsed age.
+The legacy `sensor_name` field remains `null` for API compatibility.
 
 Each event in `/api/state` includes a server-selected `cls` value:
 

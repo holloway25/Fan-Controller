@@ -33,7 +33,7 @@ def test_login_and_bootstrap_bound_actual_requests_dns_and_do_not_stack_workers(
         if operation == 'bootstrap': p._s = session()
         errors = []
         def request():
-            try: p.login() if operation == 'login' else p.sensors()
+            try: p.sensors()
             except C.ProtectError as error: errors.append(str(error))
         with patch.object(C.requests, 'Session', session), patch.object(C.socket, 'getaddrinfo', dns):
             thread = threading.Thread(target=request)
