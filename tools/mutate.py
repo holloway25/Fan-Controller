@@ -64,6 +64,14 @@ MODULE_TIMEOUT_SECONDS = 120
 # by hand for the right FAILURE, not merely a failure: a mutation
 # caught by an unrelated crash is not evidence.
 MUTATIONS = [
+    ("wsgi-multi-dispatch-requires-single-server-trigger", "controller.py",
+     '    _restart_dispatch = _http_restart_dispatch(channels)',
+     '    _restart_dispatch = server.trigger.pull_trigger',
+     "test_wsgi_multi.py", "test_multi_address_startup_preserving_restart_and_busy_shutdown"),
+    ("wsgi-multi-close-bypasses-worker-cleanup-bound", "controller.py",
+     '        _close_http_channels(channels)  # Stop all listeners before checkpointing.',
+     '        server.close()\n        _close_http_channels(channels)',
+     "test_wsgi_multi.py", "test_multi_address_startup_preserving_restart_and_busy_shutdown"),
     ("restart-commit-runs-on-worker", "controller.py",
      '    if threading.current_thread() is threading.main_thread():', '    if True:',
      "test_restart_shutdown.py", "test_requested_restart_commits_on_signal_handling_main_thread"),
@@ -279,7 +287,7 @@ MUTATIONS = [
      '                remaining = SETTLE_SECONDS - (now - since)',
      "test_clock_rollback.py", "test_forward_step_before_first_draw_check_preserves_full_grace"),
     ("wsgi-shutdown-channels-left-open", "controller.py",
-     '        for channel in list(channels.values()):\n            channel.close()',
+     '        _close_http_channels(channels)  # Stop all listeners before checkpointing.',
      '        pass  # remaining socket channels left open',
      "test_wsgi_server.py", "test_signal_inside_response_flush_exits_with_another_connection_open"),
     ("email-test-unfinished-send-duplicated", "controller.py",

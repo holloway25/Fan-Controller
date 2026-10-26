@@ -6700,6 +6700,23 @@ class _HTTPServerStopped(ExitNow):
     """Use Waitress's explicit exit path after closing all socket channels."""
 
 
+def _http_restart_dispatch(channels):
+    """Every listener has a trigger; the multi-listener wrapper does not."""
+    for channel in list(channels.values()):
+        dispatch = getattr(getattr(channel, 'trigger', None), 'pull_trigger', None)
+        if callable(dispatch):
+            return dispatch
+    raise RuntimeError('Dashboard listener has no lifecycle trigger')
+
+
+def _close_http_channels(channels):
+    # Close the actual listeners/triggers/connections in the shared map.
+    # MultiSocketServer.close() also performs an unbounded worker shutdown;
+    # worker cleanup belongs exclusively to our bounded path below.
+    for channel in list(channels.values()):
+        channel.close()
+
+
 def _close_http_server(server, channels, dispatcher):
     """Close listeners/channels and bound Waitress worker cleanup.
 
@@ -6708,10 +6725,7 @@ def _close_http_server(server, channels, dispatcher):
     extend the controller's stop indefinitely. State has already been saved
     by the signal handler before this cleanup starts.
     """
-    if server is not None:
-        server.close()
-    for channel in list(channels.values()):
-        channel.close()
+    _close_http_channels(channels)
     finished = threading.Event()
     def close_workers():
         try:
@@ -6787,12 +6801,10 @@ def _start_controller(server, channels):
             return
         _stopping.set()
         _wake.set()
-        server.close()  # Stop accepting connections before checkpointing.
         # Response flushing catches Exception, including ExitNow. Empty the
         # async map first so even a swallowed exit cannot leave idle sockets
         # keeping the event loop alive after controller loops have stopped.
-        for channel in list(channels.values()):
-            channel.close()
+        _close_http_channels(channels)  # Stop all listeners before checkpointing.
         try:
             flush_hist(signum, frame)
         except SystemExit:
@@ -6801,7 +6813,7 @@ def _start_controller(server, channels):
             raise _HTTPServerStopped()
     for _sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(_sig, stop)
-    _restart_dispatch = server.trigger.pull_trigger
+    _restart_dispatch = _http_restart_dispatch(channels)
     threading.Thread(target=loop, daemon=True, name='fan-control').start()
     threading.Thread(target=watts_loop, daemon=True, name='fan-power').start()
     threading.Thread(target=restart_loop, daemon=True, name='fan-restart').start()
