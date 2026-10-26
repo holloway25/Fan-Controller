@@ -64,6 +64,13 @@ MODULE_TIMEOUT_SECONDS = 120
 # by hand for the right FAILURE, not merely a failure: a mutation
 # caught by an unrelated crash is not evidence.
 MUTATIONS = [
+    ("restart-commit-runs-on-worker", "controller.py",
+     '    if threading.current_thread() is threading.main_thread():', '    if True:',
+     "test_restart_shutdown.py", "test_requested_restart_commits_on_signal_handling_main_thread"),
+    ("history-flush-cadence-uses-wall-clock", "controller.py",
+     '        now = time.monotonic()\n        if not force and _last_flush is not None',
+     '        now = time.time()\n        if not force and _last_flush is not None',
+     "test_persistence_clock.py", "test_history_and_daily_flush_on_elapsed_cadence_after_clock_rollback"),
     ("sensor-acquisition-age-reset-on-commit", "controller.py",
      '            _stamp_elapsed_locked("reading_at", acquired_wall, acquired_mono)',
      '            _stamp_elapsed_locked("reading_at", acquired_wall)',

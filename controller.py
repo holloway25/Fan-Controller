@@ -35,6 +35,7 @@ DATA_DIR = os.path.abspath(os.environ.get("FAN_CONTROLLER_DATA_DIR", DIR))
 PERSIST_STOP_STATE = os.environ.get("FAN_CONTROLLER_PERSIST_STATE") == "1"
 STOP_STATE_PATH = os.path.join(DATA_DIR, "resume.json")
 _stopping = threading.Event()
+_restart_dispatch = None  # Installed by the main-thread web loop before workers start.
 CFG_PATH = os.path.join(DATA_DIR, "config.json")
 # Local testing interlock, sampled at startup. No request (including a
 # dashboard plug test or actuation) may reach hardware while this is set.
@@ -378,7 +379,7 @@ HIST_PATH = os.path.join(DATA_DIR, "history.json")
 HIST_HOURS = 24           # retention window, independent of poll interval
 HIST_CAP = 20000          # memory bound if poll_seconds is very small
 HIST_FLUSH_SECONDS = 300  # batch disk writes rather than one per poll
-_last_flush = 0.0
+_last_flush = None
 # When the draw first left its band. None while healthy, so a single good
 # reading resets the clock rather than accumulating toward a fault.
 
@@ -1009,8 +1010,8 @@ def maybe_save_hist(hist, force=False):
     """
     global _last_flush
     with _hist_write_lock:
-        now = time.time()
-        if not force and now - _last_flush < HIST_FLUSH_SECONDS:
+        now = time.monotonic()
+        if not force and _last_flush is not None and now - _last_flush < HIST_FLUSH_SECONDS:
             return False
         ok = save_hist(hist)
         # Advanced either way. A failing disk should not turn every poll
@@ -6584,10 +6585,12 @@ def _restart_now():
                      % (FC_RESTART_PROBLEM, reason))
                 return False
             acquired.append(lock)
+        if _stopping.is_set():
+            return False
         with _state_lock:
             unsaved = STATE["fault_unsaved"]
         if not unsaved:
-            _restart_from_here()
+            return _restart_from_here()
     finally:
         for lock in reversed(acquired):
             lock.release()
@@ -6613,6 +6616,52 @@ def _restart_from_here():
         sys.stderr.flush()
     except Exception:
         pass
+    # A signal can arrive during either blocking flush. Never let this worker
+    # replace the main thread after it has begun shutdown/checkpointing.
+    if _stopping.is_set():
+        return False
+    return _commit_restart()
+
+
+def _commit_restart():
+    """Only the signal-handling main thread may make the final exec decision.
+
+    The restart worker retains the handover locks until completion. If shutdown
+    starts while this callback is queued, release those locks promptly so its
+    checkpoint can finish. The queued callback also checks shutdown itself.
+    """
+    if threading.current_thread() is threading.main_thread():
+        return _exec_restart()
+    if _restart_dispatch is None:
+        return False
+    done, result = threading.Event(), {}
+    def commit():
+        try:
+            result['value'] = _exec_restart()
+        except BaseException as exc:
+            result['error'] = exc
+        finally:
+            done.set()
+    try:
+        _restart_dispatch(commit)
+    except OSError:
+        if _stopping.is_set():
+            return False
+        raise
+    while not done.wait(0.05):
+        if _stopping.is_set():
+            return False
+    if _stopping.is_set():
+        return False
+    if 'error' in result:
+        raise result['error']
+    return result.get('value', False)
+
+
+def _exec_restart():
+    """Main-thread commit: signals either cancel it or follow exec to the new process."""
+    if _stopping.is_set():
+        return False
     # Handed over through the environment, which execv preserves and
     # nothing else does. Set last, so a refusal above never leaves it
     # behind for a later exec to pick up.
@@ -6621,6 +6670,9 @@ def _restart_from_here():
     # replacement inheriting the bound listening socket.
     _mark_fds_close_on_exec()
     os.chdir(DIR)
+    if _stopping.is_set():
+        os.environ.pop(RESUME_ENV, None)
+        return False
     os.execv(sys.executable, [sys.executable] + sys.argv)
 
 
@@ -6711,6 +6763,7 @@ def _run_controller():
 
 
 def _start_controller(server, channels):
+    global _restart_dispatch
     # Before any thread starts, so the first decide() sees the lease and
     # the latches the previous process was holding.
     resumed = _apply_resume() or _load_stop_state()
@@ -6748,6 +6801,7 @@ def _start_controller(server, channels):
             raise _HTTPServerStopped()
     for _sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(_sig, stop)
+    _restart_dispatch = server.trigger.pull_trigger
     threading.Thread(target=loop, daemon=True, name='fan-control').start()
     threading.Thread(target=watts_loop, daemon=True, name='fan-power').start()
     threading.Thread(target=restart_loop, daemon=True, name='fan-restart').start()

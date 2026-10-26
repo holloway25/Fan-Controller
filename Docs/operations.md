@@ -57,6 +57,9 @@ generation is answering. It preserves latches, the current run's trigger
 record, the minimum-run lease and safety timers. It refuses while a live fault
 has not been saved to disk; repair storage or safely resolve the fault rather
 than bypassing this protection.
+Shutdown takes priority over a requested restart, including one already flushing
+data. History and daily batch writes follow elapsed time, so a system-clock
+correction does not postpone the five-minute flush cadence.
 
 Generation checks use loopback `/healthz`, which is permitted by a proxy-only
 allowlist without opening local dashboard/API access. When upgrading an older
