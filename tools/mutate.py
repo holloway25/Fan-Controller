@@ -64,6 +64,10 @@ MODULE_TIMEOUT_SECONDS = 120
 # by hand for the right FAILURE, not merely a failure: a mutation
 # caught by an unrelated crash is not evidence.
 MUTATIONS = [
+    ("unifi-restart-elapsed-time-ignored", "controller.py",
+     'if value+max(10, elapsed*0.001) < previous[0]+elapsed:',
+     'if value+max(10, elapsed*0.001) < previous[0]:',
+     "test_unifi_updates.py", "test_restart_is_detected_even_when_new_uptime_exceeds_previous_sample"),
     ("unifi-update-initial-baseline-reported", "controller.py",
      'if previous is not None and version != previous:',
      'if version != previous:',

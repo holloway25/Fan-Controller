@@ -3789,6 +3789,7 @@ FC_FAILSAFE_FAILED = "FC-207"
 # and the reader should not go looking for a fault that is not there.
 FC_RENDER_EMPTY = "FC-208"
 FC_UNIFI_UPDATE = "FC-303"      # Update evidence found after communications recover.
+FC_UNIFI_RESTART = "FC-304"     # Restart evidence found after communications recover.
 
 
 def _duration(seconds):
@@ -4974,6 +4975,8 @@ class _UniFiUpdates:
         self.sensor_id = sensor_id
         self.versions = {}
         self.seen = set()
+        self.uptimes = {}
+        self.boot_times = {}
 
     def _observe(self, key, label, version):
         if not isinstance(version, str) or not re.fullmatch(r'[A-Za-z0-9._+\-]{1,64}', version):
@@ -4982,6 +4985,29 @@ class _UniFiUpdates:
         self.versions[key] = version
         if previous is not None and version != previous:
             return ['%s %s updated' % (FC_UNIFI_UPDATE, label)]
+        return []
+
+    def _uptime(self, key, label, value):
+        if isinstance(value, bool) or not _finite(value) or not 0 <= value <= 10*366*86400:
+            return []
+        now = time.monotonic()
+        previous = self.uptimes.get(key)
+        self.uptimes[key] = (value, now)
+        if previous is not None:
+            elapsed = max(0, now-previous[1])
+            if value+max(10, elapsed*0.001) < previous[0]+elapsed:
+                return ['%s %s restarted' % (FC_UNIFI_RESTART, label)]
+        return []
+
+    def _boot_time(self, key, label, value):
+        # Protect's upSince is a millisecond process-start timestamp. A
+        # reconnect/connectedSince change is not a device or application reboot.
+        if isinstance(value, bool) or not _finite(value) or not 0 < value < 1e15:
+            return []
+        previous = self.boot_times.get(key)
+        self.boot_times[key] = value
+        if previous is not None and value > previous+10000:
+            return ['%s %s restarted' % (FC_UNIFI_RESTART, label)]
         return []
 
     def check(self, since=None, until=None):
@@ -5001,23 +5027,25 @@ class _UniFiUpdates:
             hardware = data.get('hardware')
             if isinstance(hardware, dict):
                 messages += self._observe('os', 'UniFi OS', hardware.get('firmwareVersion'))
+            messages += self._uptime('os', 'UniFi OS', data.get('uptime'))
             if isinstance(data.get('mac'), str):
                 kinds[data['mac']] = 'UniFi OS'
         except Exception:
             pass
         try:
-            rows = self.client._get('/proxy/protect/api/bootstrap', retry=False).get('sensors')
+            bootstrap = self.client._get('/proxy/protect/api/bootstrap', retry=False)
+            nvr = bootstrap.get('nvr')
+            if isinstance(nvr, dict):
+                messages += self._boot_time('protect', 'UniFi Protect', nvr.get('upSince'))
+            rows = bootstrap.get('sensors')
             if isinstance(rows, list):
                 for row in rows:
                     if isinstance(row, dict) and row.get('id') == self.sensor_id:
                         messages += self._observe('sensor', 'Air Sensor', row.get('firmwareVersion'))
+                        if row.get('isConnected') is True:
+                            messages += self._uptime('sensor', 'Air Sensor', row.get('uptime'))
         except Exception:
             pass
-        if since is None or until is None:
-            return []  # Startup is a silent baseline, not an update event.
-        if (isinstance(since, bool) or isinstance(until, bool)
-                or not _finite(since) or not _finite(until) or until < since):
-            return []
         try:
             rows = self.client._get('/proxy/network/api/s/default/stat/device', retry=False).get('data')
             if isinstance(rows, list):
@@ -5026,6 +5054,17 @@ class _UniFiUpdates:
                         label = {'uap': 'UniFi AP', 'usw': 'UniFi switch', 'udm': 'UniFi OS'}.get(row.get('type'))
                         if label:
                             kinds[row['mac']] = label
+                            if (row.get('type') != 'udm' and type(row.get('state')) is int
+                                    and row['state'] == 1):
+                                messages += self._uptime(('device', row['mac']), label, row.get('uptime'))
+        except Exception:
+            pass
+        if since is None or until is None:
+            return []  # Startup is a silent baseline, not an event.
+        if (isinstance(since, bool) or isinstance(until, bool)
+                or not _finite(since) or not _finite(until) or until < since):
+            return []
+        try:
             # Exact timestamp range, limited pages, and update-category records
             # only. This POST is a read-only history query, never a command.
             low = max(since-120, until-86400)

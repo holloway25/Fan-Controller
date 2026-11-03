@@ -31,6 +31,17 @@ The worker uses its own session and bounded request worker outside control and
 actuation locks. Recovery requests coalesce; no extra request runs on the control
 thread. Update context sends no email, changes no UniFi settings, and never
 suppresses `FC-200`/`FC-201` errors, recoveries or safety protection.
+
+Restart context uses `FC-304` with the same short labels: for example,
+`UniFi AP restarted` or `Air Sensor restarted`. A silent startup snapshot also
+records device uptimes and Protect's process-start timestamp. Recovery compares
+live console, connected sensor and online AP/switch uptimes against elapsed
+monotonic time, allowing ten seconds of jitter and 0.1% clock drift. Protect's
+`upSince` must advance by more than ten seconds. These are UniFi-reported restart
+indicators, not evidence of the exact cause. Offline retained counters,
+`connectedSince`, ordinary reconnects and the host's wall-clock changes cannot
+by themselves identify a restart. Missing restart telemetry leaves the cause
+unknown. Restarts between checks can be missed without sufficient evidence.
 ### Temporary plug-request diagnostics
 
 For connection fault-finding, an operator can create a local ignored

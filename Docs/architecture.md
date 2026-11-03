@@ -14,7 +14,7 @@ UniFi Protect --HTTPS--> Fan Controller --HTTP--> Tasmota plug
 ```
 
 An independent read-only UniFi observer checks update evidence after communication
-recovers and records it as `FC-303`. Its separate session and bounded
+recovers and records it as `FC-303`; restart evidence uses `FC-304`. Its separate session and bounded
 worker never participate in fan decisions, safety enforcement or actuation locks.
 
 Flask serves the UI and API. A polling thread reads Protect and applies the

@@ -10,10 +10,13 @@ class Client:
     def __init__(self):
         self.apps = [{'name': 'protect', 'version': '7.3.74', 'updateProgress': 100,
                       'updateAvailable': '7.4.0'}]
-        self.system = {'mac': 'console', 'hardware': {'firmwareVersion': '6.0.16'}}
+        self.system = {'mac': 'console', 'hardware': {'firmwareVersion': '6.0.16'}, 'uptime': 50000}
+        self.nvr = {'upSince': 1793303069001}
         self.sensors = [{'id': 'air', 'firmwareVersion': '1.0.16',
-                         'previousFirmwareVersion': '1.0.12', 'isUpdating': False}]
-        self.devices = [{'mac': 'ap', 'type': 'uap'}, {'mac': 'switch', 'type': 'usw'}]
+                         'previousFirmwareVersion': '1.0.12', 'isUpdating': False,
+                         'uptime': 50000, 'isConnected': True}]
+        self.devices = [{'mac': 'ap', 'type': 'uap', 'state': 1, 'uptime': 50000},
+                        {'mac': 'switch', 'type': 'usw', 'state': 1, 'uptime': 50000}]
         self.rows = []
         self.calls = []
 
@@ -25,7 +28,7 @@ class Client:
         if path == '/api/system':
             return self.system
         if path.endswith('/bootstrap'):
-            return {'sensors': self.sensors}
+            return {'sensors': self.sensors, 'nvr': self.nvr}
         if path.endswith('/stat/device'):
             return {'data': self.devices}
         raise AssertionError(path)
@@ -45,7 +48,7 @@ def test_completed_progress_available_update_and_initial_versions_are_silent():
     client = Client()
     observer = C._UniFiUpdates(client, 'air')
     assert observer.check() == []
-    assert len(client.calls) == 3  # One startup baseline, no history/live AP polling.
+    assert len(client.calls) == 4  # One startup baseline, no history/live polling.
     assert observer.check(990, 1010) == []
     client.apps[0]['version'] = '7.4.0'
     assert observer.check(990, 1010) == ['FC-303 UniFi Protect updated']
@@ -63,6 +66,63 @@ def test_os_and_selected_air_sensor_versions_are_compared_after_recovery():
     client.sensors[0]['firmwareVersion'] = '1.0.17'
     assert observer.check(990, 1010) == ['FC-303 UniFi OS updated', 'FC-303 Air Sensor updated']
     assert observer.check(990, 1010) == []
+
+
+def test_all_five_restart_indicators_are_reported_once_without_an_update():
+    C = harness.load()
+    C.time.monotonic = lambda: 100
+    client = Client()
+    observer = C._UniFiUpdates(client, 'air')
+    assert observer.check() == []
+    C.time.monotonic = lambda: 200
+    client.system['uptime'] = 30
+    client.sensors[0]['uptime'] = 30
+    client.nvr['upSince'] += 100000
+    for row in client.devices:
+        row['uptime'] = 30
+    messages = observer.check(990, 1010)
+    assert set(messages) == {'FC-304 UniFi OS restarted', 'FC-304 Air Sensor restarted',
+        'FC-304 UniFi Protect restarted', 'FC-304 UniFi AP restarted', 'FC-304 UniFi switch restarted'}
+    assert observer.check(990, 1010) == []
+
+
+def test_reconnects_offline_uptime_clock_changes_and_jitter_are_not_restarts():
+    C = harness.load()
+    C.time.monotonic = lambda: 100
+    client = Client()
+    observer = C._UniFiUpdates(client, 'air')
+    observer.check()
+    C.time.monotonic = lambda: 110
+    C.time.time = lambda: 1  # Host wall-clock change is irrelevant to uptime.
+    client.system['uptime'] += 10
+    client.sensors[0].update(uptime=50010, connectedSince=999999)
+    for row in client.devices:
+        row['uptime'] += 10
+    assert observer.check(990, 1010) == []
+    C.time.monotonic = lambda: 500
+    client.system['uptime'] = 50400
+    client.sensors[0]['isConnected'] = False
+    for row in client.devices:
+        row['state'] = 0
+    assert observer.check(990, 1010) == []  # Retained OFFLINE counters are not live evidence.
+    C.time.monotonic = lambda: 510
+    client.system['uptime'] = 50410
+    client.sensors[0].update(isConnected=True, uptime=50409)
+    for row in client.devices:
+        row.update(state=1, uptime=50409)
+    assert observer.check(990, 1010) == []
+    assert observer._uptime('junk', 'UniFi AP', True) == []
+    assert observer._boot_time('junk', 'UniFi Protect', float('inf')) == []
+
+
+def test_restart_is_detected_even_when_new_uptime_exceeds_previous_sample():
+    C = harness.load()
+    observer = C._UniFiUpdates(Client(), 'air')
+    C.time.monotonic = lambda: 100
+    assert observer._uptime('ap', 'UniFi AP', 10) == []
+    C.time.monotonic = lambda: 400
+    assert observer._uptime('ap', 'UniFi AP', 20) == ['FC-304 UniFi AP restarted']
+    assert observer._uptime('ap', 'UniFi AP', 20) == []
 
 
 def test_history_is_time_bounded_classified_and_deduplicated():
