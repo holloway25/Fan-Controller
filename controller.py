@@ -4962,7 +4962,7 @@ class _UniFiUpdates:
         else:
             self.updating.discard(key)
         if previous is not None and version != previous:
-            return ['%s %s updated %s to %s' % (FC_UNIFI_UPDATE, label, previous, version)]
+            return ['%s %s updated' % (FC_UNIFI_UPDATE, label)]
         if updating and not was_updating:
             return ['%s %s update in progress' % (FC_UNIFI_UPDATE, label)]
         return []

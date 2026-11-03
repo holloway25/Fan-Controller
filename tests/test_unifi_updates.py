@@ -33,7 +33,7 @@ def test_completed_progress_available_update_and_initial_versions_are_silent():
     assert observer.poll() == []
     assert len(client.calls) == 6
     client.apps[0]['version'] = '7.4.0'
-    assert observer.poll() == ['FC-303 UniFi Protect updated 7.3.74 to 7.4.0']
+    assert observer.poll() == ['FC-303 UniFi Protect updated']
     assert observer.poll() == []
 
 
@@ -46,7 +46,7 @@ def test_explicit_update_state_is_reported_once_and_version_change_is_separate()
     assert observer.poll() == ['FC-303 UniFi Protect update in progress']
     assert observer.poll() == []
     client.apps[0].update(version='7.4.0', state='active')
-    assert observer.poll() == ['FC-303 UniFi Protect updated 7.3.74 to 7.4.0']
+    assert observer.poll() == ['FC-303 UniFi Protect updated']
 
 
 def test_only_associated_ap_and_actual_firmware_change_are_reported():
@@ -61,7 +61,7 @@ def test_only_associated_ap_and_actual_firmware_change_are_reported():
     client.devices[0]['state'] = 4
     assert observer.poll() == ['FC-303 UniFi AP update in progress']
     client.devices[0].update(version='8.9.0', state=1)
-    assert observer.poll() == ['FC-303 UniFi AP updated 8.8.13 to 8.9.0']
+    assert observer.poll() == ['FC-303 UniFi AP updated']
     assert observer.poll() == []
 
 
