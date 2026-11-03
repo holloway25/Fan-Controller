@@ -68,6 +68,24 @@ def test_os_and_selected_air_sensor_versions_are_compared_after_recovery():
     assert observer.check(990, 1010) == []
 
 
+def test_clock_rollback_preserves_version_and_restart_evidence_without_history():
+    C = harness.load()
+    C.time.monotonic = lambda: 100
+    client = Client()
+    observer = C._UniFiUpdates(client, 'air')
+    observer.check()
+    C.time.monotonic = lambda: 200
+    client.apps[0]['version'] = '7.4.0'
+    client.system['uptime'] += 100
+    client.sensors[0]['uptime'] += 100
+    for row in client.devices:
+        row['uptime'] += 100
+    client.devices[0]['uptime'] = 1
+    assert observer.check(1010, 990) == ['FC-303 UniFi Protect updated', 'FC-304 UniFi AP restarted']
+    assert not any(isinstance(call, tuple) and call[0] == 'history' for call in client.calls)
+    assert observer.check(990, 1010) == []  # Evidence already delivered, not silently lost.
+
+
 def test_all_five_restart_indicators_are_reported_once_without_an_update():
     C = harness.load()
     C.time.monotonic = lambda: 100

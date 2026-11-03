@@ -50,6 +50,16 @@ CASES = [
     ("FC-300 Fan off \u2014 changed outside (Manual)", "ok"),
     ("FC-300 Fan on \u2014 changed outside (Auto)", "m-manual"),
     ("FC-300 Fan on \u2014 changed outside (Force on)", "m-manual"),
+    ("FC-303 UniFi AP updated", ""),
+    ("FC-303 UniFi switch updated", ""),
+    ("FC-303 UniFi Protect updated", ""),
+    ("FC-303 Air Sensor updated", ""),
+    ("FC-303 UniFi OS updated", ""),
+    ("FC-304 UniFi AP restarted", ""),
+    ("FC-304 UniFi switch restarted", ""),
+    ("FC-304 UniFi Protect restarted", ""),
+    ("FC-304 Air Sensor restarted", ""),
+    ("FC-304 UniFi OS restarted", ""),
     # Except FC-301, which is this process starting cold. Routine on a
     # PoE board, so it must NOT take the colour the rest of 3xx takes.
     ("FC-301 Started cold \u2014 no latch, no minimum-run lease, "

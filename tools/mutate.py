@@ -64,6 +64,14 @@ MODULE_TIMEOUT_SECONDS = 120
 # by hand for the right FAILURE, not merely a failure: a mutation
 # caught by an unrelated crash is not evidence.
 MUTATIONS = [
+    ("unifi-clock-rollback-discards-evidence", "controller.py",
+     '# Version/uptime evidence is independent of the wall-clock window.\n            return list(dict.fromkeys(messages))',
+     '# Version/uptime evidence is independent of the wall-clock window.\n            return []',
+     "test_unifi_updates.py", "test_clock_rollback_preserves_version_and_restart_evidence_without_history"),
+    ("unifi-informational-events-coloured-red", "controller.py",
+     'return ""  # Network maintenance context, not a fault or Manual override.',
+     'return "m-manual"  # Network maintenance context, not a fault or Manual override.',
+     "test_log_classes.py", "test_every_line_gets_the_class_it_should"),
     ("unifi-restart-elapsed-time-ignored", "controller.py",
      'if value+max(10, elapsed*0.001) < previous[0]+elapsed:',
      'if value+max(10, elapsed*0.001) < previous[0]:',

@@ -31,6 +31,9 @@ The worker uses its own session and bounded request worker outside control and
 actuation locks. Recovery requests coalesce; no extra request runs on the control
 thread. Update context sends no email, changes no UniFi settings, and never
 suppresses `FC-200`/`FC-201` errors, recoveries or safety protection.
+`FC-303` and `FC-304` entries use the neutral activity colour. If a clock rollback
+invalidates the history window, only that query is skipped; independently
+observed version and uptime changes are still reported.
 
 Restart context uses `FC-304` with the same short labels: for example,
 `UniFi AP restarted` or `Air Sensor restarted`. A silent startup snapshot also

@@ -656,6 +656,8 @@ def event_class(msg):
     # The prefix comes off before the text rules run, so a coded line
     # and an uncoded one take the same branch.
     m = _CODE_PREFIX.sub("", raw)
+    if raw.startswith((FC_UNIFI_UPDATE + " ", FC_UNIFI_RESTART + " ")):
+        return ""  # Network maintenance context, not a fault or Manual override.
     if raw.startswith((FC_FAULT_PERSISTED + " ", FC_HARD_CLEARED + " ",
                        FC_RELAY_RECOVERED + " ")):
         return "notice"  # Persistence, acknowledgement or a still-latched fault.
@@ -5063,7 +5065,8 @@ class _UniFiUpdates:
             return []  # Startup is a silent baseline, not an event.
         if (isinstance(since, bool) or isinstance(until, bool)
                 or not _finite(since) or not _finite(until) or until < since):
-            return []
+            # Version/uptime evidence is independent of the wall-clock window.
+            return list(dict.fromkeys(messages))
         try:
             # Exact timestamp range, limited pages, and update-category records
             # only. This POST is a read-only history query, never a command.
