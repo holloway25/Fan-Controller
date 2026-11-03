@@ -64,6 +64,13 @@ MODULE_TIMEOUT_SECONDS = 120
 # by hand for the right FAILURE, not merely a failure: a mutation
 # caught by an unrelated crash is not evidence.
 MUTATIONS = [
+    ("unifi-update-initial-baseline-reported", "controller.py",
+     'if previous is not None and version != previous:',
+     'if version != previous:',
+     "test_unifi_updates.py", "test_completed_progress_available_update_and_initial_versions_are_silent"),
+    ("unifi-update-ap-association-ignored", "controller.py",
+     "and row.get('mac') == self.ap):", "and True):",
+     "test_unifi_updates.py", "test_only_associated_ap_and_actual_firmware_change_are_reported"),
     ("fixture-capture-environment-proxy-enabled", "tests/capture_plug_fixture.py",
      '            session.trust_env = False', '            session.trust_env = True',
      "test_capture_transport.py", "test_fixture_capture_bypasses_environment_proxies_and_refuses_redirects"),

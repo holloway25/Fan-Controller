@@ -13,6 +13,10 @@ UniFi Protect --HTTPS--> Fan Controller --HTTP--> Tasmota plug
                          | serve dashboard/API
 ```
 
+An independent read-only UniFi observer records confirmed application and plug-AP
+update states or version changes as `FC-303`. Its separate session and bounded
+worker never participate in fan decisions, safety enforcement or actuation locks.
+
 Flask serves the UI and API. A polling thread reads Protect and applies the
 control rules. A draw thread reads the plug more frequently, enforces faults,
 and reasserts Force on. A restart watcher handles `restart.request`.

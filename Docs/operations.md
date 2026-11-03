@@ -5,6 +5,27 @@ For software-only development against a fake Tasmota plug, see the
 
 ## Check the running service
 
+### UniFi update context
+
+A separate, read-only observer checks UniFi once per minute using the configured
+Protect account. View access to console applications and Network is needed for
+the corresponding observations. `FC-303` records explicit updating states and
+observed version changes for Protect, Network and the plug's associated AP.
+These informational entries accompany normal activity; they do not replace
+`FC-200`/`FC-201` errors or their recovery messages and do not prove an update
+caused an interruption. An available update, completed progress, AP reboot or
+failed request alone never counts as evidence of an update.
+
+The observer has its own session and bounded request worker, outside fan control
+and actuation locks. Missing permissions or unavailable/malformed replies are
+ignored. It sends no email, changes no UniFi settings, and never disables safety
+protection. Initial versions are a silent baseline; that baseline is reset on
+controller restart or a change of UniFi credentials, console or plug address.
+Updates completed before that baseline may therefore be missed. AP identification
+uses a literal plug IP and Network's `default` site; hostname/emulated plugs and
+other sites have application monitoring only. Console OS firmware history is
+not queried.
+
 ### Temporary plug-request diagnostics
 
 For connection fault-finding, an operator can create a local ignored
