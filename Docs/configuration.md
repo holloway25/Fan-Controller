@@ -194,7 +194,7 @@ alerts.
 | `FC-300` | Plug state changed outside this controller |
 | `FC-301` | The process started cold, carrying no latch and no lease |
 | `FC-302` | Already-ON relay given a bounded fault-free Auto cold-start hold |
-| `FC-303` | Observed UniFi application or plug access-point update; informational |
+| `FC-303` | UniFi update evidence found after communication recovers; informational |
 
 Fault persistence and restart notices distinguish a requested stop from a
 relay confirmed off at the last check. A standing fault alone does not prove

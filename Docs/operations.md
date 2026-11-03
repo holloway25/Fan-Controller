@@ -7,25 +7,30 @@ For software-only development against a fake Tasmota plug, see the
 
 ### UniFi update context
 
-A separate, read-only observer checks UniFi once per minute using the configured
-Protect account. View access to console applications and Network is needed for
-the corresponding observations. `FC-303` records explicit updating states and
-observed version changes for Protect, Network and the plug's associated AP.
-These informational entries accompany normal activity; they do not replace
-`FC-200`/`FC-201` errors or their recovery messages and do not prove an update
-caused an interruption. An available update, completed progress, AP reboot or
-failed request alone never counts as evidence of an update.
+After an FC-200 draw-loop or poll error recovers, an independent read-only worker
+checks UniFi for update evidence. It does not poll update status continuously.
+A silent startup baseline records installed Protect, Network, console OS and
+selected Air Sensor firmware versions. After recovery, changes from that baseline
+or the previous check produce short `FC-303` entries without version numbers.
+The worker also queries Network's software-update history near the interruption
+for confirmed AP, switch, console OS and application updates. The existing account
+needs view access to the corresponding console, Network and Protect information.
 
-The observer has its own session and bounded request worker, outside fan control
-and actuation locks. Missing permissions or unavailable/malformed replies are
-ignored. It sends no email, changes no UniFi settings, and never disables safety
-protection. Initial versions are a silent baseline; that baseline is reset on
-controller restart or a change of UniFi credentials, console or plug address.
-Updates completed before that baseline may therefore be missed. AP identification
-uses a literal plug IP and Network's `default` site; hostname/emulated plugs and
-other sites have application monitoring only. Console OS firmware history is
-not queried.
+These are informational context, not proof an update caused the interruption.
+Version comparisons establish a change since the previous check, not its exact
+time. Network history checks cover the outage with a two-minute margin, up to the
+most recent day and three pages of 100 update records on the `default` site.
+Network-device context is site-wide; it does not assert which device was on the
+fan's connection path. A reboot, reconnect, available update, completed progress
+or an old Air Sensor `previousFirmwareVersion` alone never counts as an update.
+A new controller or account/sensor configuration starts a new version baseline;
+missing permissions, unavailable history or unchanged versions leave the cause
+unknown. There is no backfill of old activity or raw UniFi event messages.
 
+The worker uses its own session and bounded request worker outside control and
+actuation locks. Recovery requests coalesce; no extra request runs on the control
+thread. Update context sends no email, changes no UniFi settings, and never
+suppresses `FC-200`/`FC-201` errors, recoveries or safety protection.
 ### Temporary plug-request diagnostics
 
 For connection fault-finding, an operator can create a local ignored

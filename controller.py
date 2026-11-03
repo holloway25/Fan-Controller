@@ -3788,7 +3788,7 @@ FC_FAILSAFE_FAILED = "FC-207"
 # says the DISPLAY failed, never the controller: the fan is unaffected
 # and the reader should not go looking for a fault that is not there.
 FC_RENDER_EMPTY = "FC-208"
-FC_UNIFI_UPDATE = "FC-303"      # Observed UniFi application or plug-AP update.
+FC_UNIFI_UPDATE = "FC-303"      # Update evidence found after communications recover.
 
 
 def _duration(seconds):
@@ -4833,6 +4833,7 @@ def watts_loop():
     so a sensor outage cannot hide an already-running fan.
     """
     last_issue = None
+    issue_since = None
     relay_issue = None
     while not _stopping.is_set():
         try:
@@ -4922,13 +4923,38 @@ def watts_loop():
             STATE["draw_loop_error"] = issue
         if issue != last_issue:
             if issue:
+                if last_issue is None:
+                    issue_since = time.time()
                 _log("%s Draw loop error - %s" % (FC_POLL_ERROR, issue))
             elif last_issue:
                 _log("%s Draw loop recovered" % FC_POLL_ERROR)
+                _queue_unifi_recovery(issue_since)
+                issue_since = None
             last_issue = issue
         time.sleep(WATTS_SECONDS)
 
 class _UniFiUpdateClient(Protect):
+    def update_history(self, since, until, page=0):
+        def read():
+            with self._lock:
+                if self._s is None:
+                    self._login_direct()
+                headers = {'Accept': 'application/json'}
+                if self._csrf:
+                    headers['X-CSRF-Token'] = self._csrf
+                response = self._s.post(
+                    self.base+'/proxy/network/v2/api/site/default/system-log/all',
+                    headers=headers, timeout=15, allow_redirects=False,
+                    json={'timestampFrom': int(since*1000), 'timestampTo': int(until*1000),
+                          'categories': ['SOFTWARE_UPDATES'], 'pageNumber': page, 'pageSize': 100})
+            if response.status_code != 200:
+                raise ProtectError('Update history unavailable')
+            data = response.json()
+            if not isinstance(data, dict):
+                raise ProtectError('Invalid update history')
+            return data
+        return self._request(read)
+
     def _login_direct(self):
         super()._login_direct()
         session = self._s
@@ -4941,97 +4967,160 @@ class _UniFiUpdateClient(Protect):
 
 
 class _UniFiUpdates:
-    """Best-effort observations, never an input to fan control or faults."""
+    """Read a baseline once, then check update evidence only after recovery."""
 
-    def __init__(self, client, plug_host):
-        self.client = client  # Independent session and bounded request worker.
-        self.plug_host = plug_host
+    def __init__(self, client, sensor_id):
+        self.client = client
+        self.sensor_id = sensor_id
         self.versions = {}
-        self.updating = set()
-        self.ap = None
+        self.seen = set()
 
-    def _observe(self, key, label, version, updating=False):
-        # Only fixed labels and bounded version tokens reach the activity log.
+    def _observe(self, key, label, version):
         if not isinstance(version, str) or not re.fullmatch(r'[A-Za-z0-9._+\-]{1,64}', version):
             return []
         previous = self.versions.get(key)
         self.versions[key] = version
-        was_updating = key in self.updating
-        if updating:
-            self.updating.add(key)
-        else:
-            self.updating.discard(key)
         if previous is not None and version != previous:
             return ['%s %s updated' % (FC_UNIFI_UPDATE, label)]
-        if updating and not was_updating:
-            return ['%s %s update in progress' % (FC_UNIFI_UPDATE, label)]
         return []
 
-    def poll(self):
+    def check(self, since=None, until=None):
         messages = []
+        kinds = {}
         try:
             rows = self.client._get('/api/apps', retry=False).get('controllers')
             if isinstance(rows, list):
                 for row in rows:
-                    if not isinstance(row, dict) or row.get('name') not in ('protect', 'network'):
-                        continue
-                    name = row['name']
-                    messages += self._observe(
-                        ('app', name), 'UniFi '+name.capitalize(), row.get('version'),
-                        row.get('state') in ('updating', 'upgrading')
-                        or row.get('status') in ('updating', 'upgrading'))
-        except Exception:
-            pass  # Permissions and console outages are not control errors.
-        try:
-            # Retain the last associated AP during an outage. Neither its uptime
-            # nor a lost connection is evidence of a firmware update.
-            ipaddress.ip_address(self.plug_host)
-            clients = self.client._get('/proxy/network/api/s/default/stat/sta', retry=False).get('data')
-            if isinstance(clients, list):
-                for row in clients:
-                    if (isinstance(row, dict) and row.get('ip') == self.plug_host
-                            and isinstance(row.get('ap_mac'), str)):
-                        self.ap = row['ap_mac']
-                        break
-            if self.ap is not None:
-                devices = self.client._get('/proxy/network/api/s/default/stat/device', retry=False).get('data')
-                if isinstance(devices, list):
-                    for row in devices:
-                        if (isinstance(row, dict) and row.get('type') == 'uap'
-                                and row.get('mac') == self.ap):
-                            messages += self._observe(
-                                ('ap', self.ap), 'UniFi AP', row.get('version'),
-                                row.get('state') == 4)  # UniFi upgrading state.
+                    if isinstance(row, dict) and row.get('name') in ('protect', 'network'):
+                        name = row['name']
+                        messages += self._observe(('app', name), 'UniFi '+name.capitalize(), row.get('version'))
         except Exception:
             pass
-        return messages
+        try:
+            data = self.client._get('/api/system', retry=False)
+            hardware = data.get('hardware')
+            if isinstance(hardware, dict):
+                messages += self._observe('os', 'UniFi OS', hardware.get('firmwareVersion'))
+            if isinstance(data.get('mac'), str):
+                kinds[data['mac']] = 'UniFi OS'
+        except Exception:
+            pass
+        try:
+            rows = self.client._get('/proxy/protect/api/bootstrap', retry=False).get('sensors')
+            if isinstance(rows, list):
+                for row in rows:
+                    if isinstance(row, dict) and row.get('id') == self.sensor_id:
+                        messages += self._observe('sensor', 'Air Sensor', row.get('firmwareVersion'))
+        except Exception:
+            pass
+        if since is None or until is None:
+            return []  # Startup is a silent baseline, not an update event.
+        if (isinstance(since, bool) or isinstance(until, bool)
+                or not _finite(since) or not _finite(until) or until < since):
+            return []
+        try:
+            rows = self.client._get('/proxy/network/api/s/default/stat/device', retry=False).get('data')
+            if isinstance(rows, list):
+                for row in rows:
+                    if isinstance(row, dict) and isinstance(row.get('mac'), str):
+                        label = {'uap': 'UniFi AP', 'usw': 'UniFi switch', 'udm': 'UniFi OS'}.get(row.get('type'))
+                        if label:
+                            kinds[row['mac']] = label
+            # Exact timestamp range, limited pages, and update-category records
+            # only. This POST is a read-only history query, never a command.
+            low = max(since-120, until-86400)
+            for page in range(3):
+                data = self.client.update_history(low, until+120, page)
+                rows = data.get('data')
+                if not isinstance(rows, list):
+                    break
+                for row in rows:
+                    if not isinstance(row, dict) or row.get('category') != 'SOFTWARE_UPDATES':
+                        continue
+                    stamp = row.get('timestamp')
+                    if (isinstance(stamp, bool) or not _finite(stamp)
+                            or not low*1000 <= stamp <= (until+120)*1000):
+                        continue
+                    parameters = row.get('parameters')
+                    if not isinstance(parameters, dict):
+                        continue
+                    device = parameters.get('DEVICE', {})
+                    if not isinstance(device, dict):
+                        continue
+                    device_id = device.get('id', '')
+                    if not isinstance(device_id, str) or len(device_id) > 128:
+                        continue
+                    event = row.get('event')
+                    label = {'NETWORK_UPDATED': 'UniFi Network', 'PROTECT_UPDATED': 'UniFi Protect'}.get(event) if isinstance(event, str) else None
+                    if event == 'FIRMWARE_UPDATED':
+                        label = kinds.get(device_id)
+                    if label is None:
+                        continue
+                    signature = (float(stamp), device_id, event)
+                    if signature not in self.seen:
+                        self.seen.add(signature)
+                        messages.append('%s %s updated' % (FC_UNIFI_UPDATE, label))
+                pages = data.get('total_page_count', 1)
+                if not isinstance(pages, int) or page+1 >= pages:
+                    break
+            self.seen = set(sorted(self.seen)[-300:])
+        except Exception:
+            pass  # Missing permissions/history never alters control or errors.
+        return list(dict.fromkeys(messages))
+
+
+_unifi_update_event = threading.Event()
+_unifi_update_lock = threading.Lock()
+_unifi_update_pending = None
+
+
+def _unifi_identity():
+    with _cfg_lock:
+        p = CFG['protect']
+        return (p['host'], p['username'], p['password'], p['verify_tls'], p['sensor_id'])
+
+
+def _queue_unifi_recovery(since):
+    global _unifi_update_pending
+    identity = _unifi_identity()
+    until = time.time()
+    if since is None:
+        since = until
+    with _unifi_update_lock:
+        previous = _unifi_update_pending
+        if previous is not None and previous[0] == identity:
+            since = min(since, previous[1])
+        _unifi_update_pending = (identity, since, until)
+        _unifi_update_event.set()
 
 
 def unifi_updates_loop():
-    observer = None
+    global _unifi_update_pending
     identity = None
+    observer = None
+    initial = True
     while not _stopping.is_set():
+        if not initial and not _unifi_update_event.wait(1):
+            continue  # No UniFi requests while idle.
+        initial = False
+        with _unifi_update_lock:
+            pending = _unifi_update_pending
+            _unifi_update_pending = None
+            _unifi_update_event.clear()
         try:
-            with _cfg_lock:
-                p = dict(CFG['protect'])
-                plug_host = CFG['plug']['host']
-            current = (p['host'], p['username'], p['password'], p['verify_tls'], plug_host)
+            current = _unifi_identity()
+            if pending is not None and pending[0] != current:
+                continue
             if current != identity:
                 identity = current
-                observer = _UniFiUpdates(_UniFiUpdateClient(*current[:3], verify=current[3]), plug_host)
-            messages = observer.poll()
+                observer = _UniFiUpdates(_UniFiUpdateClient(*current[:3], verify=current[3]), current[4])
+            messages = observer.check(*(pending[1:] if pending is not None else ()))
             with _cfg_lock:
-                live = CFG['protect']
-                if (not _stopping.is_set() and current == (
-                        live['host'], live['username'], live['password'],
-                        live['verify_tls'], CFG['plug']['host'])):
+                if not _stopping.is_set() and current == _unifi_identity():
                     for message in messages:
                         _log(message)
         except Exception:
-            pass  # Optional monitoring cannot stop the control loops.
-        if _stopping.wait(60):
-            return
-
+            pass  # Optional context cannot stop or delay control loops.
 
 def _wait_for_dns(timeout=30, interval=3):
     """Wait for the Protect host to resolve, up to `timeout` seconds.
@@ -5192,6 +5281,7 @@ def loop():
     fails = 0
     last_logged = None
     last_code = None
+    outage_since = None
     while not _stopping.is_set():
         try:
             # Inside the try: a bad value here used to kill the thread.
@@ -5207,6 +5297,8 @@ def loop():
                 # can split alarms from clears, and nothing here is
                 # mailed.
                 _log("%s Poll recovered" % (last_code or FC_POLL_ERROR))
+                _queue_unifi_recovery(outage_since)
+                outage_since = None
             fails = 0
             last_logged = None
             last_code = None
@@ -5214,11 +5306,15 @@ def loop():
             # Logged as well as shown: making login() raise ProtectError
             # moved the restart-time DNS failure into this branch, so
             # logging only the generic one below would hide it again.
+            if last_logged is None:
+                outage_since = time.time()
             fails += 1
             last_code = (FC_PLUG_DOWN if isinstance(e, PlugError)
                          else FC_SENSOR_DOWN)
             last_logged = _fail(_redact(e), last_logged, last_code)
         except Exception as e:  # keep the loop alive on anything unexpected
+            if last_logged is None:
+                outage_since = time.time()
             fails += 1
             last_code = FC_POLL_ERROR
             last_logged = _fail(
