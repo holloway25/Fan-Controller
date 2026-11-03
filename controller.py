@@ -1800,9 +1800,9 @@ def _open_plug_diagnostics():
         os.fchmod(fd, 0o600)
         os.close(fd)
         logger = logging.Logger('fan-plug-diagnostics')
-        logger.addHandler(RotatingFileHandler(path, maxBytes=1048576,
-                                             backupCount=3))
-        return logger, min(until, time.time()+7*24*3600)
+        logger.addHandler(RotatingFileHandler(path, maxBytes=30*1024*1024,
+                                             backupCount=9))
+        return logger, min(until, time.time()+30*24*3600)
     except Exception:
         # Diagnostics must never block startup or change fan protection.
         return None, 0
