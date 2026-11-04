@@ -11,13 +11,14 @@ class Client:
         self.apps = [{'name': 'protect', 'version': '7.3.74', 'updateProgress': 100,
                       'updateAvailable': '7.4.0'}]
         self.system = {'mac': 'console', 'hardware': {'firmwareVersion': '6.0.16'}, 'uptime': 50000}
-        self.nvr = {'upSince': 1793303069001}
+        self.nvr = {'upSince': 800000}
         self.sensors = [{'id': 'air', 'firmwareVersion': '1.0.16',
                          'previousFirmwareVersion': '1.0.12', 'isUpdating': False,
                          'uptime': 50000, 'isConnected': True}]
         self.devices = [{'mac': 'ap', 'type': 'uap', 'state': 1, 'uptime': 50000},
                         {'mac': 'switch', 'type': 'usw', 'state': 1, 'uptime': 50000}]
         self.rows = []
+        self.protect_rows = []
         self.calls = []
 
     def _get(self, path, retry=True):
@@ -37,39 +38,60 @@ class Client:
         self.calls.append(('history', since, until, page))
         return {'data': self.rows, 'total_page_count': 1}
 
+    def protect_history(self, since, until, page=0):
+        self.calls.append(('protect-history', since, until, page))
+        return self.protect_rows
+
 
 def event(device, stamp=1000000, name='FIRMWARE_UPDATED'):
     return {'category': 'SOFTWARE_UPDATES', 'event': name, 'timestamp': stamp,
             'parameters': {'DEVICE': {'id': device}}}
 
 
+def protect_event(kind, end=1000000, sensor='air'):
+    metadata = {'toVersion': {'text': '1.0.17'}}
+    if kind == 'update':
+        metadata.update(deviceModelKey='sensor', deviceId={'text': sensor})
+    return {'type': kind, 'start': end-10000, 'end': end, 'metadata': metadata,
+            'description': {'eventMetadata': {'title': 'Protect Updated'}}}
+
+
 def test_completed_progress_available_update_and_initial_versions_are_silent():
     C = harness.load()
+    C.time.time = lambda: 1010
     client = Client()
     observer = C._UniFiUpdates(client, 'air')
     assert observer.check() == []
     assert len(client.calls) == 4  # One startup baseline, no history/live polling.
     assert observer.check(990, 1010) == []
     client.apps[0]['version'] = '7.4.0'
+    assert observer.check(990, 1010) == []  # An undated version change is not current context.
+    client.protect_rows = [protect_event('applicationUpdate')]
     assert observer.check(990, 1010) == ['FC-303 UniFi Protect updated']
     assert observer.check(990, 1010) == []
+    client.protect_rows = []
     assert C._UniFiUpdates(client, 'air').check(990, 1010) == []
+    assert C._UniFiUpdates(client, 'air').check(1010, 990) == []
 
 
 def test_os_and_selected_air_sensor_versions_are_compared_after_recovery():
     C = harness.load()
+    C.time.time = lambda: 1010
     client = Client()
     observer = C._UniFiUpdates(client, 'air')
     observer.check()
     client.system['hardware']['firmwareVersion'] = '6.0.17'
     client.sensors.append({'id': 'other', 'firmwareVersion': '9.0'})
     client.sensors[0]['firmwareVersion'] = '1.0.17'
+    assert observer.check(990, 1010) == []
+    client.protect_rows = [protect_event('fwUpdate'), protect_event('update')]
     assert observer.check(990, 1010) == ['FC-303 UniFi OS updated', 'FC-303 Air Sensor updated']
     assert observer.check(990, 1010) == []
 
 
 def test_clock_rollback_preserves_version_and_restart_evidence_without_history():
     C = harness.load()
+    C.time.time = lambda: 1010
     C.time.monotonic = lambda: 100
     client = Client()
     observer = C._UniFiUpdates(client, 'air')
@@ -88,6 +110,7 @@ def test_clock_rollback_preserves_version_and_restart_evidence_without_history()
 
 def test_all_five_restart_indicators_are_reported_once_without_an_update():
     C = harness.load()
+    C.time.time = lambda: 1010
     C.time.monotonic = lambda: 100
     client = Client()
     observer = C._UniFiUpdates(client, 'air')
@@ -106,6 +129,7 @@ def test_all_five_restart_indicators_are_reported_once_without_an_update():
 
 def test_reconnects_offline_uptime_clock_changes_and_jitter_are_not_restarts():
     C = harness.load()
+    C.time.time = lambda: 1010
     C.time.monotonic = lambda: 100
     client = Client()
     observer = C._UniFiUpdates(client, 'air')
@@ -135,6 +159,7 @@ def test_reconnects_offline_uptime_clock_changes_and_jitter_are_not_restarts():
 
 def test_restart_is_detected_even_when_new_uptime_exceeds_previous_sample():
     C = harness.load()
+    C.time.time = lambda: 1010
     observer = C._UniFiUpdates(Client(), 'air')
     C.time.monotonic = lambda: 100
     assert observer._uptime('ap', 'UniFi AP', 10) == []
@@ -145,6 +170,7 @@ def test_restart_is_detected_even_when_new_uptime_exceeds_previous_sample():
 
 def test_history_is_time_bounded_classified_and_deduplicated():
     C = harness.load()
+    C.time.time = lambda: 1010
     client = Client()
     observer = C._UniFiUpdates(client, 'air')
     observer.check()
@@ -158,8 +184,64 @@ def test_history_is_time_bounded_classified_and_deduplicated():
     assert observer.check(990, 1010) == []
 
 
+def test_ap_recovery_does_not_replay_delayed_os_and_protect_evidence():
+    C = harness.load()
+    clock = {'wall': 10000, 'mono': 100}
+    C.time.time = lambda: clock['wall']
+    C.time.monotonic = lambda: clock['mono']
+    client = Client()
+    client.system['uptime'] = 500
+    client.nvr['upSince'] = 9500000
+    observer = C._UniFiUpdates(client, 'air')
+    observer.check()
+    # At first recovery, retained snapshots still describe the previous boot.
+    clock.update(wall=11000, mono=1100)
+    client.system['uptime'] = 1500
+    client.sensors[0]['uptime'] += 1000
+    for row in client.devices:
+        row['uptime'] += 1000
+    client.rows = [event('console', stamp=10980000)]
+    assert observer.check(10900, 11000) == ['FC-303 UniFi OS updated']
+    # Much later, the new OS/Protect boot finally appears in the snapshots,
+    # alongside a real AP restart/update during this second interruption.
+    clock.update(wall=20000, mono=10100)
+    client.system.update(uptime=9050, hardware={'firmwareVersion': '6.0.17'})
+    client.nvr['upSince'] = 10950000
+    client.apps[0]['version'] = '7.4.0'
+    client.sensors[0]['uptime'] += 9000
+    client.devices[0]['uptime'] = 20
+    client.devices[1]['uptime'] += 9000
+    client.rows.append(event('ap', stamp=19995000))
+    client.protect_rows = [protect_event('fwUpdate', end=10980000),
+                           protect_event('applicationUpdate', end=10980000)]
+    assert observer.check(19900, 20000) == ['FC-304 UniFi AP restarted', 'FC-303 UniFi AP updated']
+    assert observer.check(19900, 20000) == []
+
+
+def test_protect_history_requires_completed_selected_device_updates():
+    C = harness.load()
+    C.time.time = lambda: 1010
+    client = Client()
+    observer = C._UniFiUpdates(client, 'air')
+    observer.check()
+    pending = protect_event('update')
+    pending['end'] = None
+    bad_time = protect_event('applicationUpdate')
+    bad_time['end'] = True
+    unrelated = protect_event('update')
+    unrelated['metadata']['deviceModelKey'] = 'camera'
+    client.protect_rows = [protect_event('update', sensor='other'), pending, bad_time,
+                           unrelated, protect_event('applicationUpdate', end=1),
+                           protect_event('fwUpdate', end=2000000)]
+    assert observer.check(990, 1010) == []
+    client.protect_rows.append(protect_event('update'))
+    assert observer.check(990, 1010) == ['FC-303 Air Sensor updated']
+    assert observer.check(990, 1010) == []
+
+
 def test_permission_failures_malformed_records_and_rollback_do_not_affect_control():
     C = harness.load()
+    C.time.time = lambda: 1010
     client = Client()
     observer = C._UniFiUpdates(client, 'air')
     observer.check()
@@ -179,6 +261,7 @@ def test_permission_failures_malformed_records_and_rollback_do_not_affect_contro
 
 def test_observer_waits_for_recovery_without_live_requests():
     C = harness.load()
+    C.time.time = lambda: 1010
     checks = []
     C._UniFiUpdateClient = lambda *a, **kw: object()
     class Observer:
@@ -200,6 +283,7 @@ def test_observer_waits_for_recovery_without_live_requests():
 def test_recoveries_coalesce_and_obsolete_config_is_discarded():
     C = harness.load()
     C.time.time = lambda: 1010
+    C.time.time = lambda: 1010
     C._queue_unifi_recovery(995)
     C._queue_unifi_recovery(990)
     assert C._unifi_update_pending[1:] == (990, 1010)
@@ -215,6 +299,7 @@ def test_recoveries_coalesce_and_obsolete_config_is_discarded():
 
 def test_recovery_check_logs_current_results_outside_control_locks():
     C = harness.load()
+    C.time.time = lambda: 1010
     C._queue_unifi_recovery(990)
     C._UniFiUpdateClient = lambda *a, **kw: object()
     logs = []
@@ -247,6 +332,7 @@ def test_recovery_check_logs_current_results_outside_control_locks():
 
 def test_history_transport_is_bounded_and_only_queries_update_records():
     C = harness.load()
+    C.time.time = lambda: 1010
     calls = []
     class Session:
         def post(self, url, **kw):
@@ -264,8 +350,27 @@ def test_history_transport_is_bounded_and_only_queries_update_records():
     assert options['timeout'] == 15 and options['allow_redirects'] is False
 
 
+def test_protect_history_transport_is_filtered_paginated_and_bounded():
+    C = harness.load()
+    calls = []
+    class Session:
+        def get(self, url, **kw):
+            calls.append((url, kw))
+            return SimpleNamespace(status_code=200, json=lambda: [])
+    client = C._UniFiUpdateClient('console.example', 'reader', '')
+    client._s = Session()
+    assert client.protect_history(10000, 11000, 1) == []
+    url, options = calls[0]
+    assert url.endswith('/proxy/protect/api/events')
+    assert options['params'] == {'start': 6400000, 'end': 11000000,
+        'types[]': ['applicationUpdate', 'fwUpdate', 'update'],
+        'orderDirection': 'desc', 'limit': 100, 'offset': 100}
+    assert options['timeout'] == 15 and options['allow_redirects'] is False
+
+
 def test_update_session_recovers_from_expiry_without_reauthenticating_permission_denials():
     C = harness.load()
+    C.time.time = lambda: 1010
     session = SimpleNamespace(hooks={'response': []})
     C.Protect._login_direct = lambda self: setattr(self, '_s', session)
     client = C._UniFiUpdateClient('console.example', 'reader', '')
@@ -283,6 +388,7 @@ def test_update_session_recovers_from_expiry_without_reauthenticating_permission
 
 def test_real_poll_and_meter_recovery_queue_context_without_fetching_it():
     C = harness.load()
+    C.time.time = lambda: 1010
     C._wait_for_dns = lambda: True
     C._failsafe = lambda: None
     ticks = []
@@ -303,6 +409,7 @@ def test_real_poll_and_meter_recovery_queue_context_without_fetching_it():
     assert any(e['msg'] == 'FC-201 Poll recovered' for e in C.STATE['events'])
 
     C = harness.load()
+    C.time.time = lambda: 1010
     C.CFG['control']['mode'] = 'auto'
     reads = []
     def power():

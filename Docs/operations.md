@@ -10,16 +10,18 @@ For software-only development against a fake Tasmota plug, see the
 After an FC-200 draw-loop or poll error recovers, an independent read-only worker
 checks UniFi for update evidence. It does not poll update status continuously.
 A silent startup baseline records installed Protect, Network, console OS and
-selected Air Sensor firmware versions. After recovery, changes from that baseline
-or the previous check produce short `FC-303` entries without version numbers.
-The worker also queries Network's software-update history near the interruption
-for confirmed AP, switch, console OS and application updates. The existing account
+selected Air Sensor firmware versions. After recovery, completed and dated update
+records produce short `FC-303` entries without version numbers. The worker queries
+Network software-update history and Protect update events near the interruption
+for AP, switch, console OS, application and selected Air Sensor updates. A version
+change alone cannot date an update to the current interruption. The existing account
 needs view access to the corresponding console, Network and Protect information.
 
 These are informational context, not proof an update caused the interruption.
-Version comparisons establish a change since the previous check, not its exact
-time. Network history checks cover the outage with a two-minute margin, up to the
-most recent day and three pages of 100 update records on the `default` site.
+History checks cover the outage with a two-minute margin, up to the
+most recent day and three pages of 100 update records per source. Network uses the
+`default` site. Protect requests an extra hour of start times to include updates
+that began before the outage, while locally requiring completion in the window.
 Network-device context is site-wide; it does not assert which device was on the
 fan's connection path. A reboot, reconnect, available update, completed progress
 or an old Air Sensor `previousFirmwareVersion` alone never counts as an update.
@@ -32,19 +34,22 @@ actuation locks. Recovery requests coalesce; no extra request runs on the contro
 thread. Update context sends no email, changes no UniFi settings, and never
 suppresses `FC-200`/`FC-201` errors, recoveries or safety protection.
 `FC-303` and `FC-304` entries use the neutral activity colour. If a clock rollback
-invalidates the history window, only that query is skipped; independently
-observed version and uptime changes are still reported.
+invalidates the history window, history queries are skipped; independently
+observed version and uptime changes are still reported, with uncertain timing.
 
 Restart context uses `FC-304` with the same short labels: for example,
 `UniFi AP restarted` or `Air Sensor restarted`. A silent startup snapshot also
 records device uptimes and Protect's process-start timestamp. Recovery compares
 live console, connected sensor and online AP/switch uptimes against elapsed
 monotonic time, allowing ten seconds of jitter and 0.1% clock drift. Protect's
-`upSince` must advance by more than ten seconds. These are UniFi-reported restart
+`upSince` must advance by more than ten seconds. With a valid history window, the
+boot time (reported directly or estimated from live uptime) must also fall near
+this interruption; delayed observations of older boots are ignored. These are UniFi-reported restart
 indicators, not evidence of the exact cause. Offline retained counters,
 `connectedSince`, ordinary reconnects and the host's wall-clock changes cannot
 by themselves identify a restart. Missing restart telemetry leaves the cause
 unknown. Restarts between checks can be missed without sufficient evidence.
+
 ### Temporary plug-request diagnostics
 
 For connection fault-finding, an operator can create a local ignored
