@@ -65,6 +65,8 @@ def load(plug_access_disabled=False):
     _TMPDIRS.append(tmp)
     shutil.copy(os.path.join(SRC, "controller.py"),
                 os.path.join(tmp, "controller.py"))
+    shutil.copy(os.path.join(SRC, "unifi_reporting.py"),
+                os.path.join(tmp, "unifi_reporting.py"))
     shutil.copy(os.path.join(SRC, "config.example.json"),
                 os.path.join(tmp, "config.json"))
     if plug_access_disabled:
@@ -81,7 +83,23 @@ def load(plug_access_disabled=False):
         name, os.path.join(tmp, "controller.py"))
     mod = importlib.util.module_from_spec(spec)
     sys.modules[name] = mod
-    spec.loader.exec_module(mod)
+    # Load the sibling from this fixture, including when mutation tests change
+    # it. Each controller gets an isolated reporting module and runtime binding.
+    reporting_name = name + "_reporting"
+    reporting_spec = importlib.util.spec_from_file_location(
+        reporting_name, os.path.join(tmp, "unifi_reporting.py"))
+    reporting = importlib.util.module_from_spec(reporting_spec)
+    sys.modules[reporting_name] = reporting
+    reporting_spec.loader.exec_module(reporting)
+    previous = sys.modules.get("unifi_reporting")
+    sys.modules["unifi_reporting"] = reporting
+    try:
+        spec.loader.exec_module(mod)
+    finally:
+        if previous is None:
+            sys.modules.pop("unifi_reporting", None)
+        else:
+            sys.modules["unifi_reporting"] = previous
     _LOADED.append(mod)
     assert mod.DIR == tmp, "tests must not run against the live install"
     _stub_dir_fsync(mod)

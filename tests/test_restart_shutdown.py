@@ -18,6 +18,7 @@ import harness
 CHILD = r'''
 import importlib.util, json, os, pathlib, sys, threading, time
 root = pathlib.Path(sys.argv[1])
+sys.path.insert(0, str(root))
 spec = importlib.util.spec_from_file_location('fan', root/'controller.py')
 C = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(C)
@@ -74,6 +75,7 @@ def exercise(kind):
     with tempfile.TemporaryDirectory(prefix='fan-restart-shutdown-') as folder:
         root = Path(folder)
         shutil.copy2(Path(harness.SRC)/'controller.py', root/'controller.py')
+        shutil.copy2(Path(harness.SRC)/'unifi_reporting.py', root/'unifi_reporting.py')
         env = dict(os.environ, FAN_CONTROLLER_DATA_DIR=str(root),
                    FAN_CONTROLLER_PERSIST_STATE='1', FAN_CONTROLLER_DISABLE_PLUG='1')
         with (root/'process.log').open('w+') as log:

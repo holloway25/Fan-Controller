@@ -17,9 +17,10 @@ import harness
 
 
 CHILD = r'''
-import importlib.util,json,os,socket,threading
+import importlib.util,json,os,socket,sys,threading
 from pathlib import Path
 root=Path(os.environ['FAN_CONTROLLER_DATA_DIR'])
+sys.path.insert(0, str(root))
 spec=importlib.util.spec_from_file_location('fan',root/'controller.py')
 C=importlib.util.module_from_spec(spec)
 spec.loader.exec_module(C)
@@ -76,6 +77,7 @@ def test_multi_address_startup_preserving_restart_and_busy_shutdown():
     with tempfile.TemporaryDirectory(prefix='fan-wsgi-multi-') as folder:
         root = Path(folder)
         shutil.copy2(Path(harness.SRC)/'controller.py', root/'controller.py')
+        shutil.copy2(Path(harness.SRC)/'unifi_reporting.py', root/'unifi_reporting.py')
         script = root/'run.py'
         script.write_text(CHILD)
         env = dict(os.environ, FAN_CONTROLLER_DATA_DIR=str(root),

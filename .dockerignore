@@ -4,6 +4,7 @@
 !Dockerfile
 !requirements.txt
 !controller.py
+!unifi_reporting.py
 !config.example.json
 !LICENSE
 !templates/

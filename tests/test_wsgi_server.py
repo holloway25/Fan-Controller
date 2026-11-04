@@ -132,9 +132,10 @@ def test_bind_failure_cleans_up_without_starting_controller_loops():
 
 
 CHILD = r'''
-import importlib.util,json,os,threading
+import importlib.util,json,os,sys,threading
 from pathlib import Path
 root=Path(os.environ['FAN_CONTROLLER_DATA_DIR'])
+sys.path.insert(0, str(root))
 spec=importlib.util.spec_from_file_location('isolated_controller',root/'controller.py')
 C=importlib.util.module_from_spec(spec)
 spec.loader.exec_module(C)
