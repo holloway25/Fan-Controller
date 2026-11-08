@@ -2,6 +2,40 @@ const assert = require("assert");
 const H = require("./harness.cjs");
 
 module.exports = {
+  async test_state_poll_discards_an_old_response_and_aborts_on_deadline() {
+    const { window, document } = await H.open();
+    const pending = [];
+    const original = window.fetch;
+    window.fetch = (url, opts) => url === "/api/state"
+      ? new Promise(resolve => pending.push({ signal: opts.signal, resolve }))
+      : original(url, opts);
+    const older = window.tickUI();
+    const newer = window.tickUI();
+    assert(pending[0].signal.aborted);
+    const reply = state => ({ ok: true, json: async () => state });
+    pending[1].resolve(reply(H.baseState({ fault: { msg: "New fault", stopped: false } })));
+    await newer;
+    assert(document.body.textContent.includes("New fault"));
+    pending[0].resolve(reply(H.baseState({ fan: true })));
+    await older;
+    assert(document.body.textContent.includes("New fault"));
+
+    const setTimeout = window.setTimeout;
+    let expire;
+    window.setTimeout = (callback, delay) => {
+      if (delay === 4500) expire = callback;
+      return setTimeout(callback, delay);
+    };
+    const slow = window.tickUI();
+    assert(expire, "state request has no deadline");
+    expire();
+    assert(pending[2].signal.aborted);
+    assert.equal(document.getElementById("dot").className, "dot bad");
+    pending[2].resolve(reply(H.baseState({ fan: true })));
+    await slow;
+    assert(document.body.textContent.includes("New fault"));
+  },
+
   async test_dangerous_actions_require_confirmation() {
     const writes = [];
     const { window, document } = await H.open({

@@ -105,9 +105,13 @@ unhealthy but running container.
 ## Data and stop/start recovery
 
 Keep the whole `/data` directory. It includes `config.json` (credentials),
-`fault.json`, `manual-off.pending`, history, events, daily summaries, optional
+`fault.json`, `manual-off.pending`, `safety-running.pending`, history, events, daily summaries, optional
 diagnostics and the one-use `resume.json` clean-stop checkpoint. Do not mount
 only individual JSON files: durable writers replace files atomically.
+
+A backup taken while the controller is running can contain the armed safety
+marker. On restore, startup retains any saved fault or raises FC-206 if no
+fault was saved. Check the fan before acknowledging it.
 
 A normal stop forwards SIGTERM to Python and saves latches, leases, elapsed
 safety timers and retry spacing before exiting. It does not command the fan

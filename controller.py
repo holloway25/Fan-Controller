@@ -383,6 +383,7 @@ _last_flush = None
 # reading resets the clock rather than accumulating toward a fault.
 
 FAULT_PATH = os.path.join(DATA_DIR, "fault.json")
+SAFETY_GUARD_PATH = os.path.join(DATA_DIR, "safety-running.pending")
 RESTART_PATH = os.path.join(DATA_DIR, "restart.request")
 def _restart_identity(st):
     return (st.st_dev, st.st_ino, st.st_mtime_ns, st.st_ctime_ns, st.st_size)
@@ -433,6 +434,42 @@ def load_fault():
                     "could not be read (%s)" % why),
             "code": "FC-206", "stopped": False,
             "attempted_at": None, "delivered_at": None}
+
+
+def _arm_safety_guard(handover):
+    """Persist the crash fallback before allowing any controller actuation."""
+    if os.path.lexists(SAFETY_GUARD_PATH):
+        if not handover and STATE["fault"] is None:
+            _store_fault({
+                "at": time.time(), "code": "FC-206", "stopped": False,
+                "msg": "FC-206 Unclean shutdown - check the fan before clearing",
+                "attempted_at": None, "delivered_at": None,
+            })
+        return
+    write_json_durable(SAFETY_GUARD_PATH, {"v": 1})
+
+
+def _disarm_safety_guard():
+    # A busy actuation or fault transaction may still be latching a fault.
+    if not _act_lock.acquire(blocking=False):
+        return
+    try:
+        if not _fault_lock.acquire(blocking=False):
+            return
+        try:
+            with _state_lock:
+                if STATE["fault_unsaved"]:
+                    return
+            os.unlink(SAFETY_GUARD_PATH)
+            _fsync_dir(DATA_DIR)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            print("Could not clear the shutdown safety marker:", exc, file=sys.stderr)
+        finally:
+            _fault_lock.release()
+    finally:
+        _act_lock.release()
 
 
 def _valid_fault_timestamp(value):
@@ -983,8 +1020,12 @@ def reset_daily():
 def save_daily(force=False, report_error=True):
     # Serialize snapshot capture AND replacement, while allowing new samples
     # to accumulate under the independent data lock during disk I/O.
-    with _daily_write_lock:
+    if not _daily_write_lock.acquire(blocking=not _stopping.is_set()):
+        return False
+    try:
         return _save_daily_locked(force, report_error)
+    finally:
+        _daily_write_lock.release()
 
 
 def _save_daily_locked(force=False, report_error=True):
@@ -1031,7 +1072,9 @@ def maybe_save_hist(hist, force=False):
     participate in an ordering problem with _act_lock or _state_lock.
     """
     global _last_flush
-    with _hist_write_lock:
+    if not _hist_write_lock.acquire(blocking=not _stopping.is_set()):
+        return False
+    try:
         now = time.monotonic()
         if not force and _last_flush is not None and now - _last_flush < HIST_FLUSH_SECONDS:
             return False
@@ -1040,6 +1083,8 @@ def maybe_save_hist(hist, force=False):
         # into a full rewrite of 20,000 points.
         _last_flush = now
         return ok
+    finally:
+        _hist_write_lock.release()
 
 
 def _persist_fault_on_exit():
@@ -1080,8 +1125,8 @@ def _persist_fault_on_exit():
     if not _fault_lock.acquire(timeout=2):
         if act_locked:
             _act_lock.release()
-        print("Could not take the fault lock on the way out; an unsaved "
-              "fault may be lost. Check the draw before running the fan.",
+        print("Could not take the fault lock on the way out; fault details "
+              "may be missing on restart. Check the draw before running the fan.",
               file=sys.stderr, flush=True)
         return False
     try:
@@ -1108,9 +1153,8 @@ def _persist_fault_locked(cleanup=True):
     try:
         save_fault(fault)
     except OSError as e:
-        print("SHUTDOWN WITH AN UNSAVED FAULT - it is being lost (%s). "
-              "The fan will NOT be held off on the next start; check the "
-              "draw before running it." % e, file=sys.stderr, flush=True)
+        print("SHUTDOWN WITH AN UNSAVED FAULT - could not save fault details (%s). "
+              "Check the draw before running the fan." % e, file=sys.stderr, flush=True)
         return False
     with _state_lock:
         STATE["fault_unsaved"] = False
@@ -1130,6 +1174,7 @@ def flush_hist(signum=None, frame=None):
         # Before the history write, which can be 20,000 points against a
         # stop deadline. The fault matters more than the graph.
         _persist_fault_on_exit()
+        _disarm_safety_guard()
     with _state_lock:
         snapshot = list(STATE["history"])
     ok = maybe_save_hist(snapshot, force=True)
@@ -1909,7 +1954,7 @@ class Tasmota:
                             reason=type(e).__name__,
                             elapsed=time.monotonic()-started)
         elapsed = time.monotonic()-started
-        if r.status_code >= 400:
+        if not 200 <= r.status_code < 300:
             raise PlugError("Plug returned HTTP %d" % r.status_code,
                             reason="HTTP %d" % r.status_code, elapsed=elapsed)
         if not r.content:
@@ -2218,7 +2263,39 @@ def _flush_events():
 
 def _log(msg, absorb=None, merged=None):
     if _append_event(msg, absorb, merged):
+        _schedule_events_flush()
+
+
+_activity_wake = None
+_history_wake = None
+
+
+def _schedule_events_flush():
+    if _activity_wake is None:
         _flush_events()
+    else:
+        _activity_wake.set()
+
+
+def _activity_writer():
+    while True:
+        _activity_wake.wait()
+        _activity_wake.clear()
+        _flush_events()
+
+
+def _persist_history_sample(snapshot):
+    if maybe_save_hist(snapshot):
+        save_daily()
+
+
+def _history_writer():
+    while True:
+        _history_wake.wait()
+        _history_wake.clear()
+        with _state_lock:
+            snapshot = list(STATE["history"])
+        _persist_history_sample(snapshot)
 
 
 _CLIENTS = {"key": None, "protect": None, "plug": None}
@@ -2805,7 +2882,7 @@ def tick():
             _daily_pending = (co2, vals.get('temperature'),
                               vals.get('humidity'))
             STATE["history_rev"] += 1
-            hsnap = list(STATE["history"])
+            hsnap = list(STATE["history"]) if _history_wake is None else None
             ext_msg = _adopt_relay_locked(actual, now)
     # Recovery is an edge too, and only announced if the stale alert
     # actually went out - so a blip that never alerted stays silent both
@@ -2855,8 +2932,10 @@ def tick():
     # be a file rewrite every 30 seconds on an SD card to save data
     # that is regenerated from the next reading anyway. maybe_save_hist
     # returns true only when it actually wrote.
-    if maybe_save_hist(hsnap):
-        save_daily()
+    if _history_wake is None:
+        _persist_history_sample(hsnap)
+    else:
+        _history_wake.set()
     if ext_msg:
         _log(ext_msg)
     if PLUG_ACCESS_DISABLED or c["mode"] == "manual":
@@ -4422,6 +4501,8 @@ def _enforce_stop(plug, gen=None, verify_only=False):
     with _state_lock:
         relay_fault = (STATE["fault"] or {}).get("code") in _RELAY_FAULT_CODES
     if relay_fault:
+        if verify_only:
+            return False
         return _relay_release_step(plug, gen)
     with _act_lock:
         if _stale_client(gen):
@@ -4453,6 +4534,9 @@ def _enforce_stop(plug, gen=None, verify_only=False):
                 return False
         try:
             actual = plug.state()
+        except PlugError:
+            actual = None
+        try:
             _record_relay_observation(actual)
             if actual is not False:
                 if verify_only:
@@ -5020,7 +5104,7 @@ def unifi_updates_loop():
                         if _append_event(message):
                             write_events = True
             if write_events:
-                _flush_events()
+                _schedule_events_flush()
         except Exception:
             pass  # Optional context cannot stop or delay control loops.
 
@@ -6798,10 +6882,17 @@ def _run_controller():
 
 
 def _start_controller(server, channels):
-    global _restart_dispatch
-    # Before any thread starts, so the first decide() sees the lease and
+    global _restart_dispatch, _activity_wake, _history_wake
+    _activity_wake = threading.Event()
+    _history_wake = threading.Event()
+    threading.Thread(target=_activity_writer, daemon=True, name='fan-activity').start()
+    threading.Thread(target=_history_writer, daemon=True, name='fan-history').start()
+    # Before control threads start, so the first decide() sees the lease and
     # the latches the previous process was holding.
-    resumed = _apply_resume() or _load_stop_state()
+    handover = _apply_resume()
+    resumed = handover or _load_stop_state()
+    if not PLUG_ACCESS_DISABLED:
+        _arm_safety_guard(handover)
     # Immediately after, and before anything else can log: this line is
     # what explains every line that appears below it.
     _announce_start(resumed)

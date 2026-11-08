@@ -100,6 +100,26 @@ def test_a_json_reply_must_be_an_object():
 
 # ---------------------------------------------------------------- relay
 
+def test_redirect_body_cannot_acknowledge_off():
+    class Reply:
+        status_code = 302
+        content = b'{"POWER":"OFF"}'
+
+        def json(self):
+            return {"POWER": "OFF"}
+
+    real = C._plug_http_get
+    try:
+        C._plug_http_get = lambda *args, **kwargs: Reply()
+        try:
+            C.Tasmota("192.0.2.1").set(False)
+        except C.PlugError as exc:
+            assert "302" in str(exc)
+        else:
+            assert False, "redirect was accepted as a relay acknowledgement"
+    finally:
+        C._plug_http_get = real
+
 def test_the_plain_power_key_is_read():
     assert C.Tasmota._power({"POWER": "ON"}) is True
     assert C.Tasmota._power({"POWER": "OFF"}) is False

@@ -1206,12 +1206,24 @@ function canary(s){
   }catch(e){/* a canary that throws must not break the page */}
 }
 
+let statePoll=null;
 async function tickUI(){
-  try{const r=await fetch("/api/state"); const s=await r.json();
+  if(statePoll)statePoll.abort();
+  const poll=new AbortController();
+  statePoll=poll;
+  const timeout=setTimeout(()=>{
+    poll.abort();
+    if(statePoll===poll)$("dot").className="dot bad";
+  },4500);
+  try{const r=await fetch("/api/state",{signal:poll.signal});
+      if(!r.ok)throw new Error("State request failed");
+      const s=await r.json();
+      if(statePoll!==poll||poll.signal.aborted)return;
       render(s);
       if(!hydrated&&CFG){hydrated=true; hydrate()}
       canary(s);}
-  catch(e){$("dot").className="dot bad"}
+  catch(e){if(statePoll===poll)$("dot").className="dot bad"}
+  finally{clearTimeout(timeout); if(statePoll===poll)statePoll=null;}
 }
 tickUI();
 setInterval(tickUI,5000);

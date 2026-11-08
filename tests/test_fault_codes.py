@@ -11,8 +11,10 @@ feature was rewritten on 2026-08-16 and that whole suite passed
 unchanged. That is the gap this file closes.
 """
 import os
+import subprocess
 import sys
 import threading
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import harness
@@ -501,6 +503,138 @@ def test_first_off_precedes_fault_and_activity_writes():
             worker.join(5)
         assert not worker.is_alive()
         assert C.load_fault()["code"] == C.FC_OVER_POWER
+
+
+def test_crash_after_off_before_fault_save_blocks_auto_on_restart():
+    C = harness.load()
+    env = dict(os.environ, FAN_CONTROLLER_DATA_DIR=C.DIR)
+    child = """
+import os
+import sys
+import controller as C
+sys.path.insert(0, 'tests')
+from test_fault_codes import _fault_with
+
+class Plug:
+    on = True
+    def state(self):
+        return self.on
+    def set(self, on):
+        assert on is False
+        self.on = on
+        assert not os.path.exists(C.FAULT_PATH)
+        with open(os.path.join(C.DATA_DIR, 'off-accepted'), 'w'):
+            pass
+        import threading
+        threading.Event().wait()
+
+C._arm_safety_guard(False)
+_fault_with(C, Plug(), watts=40)
+"""
+    crashed = subprocess.Popen([sys.executable, "-c", child], cwd=harness.SRC,
+                               env=env)
+    try:
+        deadline = time.monotonic() + 5
+        accepted = os.path.join(C.DIR, "off-accepted")
+        while not os.path.exists(accepted) and crashed.poll() is None:
+            assert time.monotonic() < deadline, "OFF was not accepted"
+            time.sleep(0.01)
+        assert os.path.exists(accepted) and crashed.poll() is None
+    finally:
+        if crashed.poll() is None:
+            crashed.kill()
+        crashed.wait(timeout=5)
+    assert not os.path.exists(C.FAULT_PATH)
+    restart = """
+import controller as C
+C._arm_safety_guard(False)
+assert C.load_fault()['code'] == 'FC-206'
+C.CFG['protect']['sensor_id'] = 'test'
+C.CFG['control'].update(mode='auto', on_at=1000, off_at=800)
+class Protect:
+    def readings(self, sid):
+        return {'co2': 1500, 'temperature': 21, 'humidity': 50}, 'test'
+class Plug:
+    def state(self):
+        return False
+    def set(self, on):
+        assert on is False
+C._client_snapshot = lambda: (Protect(), Plug(), C._cfg_generation)
+C.tick()
+assert C.STATE['fault']['code'] == 'FC-206'
+"""
+    subprocess.run([sys.executable, "-c", restart], cwd=harness.SRC,
+                   env=env, timeout=10, check=True)
+
+
+def test_failed_status_read_does_not_prevent_standing_fault_off():
+    C = harness.load()
+    C.CFG["plug"]["watts_enabled"] = False
+    C._store_fault({"at": C.time.time(), "code": C.FC_OVER_POWER, "msg": "test",
+                    "stopped": False, "attempted_at": None, "delivered_at": None})
+    calls = []
+
+    class Plug:
+        def state(self):
+            raise C.PlugError("status reply lost")
+
+        def set(self, on):
+            calls.append(on)
+
+    plug = Plug()
+    assert not C._enforce_stop(plug, verify_only=True)
+    assert calls == []
+    assert C._enforce_stop(plug)
+    assert calls == [False]
+
+
+def test_stalled_history_and_activity_writes_do_not_delay_auto():
+    from test_actuation import Plug
+
+    C = harness.load()
+    C.CFG["protect"]["sensor_id"] = "test"
+    C.CFG["control"].update(mode="auto", on_at=1000, off_at=800)
+    plug = Plug(on=False)
+
+    class Protect:
+        def readings(self, sid):
+            return {"co2": 1500, "temperature": 21, "humidity": 50}, "test"
+
+    C._client_snapshot = lambda: (Protect(), plug, C._cfg_generation)
+    history_entered, activity_entered = threading.Event(), threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+
+    def stall(entered, save):
+        def write(value):
+            entered.set()
+            assert release.wait(5)
+            return save(value)
+        return write
+
+    C.save_hist = stall(history_entered, C.save_hist)
+    C.save_events = stall(activity_entered, C.save_events)
+    C._activity_wake = threading.Event()
+    C._history_wake = threading.Event()
+    threading.Thread(target=C._activity_writer, daemon=True).start()
+    threading.Thread(target=C._history_writer, daemon=True).start()
+    C._log("Activity write in progress")
+    assert activity_entered.wait(2)
+
+    def poll():
+        C.tick()
+        finished.set()
+
+    thread = threading.Thread(target=poll)
+    thread.start()
+    try:
+        assert history_entered.wait(2)
+        assert finished.wait(2)
+        assert plug.calls == [True]
+        assert any("Fan on" in e["msg"] for e in C.STATE["events"])
+    finally:
+        release.set()
+        thread.join(5)
 
 
 def test_an_unconfirmed_stop_is_not_reported_as_a_stop():

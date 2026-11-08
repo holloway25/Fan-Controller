@@ -188,7 +188,7 @@ alerts.
 | `FC-203` | Alert delivery failure |
 | `FC-204` | Persistent write failure |
 | `FC-205` | Restart refusal or degraded restart |
-| `FC-206` | Startup, DNS, or unreadable persisted-fault condition |
+| `FC-206` | Startup, DNS, unreadable fault state, or unclean shutdown |
 | `FC-207` | Stale-reading fail-safe failed to ventilate |
 | `FC-208` | Dashboard rendered no data despite server data |
 | `FC-300` | Plug state changed outside this controller |

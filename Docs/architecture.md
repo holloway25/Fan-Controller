@@ -221,7 +221,15 @@ to the journal.
 | `events.json` | Activity log, up to 1000 entries | Atomic |
 | `fault.json` | Latched safety fault | Durable |
 | `manual-off.pending` | Manual stop promised but not confirmed | Durable |
+| `safety-running.pending` | Crash fallback armed before actuation | Durable |
 | `resume.json` | Opt-in clean-stop checkpoint for latches and timing | Durable; validated and consumed once |
+
+The safety marker is written before control starts and removed after an orderly
+stop can verify that no fault write remains outstanding. A preserving restart
+carries the marker across the handover. After an unclean exit, including a power
+cut, the next start keeps any saved fault or latches FC-206 if none was saved.
+Check the fan before acknowledging that fault. This lets the first safety OFF
+proceed even when saving its fault details stalls.
 
 These files are local runtime data and are excluded from Git.
 
