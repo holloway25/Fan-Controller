@@ -20,7 +20,7 @@ from urllib3.connectionpool import HTTPConnectionPool
 from urllib3.exceptions import ConnectTimeoutError, NameResolutionError, NewConnectionError
 from urllib3.util.connection import allowed_gai_family
 from datetime import date
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from functools import partial
 from unifi_reporting import UniFiObserver, make_client_type
 from urllib.parse import urlsplit
@@ -2049,7 +2049,7 @@ class Tasmota:
             if isinstance(raw, bool):
                 return None
             watts = float(raw)
-            return watts if math.isfinite(watts) else None
+            return watts if math.isfinite(watts) and watts >= 0 else None
         except (KeyError, TypeError, ValueError, OverflowError):
             return None
 
@@ -5980,7 +5980,7 @@ def api_config():
                             error="A safety fault is active. Confirm Force on to override it.",
                             fault_override_required=True,
                             fault_override_token=token), 409
-                return _api_config_locked(act_locked=True)
+                return _api_config_locked(act_locked=True, fault_locked=True)
         return _api_config_locked()
 
 
@@ -5994,7 +5994,7 @@ def _fault_override_token(fault):
     return hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
 
 
-def _api_config_locked(act_locked=False):
+def _api_config_locked(act_locked=False, fault_locked=False):
     """The body of api_config, with _cfg_lock already held.
 
     Validates against a copy so a rejected save cannot alter live
@@ -6096,6 +6096,9 @@ def _api_config_locked(act_locked=False):
     # The recursive entry above already holds _act_lock through validation,
     # durable marker creation, persistence and commit. Keep state locks inside it.
     was = CFG["control"].get("mode")
+    plug_changed = cand["plug"]["host"] != CFG["plug"]["host"]
+    sensor_changed = any(cand["protect"][key] != CFG["protect"][key]
+                         for key in ("host", "sensor_id"))
     recovery_changed = any(cand[key] != CFG[key]
                            for key in ("plug", "protect", "control"))
     draw_changed = (cand["plug"] != CFG["plug"] or
@@ -6114,14 +6117,27 @@ def _api_config_locked(act_locked=False):
         # Unrelated saves must not renew a developing draw fault's timer.
         _oob_generation = _cfg_generation
     now_mode = CFG["control"].get("mode")
+    if plug_changed:
+        with (nullcontext() if fault_locked else _fault_lock), _state_lock:
+            STATE.update(fan=None, watts=None, watts_at=None, changed_at=None)
+            STATE["relay_revision"] += 1
+            _end_run_locked()
+            for key in ("watts_at", "changed_at", "min_run_at"):
+                _elapsed_clocks.pop(key, None)
+            fault = STATE["fault"]
+            if fault and fault.get("stopped"):
+                # The fault stays latched, but its old OFF confirmation
+                # belongs to the previous plug.
+                fault.update(stopped=False)
+                STATE["fault_unsaved"] = True
     if recovery_changed:
         with _state_lock:
             STATE["cold_start_pending"] = False
             STATE["cold_start_hold_until"] = None
-    if now_mode == "manual" and was != "manual":
-        # Manual owes one confirmed stop, then hands control to the plug.
+    if sensor_changed or entering_manual:
         with _state_lock:
-            STATE["manual_off_pending"] = True
+            if entering_manual:
+                STATE["manual_off_pending"] = True
             for key in STATE["latch"]:
                 STATE["latch"][key] = False
     if was == "on" and now_mode != "on":

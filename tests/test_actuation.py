@@ -855,6 +855,66 @@ def test_manual_round_trip_does_not_restart_from_an_old_auto_latch():
     assert plug.calls == [True, False] and not C.STATE["latch"]["co2"]
 
 
+def test_sensor_replacement_drops_demand_but_unrelated_saves_keep_it():
+    C = harness.load()
+    setup(C, mode="auto")
+    C.CFG["control"].update(on_at=1000, off_at=800, co2_enabled=True)
+    C.CFG["protect"]["sensor_id"] = "original"
+    plug = Plug()
+    co2 = 1500
+    C._client_snapshot = lambda: (_Protect(co2=co2, temp=20), plug, C._cfg_generation)
+    client = C.app.test_client()
+    C.tick()
+    assert plug.calls == [True] and C.STATE["latch"]["co2"]
+    assert client.post("/api/config", json={"email": {"enabled": False}}).status_code == 200
+    assert C.STATE["latch"]["co2"]
+
+    co2 = 900
+    plug.on = False
+    plug.calls.clear()
+    assert client.post("/api/config", json={"protect": {"sensor_id": "replacement"}}).status_code == 200
+    C.tick()
+    assert plug.calls == [] and not C.STATE["latch"]["co2"]
+
+
+def test_replacement_plug_discards_old_draw_and_keeps_standing_fault():
+    C = harness.load()
+    setup(C, mode="auto", fan=True)
+    C.CFG["plug"].update(host="original.invalid", watts_enabled=True,
+                         watts_min=19, watts_max=27)
+    C.STATE["changed_at"] = C.time.time() - 100
+    C._stamp_elapsed_locked("watts_at")
+    C.STATE["watts"] = 50
+    client = C.app.test_client()
+    assert client.post("/api/config", json={"plug": {"host": "replacement.invalid"}}).status_code == 200
+    assert C.STATE["watts"] is None and C.STATE["watts_at"] is None
+    assert C.STATE["fan"] is None and C.STATE["changed_at"] is None
+    assert "watts_at" not in C._elapsed_clocks
+    plug = Plug(on=True)
+    C._draw_check(plug, C._cfg_generation)
+    assert plug.calls == [] and C.STATE["fault"] is None
+
+    fault = {"at": C.time.time(), "msg": "draw fault", "code": C.FC_OVER_POWER,
+             "stopped": True}
+    C._store_fault(fault)
+    assert client.post("/api/config", json={"plug": {"host": "third.invalid"}}).status_code == 200
+    assert C.STATE["fault"]["at"] == fault["at"]
+    assert C.STATE["fault"]["code"] == C.FC_OVER_POWER
+    assert not C.STATE["fault"]["stopped"]
+
+
+def test_negative_tasmota_watts_cannot_confirm_fault_stop():
+    C = harness.load()
+    setup(C, mode="auto", fault=True)
+    C.CFG["plug"]["watts_enabled"] = True
+    plug = C.Tasmota("plug.invalid")
+    plug._cmd = lambda command: (
+        {"StatusSNS": {"ENERGY": {"Power": -23}}} if command == "Status 8"
+        else {"POWER": "OFF"})
+    assert not C._enforce_stop(plug, verify_only=True)
+    assert not C.STATE["fault"]["stopped"]
+
+
 def test_contradictory_relay_fields_do_not_discharge_manual_off():
     C = harness.load()
     setup(C, mode="manual")

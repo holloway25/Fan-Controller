@@ -666,7 +666,7 @@ MUTATIONS = [
      '    # A fault that outlived the restart.', "test_restart.py",
      "test_resumed_manual_reconciles_durable_stop_promise"),
     ("review-plug-nonfinite-accepted", "controller.py",
-     '            return watts if math.isfinite(watts) else None',
+     '            return watts if math.isfinite(watts) and watts >= 0 else None',
      '            return watts', "test_plug_parse.py",
      "test_nonfinite_power_is_missing_not_invalid_json"),
     ("review-email-recipient-snapshot-lost", "controller.py",
