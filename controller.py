@@ -151,6 +151,8 @@ def validate_config_relationships(cfg):
     pg = cfg["plug"]
     if pg["watts_min"] >= pg["watts_max"]:
         raise ValueError("Expected draw low must be below high.")
+    if pg["watts_enabled"] and pg["watts_off_max"] >= pg["watts_min"]:
+        raise ValueError("The OFF draw limit must be below the minimum running draw.")
 
 
 def _coerce(name, spec, v):
@@ -725,11 +727,30 @@ EVENTS_PATH = os.path.join(DATA_DIR, "events.json")
 # is not a concern on an SD card.
 EVENTS_MAX = 1000     # kept on disk
 EVENTS_SHOWN = 30     # returned to the UI each poll
+BROWSER_EVENTS_MAX = 8
+
+
+def _retain_events(events):
+    """Browser diagnostics have their own budget, including restored logs."""
+    kept = []
+    control_count = browser_count = 0
+    for event in events:
+        if _CODE_PREFIX.sub("", event["msg"]).startswith("UI error: "):
+            if browser_count >= BROWSER_EVENTS_MAX:
+                continue
+            browser_count += 1
+        else:
+            if control_count >= EVENTS_MAX:
+                continue
+            control_count += 1
+        kept.append(event)
+    return kept
 
 
 def load_events():
     try:
-        e = json.load(open(EVENTS_PATH))
+        with open(EVENTS_PATH) as stream:
+            e = json.load(stream)
     except (ValueError, OSError):
         return []
     if not isinstance(e, list):
@@ -737,9 +758,9 @@ def load_events():
     # Disk/restored data is not trusted: one Infinity anywhere in an event
     # would make /api/state invalid JSON in browsers. Message types must also
     # be safe for classification, and only the supported fields are retained.
-    return [{"at": x["at"], "msg": x["msg"]} for x in e
+    return _retain_events({"at": x["at"], "msg": x["msg"]} for x in e
             if isinstance(x, dict) and _valid_fault_timestamp(x.get("at"))
-            and isinstance(x.get("msg"), str)][:EVENTS_MAX]
+            and isinstance(x.get("msg"), str))
 
 
 def save_events(events):
@@ -795,7 +816,8 @@ def _usable_point(point, cutoff):
 
 def load_hist():
     try:
-        h = json.load(open(HIST_PATH))
+        with open(HIST_PATH) as stream:
+            h = json.load(stream)
     except (ValueError, OSError):
         return []
     return prune_hist(h) if isinstance(h, list) else []
@@ -888,7 +910,8 @@ def _clean_row(x):
 
 def load_daily():
     try:
-        d = json.load(open(DAILY_PATH))
+        with open(DAILY_PATH) as stream:
+            d = json.load(stream)
     except (ValueError, OSError):
         return []
     if not isinstance(d, list):
@@ -1335,7 +1358,7 @@ class Protect:
             r = s.post(self.base + "/api/auth/login",
                        json=dict(username=self.username,
                                  password=self.password,
-                                 rememberMe=True), timeout=15)
+                                 rememberMe=True), timeout=15, allow_redirects=False)
         except requests.exceptions.SSLError as e:
             raise ProtectError(
                 "TLS verification failed for %s. The certificate must cover "
@@ -1361,7 +1384,7 @@ class Protect:
             raise ProtectError("UniFi rejected those credentials (HTTP %d). "
                                "Use a local user, not a UI Cloud login."
                                % r.status_code)
-        if r.status_code >= 400:
+        if r.status_code >= 300:
             # Was raise_for_status(). Its HTTPError is not a
             # ProtectError, so the poll loop caught it in the catch-all
             # and filed a Protect outage as FC-200 unclassified - and
@@ -1385,7 +1408,8 @@ class Protect:
             if self._csrf:
                 h["X-CSRF-Token"] = self._csrf
             try:
-                r = self._s.get(self.base + path, headers=h, timeout=20)
+                r = self._s.get(self.base + path, headers=h, timeout=20,
+                                allow_redirects=False)
             except requests.exceptions.SSLError as e:
                 self._s = None
                 # Truncated like login()'s. An OpenSSL failure prints a
@@ -1403,7 +1427,7 @@ class Protect:
         if r.status_code in (401, 403) and retry:
             self._s = None
             return self._get_direct(path, retry=False)
-        if r.status_code >= 400:
+        if r.status_code >= 300:
             raise ProtectError("Protect returned HTTP %d for %s"
                                % (r.status_code, path))
         try:
@@ -1452,9 +1476,9 @@ class Protect:
             # payload. They must not refresh the stale-reading safety timer.
             raise ProtectError("Selected sensor is disconnected")
         air = s.get("airQuality")
-        if air is not None and not isinstance(air, dict):
+        if "airQuality" in s and not isinstance(air, dict):
             raise ProtectError("Protect returned invalid airQuality data")
-        src = air or s
+        src = air if "airQuality" in s else s
         # A missing CO2 field is not fatal here. CO2 can be disabled,
         # leaving temperature or humidity driving the fan, so refusing
         # the whole payload would stop those working too. tick() decides
@@ -1932,19 +1956,20 @@ class Tasmota:
         rather than short-circuiting, so a reply carrying a junk POWER
         and a good POWER1 is still readable.
         """
+        states = set()
         for k in ("POWER", "POWER1"):
             if k not in data:
                 continue
             v = data[k]
             if isinstance(v, bool):
-                return v
+                states.add(v)
             if isinstance(v, str):
                 v = v.strip().upper()
                 if v == "ON":
-                    return True
+                    states.add(True)
                 if v == "OFF":
-                    return False
-        return None
+                    states.add(False)
+        return states.pop() if len(states) == 1 else None
 
     def state(self):
         """True or False. Raises if the plug reports no power field, so an
@@ -2161,48 +2186,39 @@ def _redact(text):
 ABSORB_SECONDS = 300
 
 
+def _append_event(msg, absorb=None, merged=None):
+    """Append in memory and elect one writer for this and pending events."""
+    with _state_lock:
+        top = STATE["events"][0] if STATE["events"] else None
+        if (absorb and top and top.get("msg") == absorb
+                and time.time() - top.get("at", 0) <= ABSORB_SECONDS):
+            top["msg"] = merged or msg
+        else:
+            STATE["events"].insert(0, {"at": time.time(), "msg": msg})
+        STATE["events"][:] = _retain_events(STATE["events"])
+        return _events_lock.acquire(blocking=False)
+
+
+def _flush_events():
+    """The elected writer drains changes appended during its disk write."""
+    try:
+        while True:
+            with _state_lock:
+                snapshot = [dict(event) for event in STATE["events"]]
+            save_events(snapshot)
+            with _state_lock:
+                if snapshot == STATE["events"]:
+                    # Release while holding the same lock used by appends.
+                    _events_lock.release()
+                    return
+    except BaseException:
+        _events_lock.release()
+        raise
+
+
 def _log(msg, absorb=None, merged=None):
-    """Append an event and persist it. Safe from any thread.
-
-    ABSORB FOLDS THE LINE ABOVE. A mode change and the actuation it
-    causes are logged by different code paths a poll apart, so the
-    journal read as pairs saying the same thing twice:
-
-        Mode: Force on
-        Fan on - forced on
-
-    If the NEWEST event is exactly `absorb` and recent, it is replaced
-    by `merged` rather than a second line being added. Conditions kept
-    deliberately tight: exact string, newest position only, one
-    replacement. Anything logged in between means the two are no longer
-    adjacent and both stand - which is the honest outcome, because
-    something happened between them.
-
-    Without `absorb` this is the plain append it always was.
-    """
-    with _events_lock:
-        with _state_lock:
-            folded = False
-            if absorb and STATE["events"]:
-                top = STATE["events"][0]
-                if (top.get("msg") == absorb
-                        and time.time() - top.get("at", 0) <= ABSORB_SECONDS):
-                    # The timestamp stays the ORIGINAL one. The mode
-                    # changed when the person clicked, not when the plug
-                    # got round to it, and the second half is what was
-                    # already implied.
-                    top["msg"] = merged or msg
-                    folded = True
-            if not folded:
-                STATE["events"].insert(0, {"at": time.time(), "msg": msg})
-            del STATE["events"][EVENTS_MAX:]
-            snapshot = list(STATE["events"])
-        # Still outside _state_lock, so disk I/O never blocks a reader,
-        # but inside _events_lock so the write landing last is the
-        # newest. Without it two threads shared one events.json.tmp and
-        # an older snapshot could overwrite a newer one - or the replace
-        # could fail, which save_events swallows.
-        save_events(snapshot)
+    if _append_event(msg, absorb, merged):
+        _flush_events()
 
 
 _CLIENTS = {"key": None, "protect": None, "plug": None}
@@ -2262,9 +2278,9 @@ def active_rules(c):
     return [r for r in RULES if bool(c.get(r["flag"], r["default"]))]
 
 
-def decide(co2, temp, fan_on, c, ran_for, latch, fault=None,
+def decide(co2, temp, fan_on, c, ran_for, latch,
            humidity=None, ran_with=None):
-    """Per-rule latching hysteresis. Mutates `latch` in place.
+    """Auto-mode latching hysteresis. Mutates `latch` in place.
 
     Each input latches on above its own on-level and releases below its
     own off-level. The fan runs while any rule is latched. This matters:
@@ -2282,24 +2298,6 @@ def decide(co2, temp, fan_on, c, ran_for, latch, fault=None,
     single decision need not carry run-length state.
     """
     readings = {"co2": co2, "temp": temp, "humidity": humidity}
-    if c["mode"] == "on":
-        return True, "forced on"
-    # Force on is checked first on purpose: it overrides a fault so a
-    # repaired fan can be tested. Past here, a fault blocks automatic
-    # starts, including the stale-reading failsafe.
-    if fault:
-        if ran_with is not None:
-            ran_with.clear()
-        return False, "draw fault"
-    if c["mode"] == "manual":
-        for r in RULES:
-            latch[r["key"]] = False
-        # The run is over and no rule ended it. Leaving the accumulator
-        # populated would let a later Auto stop name rules from a run
-        # that finished before the mode changed.
-        if ran_with is not None:
-            ran_with.clear()
-        return None, None
     # Snapshot before the loop mutates it. The stop line names the
     # rules that were HOLDING the fan on, and by the time the decision
     # is reached every one of them has already released.
@@ -2903,7 +2901,7 @@ def tick():
             ran_snapshot = dict(STATE["ran_with"])
             before_latch = dict(STATE["latch"])
             want, why = decide(co2, vals.get('temperature'), fan_on, cur,
-                               ran_for, STATE["latch"], STATE["fault"],
+                               ran_for, STATE["latch"],
                                humidity=vals.get('humidity'),
                                ran_with=ran_snapshot)
             deadline = STATE["cold_start_hold_until"]
@@ -3917,7 +3915,7 @@ OFF_SETTLE_SECONDS = 5  # allow the meter to settle after a reported stop
 
 
 
-def _store_fault(value):
+def _store_fault(value, stop_plug=None, gen=None):
     """Set the fault in memory and on disk as one transaction.
 
     Three paths write it - raising, confirming the stop, acknowledging -
@@ -3929,16 +3927,39 @@ def _store_fault(value):
 
     Returns the fault that was there before.
     """
-    warn = None
-    with _fault_lock:
+    def latch():
         with _state_lock:
             had = STATE["fault"]
             STATE["fault"] = value
+            STATE["fault_unsaved"] = value is not None
             if value is not None:
                 STATE["cold_start_pending"] = False
                 STATE["cold_start_hold_until"] = None
+            return had
+
+    if stop_plug is not None:
+        # The draw caller holds _act_lock through OFF and the fault write,
+        # excluding acknowledgement and preserving restart. Leave _fault_lock
+        # free during the request so shutdown can persist a pending latch.
+        with _fault_lock:
+            had = latch()
+        if not _stale_client(gen):
+            try:
+                stop_plug.set(False)
+                _remember_relay(stop_plug, False)
+            except Exception:
+                # Persist the latch even when the first OFF is unconfirmed.
+                pass
+
+    warn = None
+    with _fault_lock:
+        if stop_plug is None:
+            had = latch()
+        with _state_lock:
+            needs_save = stop_plug is None or STATE["fault_unsaved"]
         try:
-            save_fault(value)
+            if needs_save:
+                save_fault(value)
             with _state_lock:
                 STATE["fault_unsaved"] = False
         except OSError as e:
@@ -4106,12 +4127,12 @@ def _invalidate_fault_stop():
                 STATE["fault_unsaved"] = True
 
 
-def _relay_retry_update(**changes):
+def _relay_retry_update(reserving=False, **changes):
     """Revise the standing relay fault under act -> fault -> state lock order.
 
     A consumed attempt is persisted BEFORE touching hardware. If storage
-    fails, keep the budget in memory but issue no further command until
-    the existing persistence retry has saved it. Never replenish a budget.
+    fails before sending, retain the previous count in memory and repair
+    it on disk before attempting another reservation.
     Caller holds _act_lock.
     """
     with _fault_lock:
@@ -4119,6 +4140,7 @@ def _relay_retry_update(**changes):
             f = copy.deepcopy(STATE["fault"])
         if not f or f.get("code") not in _RELAY_FAULT_CODES:
             return None, False
+        previous = copy.deepcopy(f) if reserving else None
         previous_retry = f.get("relay_retry")
         f.update(changes)
         if changes.get("stopped") and _relay_recovered(f):
@@ -4137,6 +4159,8 @@ def _relay_retry_update(**changes):
             saved = True
         except OSError:
             saved = False
+            if reserving:
+                f = previous
         with _state_lock:
             STATE["fault"] = f
             STATE["fault_unsaved"] = not saved
@@ -4330,9 +4354,8 @@ def _relay_release_step(plug, gen=None):
             code = FC_RELAY_RELEASE if n >= 3 else f["code"]
             msg = "%s %s" % (code, "Unable to stop" if n >= 3 else
                 "Manual OFF unconfirmed" if code == FC_MANUAL_STOP else "OFF but still drawing power")
-            f, saved = _relay_retry_update(code=code, msg=msg, stopped=False,
+            f, saved = _relay_retry_update(reserving=True, code=code, msg=msg, stopped=False,
                 relay_retry={"attempts": n, "phase": phase})
-            _relay_retry_clock = (f["at"], n, time.monotonic() + (60 if n == 3 else 30))
             if not saved:
                 return False
             attempt_message = "%s OFF retry %d of 6" % (code, n)
@@ -4380,7 +4403,7 @@ def _relay_release_step(plug, gen=None):
     return result
 
 
-def _enforce_stop(plug, gen=None):
+def _enforce_stop(plug, gen=None, verify_only=False):
     """Keep a faulted fan off until the fault is acknowledged.
 
     Runs every cycle while a fault stands, not once when it is raised:
@@ -4432,6 +4455,8 @@ def _enforce_stop(plug, gen=None):
             actual = plug.state()
             _record_relay_observation(actual)
             if actual is not False:
+                if verify_only:
+                    return False
                 plug.set(False)
             _remember_relay(plug, False)
             _record_relay_observation(False)
@@ -4649,7 +4674,7 @@ def _draw_check(plug, gen=None):
                        % (code, reading, lo, hi, int(elapsed)))
                 f = {"at": now, "msg": msg, "stopped": False, "code": code,
                      "attempted_at": now, "delivered_at": None}
-                prev = _store_fault(f)
+                prev = _store_fault(f, stop_plug=plug, gen=gen)
                 _oob_since = None
 
     # Out of the hold. _enforce_stop takes _act_lock itself, and the
@@ -4697,7 +4722,7 @@ def _draw_check(plug, gen=None):
         # plug that explodes must not be able to suppress the alert. An
         # unconfirmed stop is still a fault worth mailing about.
         try:
-            confirmed = bool(_enforce_stop(plug, gen))
+            confirmed = bool(_enforce_stop(plug, gen, verify_only=True))
         except Exception:           # pragma: no cover - belt and braces
             confirmed = False
         code = f.get("code") or _draw_fault_code(w, lo, hi)
@@ -4988,10 +5013,14 @@ def unifi_updates_loop():
                 identity = current
                 observer = _UniFiUpdates(_UniFiUpdateClient(*current[:3], verify=current[3]), current[4])
             messages = observer.check(*(pending[1:] if pending is not None else ()))
+            write_events = False
             with _cfg_lock:
                 if not _stopping.is_set() and current == _unifi_identity():
                     for message in messages:
-                        _log(message)
+                        if _append_event(message):
+                            write_events = True
+            if write_events:
+                _flush_events()
         except Exception:
             pass  # Optional context cannot stop or delay control loops.
 
@@ -5988,6 +6017,8 @@ def _api_config_locked(act_locked=False):
         # Manual owes one confirmed stop, then hands control to the plug.
         with _state_lock:
             STATE["manual_off_pending"] = True
+            for key in STATE["latch"]:
+                STATE["latch"][key] = False
     if was == "on" and now_mode != "on":
         with _state_lock:
             # Cancel only the lease, retaining physical switch timing/grace.

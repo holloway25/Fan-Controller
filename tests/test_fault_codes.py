@@ -12,6 +12,7 @@ unchanged. That is the gap this file closes.
 """
 import os
 import sys
+import threading
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import harness
@@ -475,6 +476,33 @@ def _fault_with(C, plug, lo=15.0, hi=22.0, watts=8.2):
     C._draw_check(plug)
 
 
+def test_first_off_precedes_fault_and_activity_writes():
+    from test_actuation import Plug
+    for name in ("save_fault", "save_events"):
+        C = harness.load()
+        plug = Plug(on=True)
+        entered, release = threading.Event(), threading.Event()
+        save = getattr(C, name)
+
+        def stall(value):
+            entered.set()
+            assert release.wait(5)
+            return save(value)
+
+        setattr(C, name, stall)
+        worker = threading.Thread(target=_fault_with, args=(C, plug), kwargs={"watts": 40})
+        worker.start()
+        try:
+            assert entered.wait(2), name
+            assert C.STATE["fault"] is not None
+            assert plug.calls == [False] and plug.on is False, name
+        finally:
+            release.set()
+            worker.join(5)
+        assert not worker.is_alive()
+        assert C.load_fault()["code"] == C.FC_OVER_POWER
+
+
 def test_an_unconfirmed_stop_is_not_reported_as_a_stop():
     """The email used to be queued BEFORE the stop was attempted.
 
@@ -484,7 +512,7 @@ def test_an_unconfirmed_stop_is_not_reported_as_a_stop():
     """
     C = harness.load()
     sent = E.wire(C)
-    C._enforce_stop = lambda plug, gen=None: False
+    C._enforce_stop = lambda plug, gen=None, verify_only=False: False
     _fault_with(C, RefusingPlug())
     subject, body = sent[0]
     assert "Fan stopped" not in subject, subject
@@ -522,7 +550,7 @@ def test_a_plug_that_explodes_does_not_suppress_the_alert():
     C = harness.load()
     sent = E.wire(C)
 
-    def boom(plug, gen=None):
+    def boom(plug, gen=None, verify_only=False):
         raise RuntimeError("plug layer exploded")
 
     C._enforce_stop = boom

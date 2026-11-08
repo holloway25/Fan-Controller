@@ -175,5 +175,19 @@ def test_a_repeat_of_the_same_kind_is_still_deduplicated():
     return "repeats still collapse"
 
 
+def test_distinct_browser_reports_cannot_evict_control_events():
+    C = harness.load()
+    C.EVENTS_MAX = 4
+    for i in range(C.EVENTS_MAX):
+        C._log("FC-003 Draw fault %d" % i)
+    client = C.app.test_client()
+    for i in range(3 * C.BROWSER_EVENTS_MAX):
+        assert client.post("/api/clienterror", json={"msg": "distinct %d" % i}).status_code == 200
+    events = C.load_events()
+    assert events == C.STATE["events"]
+    assert sum(e["msg"].startswith("FC-003") for e in events) == C.EVENTS_MAX
+    assert sum(e["msg"].startswith("UI error: ") for e in events) == C.BROWSER_EVENTS_MAX
+
+
 if __name__ == "__main__":
     sys.exit(harness.run(dict(globals())))

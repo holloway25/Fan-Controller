@@ -180,7 +180,36 @@ def test_attempt_is_saved_before_command_and_storage_failure_blocks_actuation():
     assert len(plug.commands) == 2
     C.save_fault = save
     C._retry_fault_persist()
-    assert json.load(open(C.FAULT_PATH))['relay_retry']['attempts'] == 3
+    assert C.load_fault()['relay_retry']['attempts'] == 2
+    plug.set = original
+    check(C, clock, plug)
+    assert len(plug.commands) == 3 and C.load_fault()['relay_retry']['attempts'] == 3
+
+
+def test_failed_reservations_do_not_exhaust_unsent_off_commands():
+    C, clock, _, plug = setup()
+    save = C.save_fault
+
+    def fail_after_install(fault):
+        save(fault)
+        if fault["relay_retry"]["attempts"]:
+            raise C.InstalledNotDurable("simulated directory sync failure")
+
+    check(C, clock, plug)
+    for _ in range(6):
+        C.save_fault = fail_after_install
+        check(C, clock, plug, 60)
+        assert plug.commands == []
+        assert C.STATE["fault"]["relay_retry"]["attempts"] == 0
+        assert C.STATE["fault_unsaved"]
+        C.save_fault = save
+        assert C._retry_fault_persist()
+        assert C.load_fault()["relay_retry"]["attempts"] == 0
+
+    for count, interval in enumerate((0, 30, 30, 60, 30, 30), 1):
+        check(C, clock, plug, interval)
+        assert plug.commands == [False] * count
+    assert C.load_fault()["relay_retry"]["phase"] == "exhausted"
 
 
 def test_retry_metadata_is_fail_closed_and_low_draw_after_exhaustion_recovers():
@@ -364,10 +393,14 @@ def test_manual_recovery_requires_low_draw_and_discharges_promise_without_cleari
     check(C,clock,plug,60,watts=0)
     assert len(plug.commands)==2 and len(mail)==2
     # Auto is still blocked by the standing fault, despite a healthy recovery.
-    c=copy.deepcopy(C.CFG['control'])
-    c['mode']='auto'
-    wanted,_=C.decide(2000,20,False,c,100,{},fault=C.STATE['fault'])
-    assert wanted is False
+    class Protect:
+        def readings(self, _):
+            return dict(co2=2000, temperature=20, humidity=40), 'co2'
+    C.CFG['control']['mode'] = 'auto'
+    C.CFG['protect']['sensor_id'] = 'test'
+    C._clients = lambda: (Protect(), plug)
+    C.tick()
+    assert plug.commands == [False, False]
 
 
 def pending_manual_recovery():

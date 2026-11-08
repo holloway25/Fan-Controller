@@ -748,14 +748,14 @@ def test_the_draw_decision_commits_its_fault_under_the_lock():
     held = []
     real_store = C._store_fault
 
-    def watching_store(value):
+    def watching_store(value, **kwargs):
         # False means another thread could NOT have taken _act_lock at
         # this moment - which is the property under test.
         free = C._act_lock.acquire(blocking=False)
         if free:
             C._act_lock.release()
         held.append(not free)
-        return real_store(value)
+        return real_store(value, **kwargs)
 
     C._store_fault = watching_store
     C._draw_check(Meter(), C._cfg_generation)
@@ -801,7 +801,7 @@ def test_a_save_queues_behind_a_draw_decision_rather_than_splitting_it():
     seen = []
     real_store = C._store_fault
 
-    def slow_store(value):
+    def slow_store(value, **kwargs):
         # A save attempted here must not be able to proceed.
         done = threading.Event()
 
@@ -815,7 +815,7 @@ def test_a_save_queues_behind_a_draw_decision_rather_than_splitting_it():
 
         threading.Thread(target=save, name="saver").start()
         seen.append(done.wait(1.0))     # True would mean it got in
-        return real_store(value)
+        return real_store(value, **kwargs)
 
     C._store_fault = slow_store
     C._draw_check(Meter(), C._cfg_generation)

@@ -113,11 +113,11 @@ def test_the_indexed_power_key_is_read():
     return "POWER1 ON/OFF"
 
 
-def test_the_plain_key_wins_when_both_are_present():
-    """Only a fixed order stops the answer depending on dict ordering."""
-    assert C.Tasmota._power({"POWER": "ON", "POWER1": "OFF"}) is True
-    assert C.Tasmota._power({"POWER": "OFF", "POWER1": "ON"}) is False
-    return "POWER before POWER1"
+def test_two_relay_fields_must_agree():
+    assert C.Tasmota._power({"POWER": "ON", "POWER1": "OFF"}) is None
+    assert C.Tasmota._power({"POWER": "OFF", "POWER1": "ON"}) is None
+    assert C.Tasmota._power({"POWER": False, "POWER1": "OFF"}) is False
+    assert C.Tasmota._power({"POWER": "ON", "POWER1": True}) is True
 
 
 def test_the_value_is_read_case_insensitively():

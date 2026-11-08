@@ -297,37 +297,55 @@ def test_recoveries_coalesce_and_obsolete_config_is_discarded():
     assert C._unifi_update_pending is None
 
 
-def test_recovery_check_logs_current_results_outside_control_locks():
+def test_stalled_recovery_activity_does_not_block_control():
+    import threading
     C = harness.load()
     C.time.time = lambda: 1010
     C._queue_unifi_recovery(990)
     C._UniFiUpdateClient = lambda *a, **kw: object()
-    logs = []
-    C._log = logs.append
+    entered, release, control_done = (threading.Event() for _ in range(3))
+    save = C.save_events
+
+    def stall(snapshot):
+        entered.set()
+        assert release.wait(5)
+        save(snapshot)
+
     class Observer:
-        def __init__(self, *a):
+        def __init__(self, *args):
             pass
+
         def check(self, *args):
-            import threading
-            free = []
-            def probe():
-                assert C._act_lock.acquire(timeout=0.2)
-                C._act_lock.release()
-                assert C._cfg_lock.acquire(timeout=0.2)
-                C._cfg_lock.release()
-                free.append(True)
-            t = threading.Thread(target=probe)
-            t.start()
-            t.join(1)
-            assert free == [True] and len(args) == 2
             return ['FC-303 UniFi Protect updated']
-    C._UniFiUpdates = Observer
+
     def idle_wait(seconds):
         C._stopping.set()
         return False
+
+    def control():
+        C._client_snapshot()
+        C._log('Fan control event')
+        control_done.set()
+
+    C.save_events = stall
+    C._UniFiUpdates = Observer
     C._unifi_update_event.wait = idle_wait
-    C.unifi_updates_loop()
-    assert logs == ['FC-303 UniFi Protect updated']
+    worker = threading.Thread(target=C.unifi_updates_loop)
+    tick = threading.Thread(target=control)
+    worker.start()
+    try:
+        assert entered.wait(2)
+        tick.start()
+        assert control_done.wait(2)
+    finally:
+        release.set()
+        worker.join(5)
+        if tick.ident is not None:
+            tick.join(5)
+    assert not worker.is_alive() and not tick.is_alive()
+    assert [e['msg'] for e in C.load_events()][:2] == [
+        'Fan control event', 'FC-303 UniFi Protect updated']
+
 
 
 def test_history_transport_is_bounded_and_only_queries_update_records():

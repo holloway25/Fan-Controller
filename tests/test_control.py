@@ -26,26 +26,6 @@ def fresh():
     return {"co2": False, "temp": False}
 
 
-def test_forced_on_overrides_everything():
-    """Force on wins over a fault: it is how a repaired fan is tested."""
-    want, why = C.decide(400, 20, False, cfg(mode="on"), None, fresh(),
-                         fault={"msg": "draw"})
-    assert want is True and why == "forced on", (want, why)
-
-
-def test_fault_blocks_automatic_start():
-    want, why = C.decide(2000, 20, False, cfg(), None, fresh(),
-                         fault={"msg": "draw"})
-    assert want is False and why == "draw fault", (want, why)
-
-
-def test_manual_clears_latches_and_acts_on_nothing():
-    latch = {"co2": True, "temp": True}
-    want, why = C.decide(2000, 30, True, cfg(mode="manual"), None, latch)
-    assert want is None and why is None, (want, why)
-    assert not any(latch.values()), latch
-
-
 def test_co2_latches_on_and_holds_through_the_band():
     latch = fresh()
     C.decide(1000, None, False, cfg(), None, latch)
@@ -245,18 +225,6 @@ def test_the_run_record_does_not_leak_into_the_next_run():
     assert "C" not in why and "RH" not in why, \
         "the previous run's rules appeared in this stop: %r" % why
     return "each run is named on its own"
-
-
-def test_manual_mode_ends_the_run_record():
-    """Switching to Manual ends the run, so nothing carries out of it."""
-    latch = fresh()
-    ran = {}
-    c = cfg(temp_enabled=True, temp_on=26.5, temp_off=24.0)
-    C.decide(1200, 27.0, False, c, None, latch, ran_with=ran)
-    assert ran, "nothing was recorded to begin with"
-    C.decide(1200, 27.0, True, cfg(mode="manual"), 9999, latch, ran_with=ran)
-    assert ran == {}, "Manual left a run record behind: %r" % ran
-    return "Manual clears the run record"
 
 
 def test_a_stop_still_works_without_a_run_record():

@@ -655,10 +655,8 @@ def test_a_restart_cannot_land_in_the_middle_of_raising_a_fault():
     """The window _fault_lock closes.
 
     _store_fault holds the lock across both the memory update and the
-    write. Checking fault_unsaved under _state_lock alone let a restart
-    read False - because the write had not failed YET - and exec away
-    the only copy of a live fault. The replacement would load nothing
-    and Auto would be free to start a fan judged faulty.
+    write. The fault is marked unsaved from the time it is latched.
+    The restart must refuse while the write remains in flight.
 
     Driven with an event rather than a sleep: the writer is provably
     inside save_fault, holding the lock, before the restart is tried.
@@ -686,13 +684,10 @@ def test_a_restart_cannot_land_in_the_middle_of_raising_a_fault():
     try:
         assert inside.wait(10), "the writer never reached save_fault"
 
-        # The fault is live in memory and the flag is still False, which
-        # is exactly the state the old check would have restarted on.
+        # The only live copy is still in memory while the write is stalled.
         with C._state_lock:
             assert C.STATE["fault"] is not None, "no fault in memory"
-            assert C.STATE["fault_unsaved"] is False, (
-                "the flag was already set, so this is not the window "
-                "being tested")
+            assert C.STATE["fault_unsaved"] is True
 
         result = C._restart_now()
     finally:

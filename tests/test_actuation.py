@@ -834,6 +834,47 @@ def test_an_unreadable_plug_does_not_end_the_run():
     return "an unreadable plug keeps the run"
 
 
+def test_manual_round_trip_does_not_restart_from_an_old_auto_latch():
+    C = harness.load()
+    setup(C, mode="auto")
+    C.CFG["control"].update(on_at=1000, off_at=800, co2_enabled=True,
+                            temp_enabled=False, humidity_enabled=False)
+    C.CFG["protect"]["sensor_id"] = "test"
+    plug = Plug()
+    co2 = 1100
+    C._client_snapshot = lambda: (_Protect(co2=co2, temp=20), plug, C._cfg_generation)
+    client = C.app.test_client()
+    C.tick()
+    assert plug.calls == [True] and C.STATE["latch"]["co2"]
+    assert client.post("/api/config", json={"control": {"mode": "manual"}}).status_code == 200
+    C.tick()
+    assert plug.calls == [True, False]
+    co2 = 900
+    assert client.post("/api/config", json={"control": {"mode": "auto"}}).status_code == 200
+    C.tick()
+    assert plug.calls == [True, False] and not C.STATE["latch"]["co2"]
+
+
+def test_contradictory_relay_fields_do_not_discharge_manual_off():
+    C = harness.load()
+    setup(C, mode="manual")
+    C.CFG["plug"]["watts_enabled"] = False
+    C.STATE["manual_off_pending"] = True
+    plug = C.Tasmota("plug.invalid")
+    commands = []
+
+    def reply(command):
+        commands.append(command)
+        if command == "Power":
+            return {"POWER": "OFF", "POWER1": "ON"}
+        return {"POWER": "OFF"}
+
+    plug._cmd = reply
+    C._manual_off(plug)
+    assert "Power OFF" in commands
+    assert not C.STATE["manual_off_pending"]
+
+
 def test_a_manual_stop_clears_the_run_record():
     """PRODUCTION MANUAL NEVER REACHES decide().
 

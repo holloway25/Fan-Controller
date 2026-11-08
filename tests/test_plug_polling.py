@@ -418,6 +418,7 @@ def test_running_or_unreachable_relay_still_latches_real_draw_fault():
         C._notify = lambda *args,**kwargs:None
         class Plug:
             commands = []
+            on = True
             def state(self):
                 free = C._act_lock.acquire(blocking=False)
                 if free:
@@ -425,15 +426,18 @@ def test_running_or_unreachable_relay_still_latches_real_draw_fault():
                 assert not free,'Relay confirmation lost actuation locking'
                 if not reachable:
                     raise C.PlugError('Unreachable')
-                return True
+                return self.on
             def set(self,on):
                 self.commands.append(on)
+                if not reachable:
+                    raise C.PlugError('Unreachable')
+                self.on = on
             def power_w(self):
                 return 0
         plug = Plug()
         C._draw_check(plug,C._cfg_generation)
         assert C.STATE['fault']['code'] == C.FC_UNDER_POWER
-        assert plug.commands == ([False] if reachable else [])
+        assert plug.commands == [False]
         assert C.STATE['fault']['stopped'] is reachable
 
 

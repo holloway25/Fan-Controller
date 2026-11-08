@@ -15,6 +15,60 @@ def boom(*a, **k):
     raise OSError(28, "No space left on device")
 
 
+def test_overlapping_off_and_running_draw_rejected_at_save_and_startup():
+    C = harness.load()
+    plug = dict(watts_enabled=True, watts_min=10, watts_max=30, watts_off_max=25)
+    response = C.app.test_client().post("/api/config", json={"plug": plug})
+    assert response.status_code == 400
+    cfg = dict(C.CFG)
+    cfg["plug"] = dict(cfg["plug"], **plug)
+    C.write_json_durable(C.CFG_PATH, cfg)
+    try:
+        C.load_cfg()
+    except C.ConfigurationError as exc:
+        assert "OFF draw limit" in str(exc)
+    else:
+        raise AssertionError("Startup accepted overlapping draw limits")
+
+
+def test_empty_air_quality_does_not_fall_back_to_other_fields():
+    C = harness.load()
+    protect = C.Protect("console.invalid", "", "")
+    protect.sensor = lambda _: {"airQuality": {}, "co2": 1200, "humidity": 90}
+    readings, _ = protect.readings("test")
+    assert all(value is None for value in readings.values())
+
+
+def test_protect_login_and_reads_reject_redirects():
+    from types import SimpleNamespace
+    C = harness.load()
+    calls = []
+
+    class Session:
+        def post(self, url, **kwargs):
+            calls.append(("login", kwargs["allow_redirects"]))
+            return SimpleNamespace(status_code=307)
+
+        def get(self, url, **kwargs):
+            calls.append(("read", kwargs["allow_redirects"]))
+            return SimpleNamespace(status_code=307)
+
+    C.requests = SimpleNamespace(Session=Session, exceptions=C.requests.exceptions,
+                                 RequestException=C.requests.RequestException)
+    protect = C.Protect("console.invalid", "reader", "dummy-password")
+    for operation in (protect._login_direct, lambda: protect._get_direct("/api/test")):
+        if calls:
+            protect._s = Session()
+            protect._csrf = "dummy-token"
+        try:
+            operation()
+        except C.ProtectError as exc:
+            assert "307" in str(exc)
+        else:
+            raise AssertionError("Protect accepted a redirect")
+    assert calls == [("login", False), ("read", False)]
+
+
 def test_unwritable_fault_stays_live_and_is_flagged():
     """A fault that cannot be persisted must not be forgotten.
 
