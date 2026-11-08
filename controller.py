@@ -450,6 +450,8 @@ def _arm_safety_guard(handover):
 
 
 def _disarm_safety_guard():
+    if PLUG_ACCESS_DISABLED:
+        return
     # A busy actuation or fault transaction may still be latching a fault.
     if not _act_lock.acquire(blocking=False):
         return
@@ -808,7 +810,8 @@ def save_events(events):
             json.dump(events, f, separators=(",", ":"))
         os.replace(tmp, EVENTS_PATH)
     except OSError:
-        pass
+        return False
+    return True
 
 def prune_hist(hist, now=None):
     """Keep HIST_HOURS of samples by timestamp, not by count.
@@ -1183,6 +1186,7 @@ def flush_hist(signum=None, frame=None):
         print("Daily summary could not be written on shutdown.",
               file=sys.stderr, flush=True)
     if signum is not None:
+        _finish_activity_on_shutdown()
         if not ok:
             # Said out loud rather than swallowed: the graph will have a
             # gap and nothing else would ever mention it. stderr because
@@ -2233,6 +2237,7 @@ ABSORB_SECONDS = 300
 
 def _append_event(msg, absorb=None, merged=None):
     """Append in memory and elect one writer for this and pending events."""
+    global _activity_unsaved
     with _state_lock:
         top = STATE["events"][0] if STATE["events"] else None
         if (absorb and top and top.get("msg") == absorb
@@ -2241,18 +2246,21 @@ def _append_event(msg, absorb=None, merged=None):
         else:
             STATE["events"].insert(0, {"at": time.time(), "msg": msg})
         STATE["events"][:] = _retain_events(STATE["events"])
+        _activity_unsaved = True
         return _events_lock.acquire(blocking=False)
 
 
 def _flush_events():
     """The elected writer drains changes appended during its disk write."""
+    global _activity_unsaved
     try:
         while True:
             with _state_lock:
                 snapshot = [dict(event) for event in STATE["events"]]
-            save_events(snapshot)
+            saved = save_events(snapshot)
             with _state_lock:
                 if snapshot == STATE["events"]:
+                    _activity_unsaved = saved is False
                     # Release while holding the same lock used by appends.
                     _events_lock.release()
                     return
@@ -2267,7 +2275,20 @@ def _log(msg, absorb=None, merged=None):
 
 
 _activity_wake = None
+_activity_unsaved = False
 _history_wake = None
+ACTIVITY_STOP_WAIT = 0.5
+
+
+def _finish_activity_on_shutdown():
+    # The background writer owns any I/O. Never start a disk write here:
+    # shutdown has a deadline even if storage is stalled.
+    if _events_lock.acquire(timeout=ACTIVITY_STOP_WAIT):
+        _events_lock.release()
+        if not _activity_unsaved:
+            return
+    print("Pending activity could not be saved before shutdown.",
+          file=sys.stderr, flush=True)
 
 
 def _schedule_events_flush():

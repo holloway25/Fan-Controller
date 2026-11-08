@@ -4,8 +4,11 @@ Restart tests replace execv before exercising the handover path, so they do
 not replace the test process or touch the running controller. Device clients
 and configuration live only in the shared harness's disposable directory.
 """
+import contextlib
+import io
 import json
 import os
+import signal
 import socket
 import sys
 import threading
@@ -17,6 +20,55 @@ import harness
 
 def boom(*a, **k):
     raise OSError(13, "Permission denied")
+
+
+def _stop_controller(C):
+    try:
+        C.flush_hist(signal.SIGTERM)
+    except SystemExit as exc:
+        assert exc.code == 0
+    else:
+        assert False, "SIGTERM shutdown did not exit"
+
+
+def test_plug_disabled_shutdown_preserves_an_earlier_crash_marker():
+    C = harness.load(plug_access_disabled=True)
+    C.write_json_durable(C.SAFETY_GUARD_PATH, {"v": 1})
+    _stop_controller(C)
+    assert os.path.exists(C.SAFETY_GUARD_PATH)
+    assert C.load_fault() is None
+    C.PLUG_ACCESS_DISABLED = False
+    C._arm_safety_guard(False)
+    assert C.load_fault()["code"] == "FC-206"
+
+
+def test_shutdown_reports_activity_stalled_past_its_wait():
+    C = harness.load()
+    C._activity_wake = threading.Event()
+    C.ACTIVITY_STOP_WAIT = 0.05
+    entered, release = threading.Event(), threading.Event()
+    save = C.save_events
+
+    def stall(snapshot):
+        entered.set()
+        assert release.wait(3)
+        return save(snapshot)
+
+    C.save_events = stall
+    writer = threading.Thread(target=C._activity_writer, daemon=True)
+    writer.start()
+    C._log("Background activity")
+    try:
+        assert entered.wait(2)
+        C._log("FC-004 Draw fault")
+        errors = io.StringIO()
+        with contextlib.redirect_stderr(errors):
+            _stop_controller(C)
+        assert "Pending activity could not be saved before shutdown." in errors.getvalue()
+    finally:
+        release.set()
+        assert C._events_lock.acquire(timeout=2)
+        C._events_lock.release()
 
 
 def test_no_request_is_not_a_restart():
