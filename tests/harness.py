@@ -56,6 +56,11 @@ class Skip(Exception):
 def skip(reason):
     raise Skip(reason)
 
+
+def fault_ack(C):
+    fault = C.STATE["fault"]
+    return {"fault_ack_token": C._fault_override_token(fault)} if fault else {}
+
 SRC = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 

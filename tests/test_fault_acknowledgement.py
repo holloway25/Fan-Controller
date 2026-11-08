@@ -86,7 +86,7 @@ def test_same_origin_and_headerless_json_clients_can_acknowledge():
     for headers, base_url in cases:
         C, _fault = _latched()
         response = C.app.test_client().post(
-            "/api/fault/clear", json={}, headers=headers, base_url=base_url)
+            "/api/fault/clear", json=harness.fault_ack(C), headers=headers, base_url=base_url)
         assert response.status_code == 200, (headers, response.get_data(as_text=True))
         assert response.get_json() == {"ok": True, "cleared": True}
         assert C.STATE["fault"] is None
@@ -117,7 +117,7 @@ def test_unrepresentable_fault_timestamps_fail_closed_and_clear_cleanly():
             assert loaded.get("code") == "FC-206", (key, stamp, loaded)
             assert loaded.get("delivered_at") is None, loaded
             C.STATE["fault"] = loaded
-            response = C.app.test_client().post("/api/fault/clear", json={})
+            response = C.app.test_client().post("/api/fault/clear", json=harness.fault_ack(C))
             assert response.status_code == 200, response.get_data(as_text=True)
             assert response.get_json()["cleared"] is True
             assert C.STATE["fault"] is None
@@ -138,7 +138,7 @@ def test_fault_notification_failure_cannot_turn_a_committed_clear_into_500():
             C._alert_body = fail
         elif injected == "queue":
             C._notify = fail
-        response = C.app.test_client().post("/api/fault/clear", json={})
+        response = C.app.test_client().post("/api/fault/clear", json=harness.fault_ack(C))
         assert response.status_code == 200, (injected, response.get_data(as_text=True))
         assert response.get_json()["cleared"] is True
         assert C.STATE["fault"] is None
@@ -147,6 +147,23 @@ def test_fault_notification_failure_cannot_turn_a_committed_clear_into_500():
         assert any("Fault-clear notification could not be prepared" in e["msg"]
                    for e in C.STATE["events"]), C.STATE["events"]
     return "formatting and notification failures leave successful clears successful"
+
+
+def test_stale_acknowledgement_cannot_clear_a_replacement_fault():
+    C, fault = _latched()
+    first, second = C.app.test_client(), C.app.test_client()
+    token = first.get("/api/state").get_json()["fault_ack_token"]
+    assert first.post("/api/fault/clear", json={}).status_code == 409
+    assert second.post("/api/fault/clear", json={"fault_ack_token": token}).get_json()["cleared"]
+    replacement = dict(fault)  # A repeated timestamp still denotes a new episode.
+    C._store_fault(replacement)
+    C._oob_since = 123.0
+    C._wake.clear()
+    assert first.post("/api/fault/clear", json={"fault_ack_token": token}).status_code == 409
+    _still_latched(C, replacement)
+    current = second.get("/api/state").get_json()["fault_ack_token"]
+    assert current != token
+    assert second.post("/api/fault/clear", json={"fault_ack_token": current}).get_json()["cleared"]
 
 
 if __name__ == "__main__":

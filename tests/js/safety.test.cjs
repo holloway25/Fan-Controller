@@ -39,7 +39,8 @@ module.exports = {
   async test_dangerous_actions_require_confirmation() {
     const writes = [];
     const { window, document } = await H.open({
-      state: H.baseState({ fault: { msg: "Draw fault", stopped: true } }),
+      state: H.baseState({ fault: { msg: "Draw fault", stopped: true },
+        fault_ack_token: "example-displayed-episode" }),
       beforeParse(w) {
         const original = w.fetch;
         w.fetch = (url, opts) => {
@@ -58,6 +59,28 @@ module.exports = {
     document.getElementById("faultclear").click();
     await H.settle(window);
     assert.deepStrictEqual(writes, ["/api/config"], "cancelled override was retried or fault cleared");
+  },
+
+  async test_clear_posts_the_displayed_fault_token_without_retrying_a_conflict() {
+    const acknowledgements = [];
+    const { window, document } = await H.open({
+      state: H.baseState({ fault: { msg: "Draw fault", stopped: true },
+        fault_ack_token: "example-displayed-episode" }),
+      beforeParse(w) {
+        const original = w.fetch;
+        w.fetch = (url, opts) => {
+          if (url !== "/api/fault/clear") return original(url, opts);
+          acknowledgements.push(JSON.parse(opts.body));
+          return Promise.resolve({ ok: false, status: 409,
+            json: async () => ({ error: "The fault changed" }) });
+        };
+        w.confirm = () => true;
+      },
+    });
+    document.getElementById("faultclear").click();
+    await H.settle(window);
+    assert.deepStrictEqual(acknowledgements, [{ fault_ack_token: "example-displayed-episode" }]);
+    assert(document.getElementById("hmsg").textContent.includes("The fault changed"));
   },
 
   async test_force_on_without_fault_does_not_prompt() {

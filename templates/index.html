@@ -353,6 +353,7 @@ window.addEventListener("unhandledrejection",e=>_report(
   "unhandled promise: "+(e.reason&&e.reason.message||e.reason),"",0));
 const $=id=>document.getElementById(id);
 let CFG=null, touched=false, editRevision=0;
+let displayedFaultToken=null;
 const dirty=()=>{touched=true;editRevision++};
 
 function say(el,text,kind){const n=$(el);n.textContent=text||"";
@@ -634,6 +635,7 @@ function drawMini(hist,c){
 }
 
 function render(s){
+  displayedFaultToken=s.fault_ack_token??null;
   const c=s.config.control;
   $("ppm").textContent=(s.co2==null?"--":Math.round(s.co2))+" ppm";
   const f=$("fan");
@@ -1062,9 +1064,11 @@ $("find").addEventListener("click",async()=>{
 // A fault is the one thing that stops the fan running on its own, so it
 // is surfaced at the top rather than buried in the plug card.
 $("faultclear").addEventListener("click",async()=>{
+  const token=displayedFaultToken;
+  if(!token){say("hmsg","No current fault to clear","err"); return}
   if(!window.confirm("Clear the fault and allow automatic running again? " +
     "Confirm the fan and power draw are safe first."))return;
-  try{await post("/api/fault/clear",{}); say("hmsg","Fault cleared","ok")}
+  try{await post("/api/fault/clear",{fault_ack_token:token}); say("hmsg","Fault cleared","ok")}
   catch(e){say("hmsg",e.message,"err")}});
 $("plugtest").addEventListener("click",async()=>{
   say("hmsg","Testing...","ok");

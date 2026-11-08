@@ -423,12 +423,12 @@ def test_clear_fault_serialises_against_enforcement():
     seen = {}
     real = C._clear_fault_locked
 
-    def watched():
+    def watched(expected_token):
         free = C._act_lock.acquire(blocking=False)
         seen["free"] = free
         if free:
             C._act_lock.release()
-        return real()
+        return real(expected_token)
 
     C._clear_fault_locked = watched
     try:
@@ -873,8 +873,14 @@ def test_sensor_replacement_drops_demand_but_unrelated_saves_keep_it():
     plug.on = False
     plug.calls.clear()
     assert client.post("/api/config", json={"protect": {"sensor_id": "replacement"}}).status_code == 200
+    snapshot = client.get("/api/state").get_json()
+    assert snapshot["config"]["protect"]["sensor_id"] == "replacement"
+    assert snapshot["co2"] is None and snapshot["sensor_age"] is None
+    assert C._elapsed_age_locked("reading_at", startup=True) < 1
+    assert C.STATE["history"][-1]["v"] == 1500
     C.tick()
     assert plug.calls == [] and not C.STATE["latch"]["co2"]
+    assert client.get("/api/state").get_json()["co2"] == 900
 
 
 def test_replacement_plug_discards_old_draw_and_keeps_standing_fault():
@@ -897,10 +903,36 @@ def test_replacement_plug_discards_old_draw_and_keeps_standing_fault():
     fault = {"at": C.time.time(), "msg": "draw fault", "code": C.FC_OVER_POWER,
              "stopped": True}
     C._store_fault(fault)
+    save_cfg = C.save_cfg
+
+    def save_after_fault_invalidation(candidate):
+        persisted = C.load_fault()
+        assert persisted["at"] == fault["at"] and not persisted["stopped"]
+        return save_cfg(candidate)
+
+    C.save_cfg = save_after_fault_invalidation
     assert client.post("/api/config", json={"plug": {"host": "third.invalid"}}).status_code == 200
     assert C.STATE["fault"]["at"] == fault["at"]
     assert C.STATE["fault"]["code"] == C.FC_OVER_POWER
     assert not C.STATE["fault"]["stopped"]
+    assert not C.load_fault()["stopped"]
+
+
+def test_plug_change_is_refused_if_old_stop_confirmation_cannot_be_saved():
+    C = harness.load()
+    C.CFG["plug"]["host"] = "original.invalid"
+    fault = {"at": C.time.time(), "msg": "draw fault", "code": C.FC_OVER_POWER,
+             "stopped": True}
+    C._store_fault(fault)
+
+    def fail(_):
+        raise OSError("storage unavailable")
+
+    C.save_fault = fail
+    response = C.app.test_client().post("/api/config", json={"plug": {"host": "replacement.invalid"}})
+    assert response.status_code == 503
+    assert C.CFG["plug"]["host"] == "original.invalid"
+    assert C.load_fault()["stopped"]
 
 
 def test_negative_tasmota_watts_cannot_confirm_fault_stop():

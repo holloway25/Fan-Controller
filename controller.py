@@ -2105,6 +2105,8 @@ def _elapsed_age_locked(key, startup=False):
     if wall is None:
         if not startup:
             return None
+        if key == "reading_at" and "sensor_selected" in _elapsed_clocks:
+            return max(0, time.monotonic() - _elapsed_clocks["sensor_selected"][1])
         key, wall = "startup", START_TIME
     pair = _elapsed_clocks.get(key)
     if pair is None or pair[0] != wall:
@@ -2190,6 +2192,7 @@ STATE["daily"] = load_daily()
 # Reloaded, not reset: a fault must survive a restart or the acknowledgement
 # it is waiting for can be skipped by a power cycle.
 STATE["fault"] = load_fault()
+_fault_episode = os.urandom(16).hex()
 STATE["history_rev"] = 1
 STATE["events"] = load_events()
 
@@ -4028,11 +4031,13 @@ def _store_fault(value, stop_plug=None, gen=None):
     Returns the fault that was there before.
     """
     def latch():
+        global _fault_episode
         with _state_lock:
             had = STATE["fault"]
             STATE["fault"] = value
             STATE["fault_unsaved"] = value is not None
             if value is not None:
+                _fault_episode = os.urandom(16).hex()
                 STATE["cold_start_pending"] = False
                 STATE["cold_start_hold_until"] = None
             return had
@@ -4082,7 +4087,7 @@ def _store_fault(value, stop_plug=None, gen=None):
     return had
 
 
-def _clear_fault():
+def _clear_fault(expected_token=None):
     """Acknowledge a fault. Takes _act_lock before _fault_lock.
 
     The lock is not for the fault - _fault_lock covers that - it is to
@@ -4098,15 +4103,15 @@ def _clear_fault():
     invert.
     """
     with _act_lock:
-        result = _clear_fault_locked()
+        result = _clear_fault_locked(expected_token)
     # Outside both locks, deliberately: see _clear_fault_locked. A
     # no-op unless the flag actually moved.
     _unsaved_edge()
     return result
 
 
-def _clear_fault_locked():
-    """Acknowledge a fault. Returns (had, ok).
+def _clear_fault_locked(expected_token=None):
+    """Acknowledge a fault. Returns (had, ok), with None for a stale token.
 
     Deletes from disk BEFORE clearing memory. The other order cleared
     memory, reported success, and left the file behind when the delete
@@ -4117,6 +4122,9 @@ def _clear_fault_locked():
     with _fault_lock:
         with _state_lock:
             had = STATE["fault"]
+        if expected_token is not None and (
+                had is None or expected_token != _fault_override_token(had)):
+            return had, None
         if had is None:
             return None, True
         try:
@@ -5698,7 +5706,7 @@ def signin():
 
 @app.route("/api/state")
 def api_state():
-    with _state_lock:
+    with _cfg_lock, _state_lock:
         # Exclude history from the copy rather than dropping it afterwards:
         # deep-copying ~2500 points twelve times a minute is pure waste. It
         # is ~99% of the payload and changes once per poll, not once per UI
@@ -5706,6 +5714,8 @@ def api_state():
         # refetch.
         s = copy.deepcopy({k: v for k, v in STATE.items()
                            if k not in ("history", "daily")})
+        s["config"] = _safe_cfg()
+        s["fault_ack_token"] = _fault_override_token(s["fault"]) if s["fault"] else None
         watt_age = _elapsed_age_locked("watts_at")
         s["sensor_age"] = _elapsed_age_locked("reading_at")
         draw_age = _elapsed_age_locked("draw_loop_at")
@@ -5733,7 +5743,6 @@ def api_state():
     # to recolour a log would be absurd.
     s["events"] = [dict(e, msg=_short_relay_activity(e["msg"]), cls=event_class(e.get("msg")))
                    for e in s["events"][:EVENTS_SHOWN]]
-    s["config"] = _safe_cfg()
     # Changes on every start, including an execv. It is the only thing a
     # caller can use to prove a restart actually happened: the port
     # answering proves nothing, because a failed exec leaves the original
@@ -5785,12 +5794,18 @@ def api_fault_clear():
     stop.
     """
     global _oob_since, _off_draw_since
-    err = _body_error(_json_body())
+    body = _json_body()
+    err = _body_error(body)
     if err:
         return err
+    token = body.get("fault_ack_token")
+    if not isinstance(token, str) or not token:
+        return jsonify(error="Refresh the dashboard and confirm the current fault."), 409
     # One transaction: clearing memory and deleting the file separately
     # let a concurrent confirmation write the old fault back afterwards.
-    had, ok = _clear_fault()
+    had, ok = _clear_fault(token)
+    if ok is None:
+        return jsonify(error="The fault changed. Review the current fault before clearing it."), 409
     if not ok:
         # The fault is still live and still on disk. Saying "cleared"
         # here would leave the operator believing the fan is available
@@ -5990,7 +6005,7 @@ def _fault_override_token(fault):
     The token is explicit override acknowledgement, not authentication.
     Normal auth and origin checks still apply before this endpoint runs.
     """
-    identity = [_PROC_START, fault.get("at"), fault.get("code"), fault.get("msg")]
+    identity = [_fault_episode, fault.get("at"), fault.get("code"), fault.get("msg")]
     return hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
 
 
@@ -6035,6 +6050,9 @@ def _api_config_locked(act_locked=False, fault_locked=False):
     except ValueError as e:
         return jsonify(error=str(e)), 400
     summary = _describe_changes(cand)
+    plug_changed = cand["plug"]["host"] != CFG["plug"]["host"]
+    sensor_changed = any(cand["protect"][key] != CFG["protect"][key]
+                         for key in ("host", "sensor_id"))
     # Before save_cfg, not after. The promise has to reach disk BEFORE
     # the mode that creates it, or a crash in between leaves Manual
     # stored with nothing owed and a fan still running. Written even if
@@ -6081,6 +6099,26 @@ def _api_config_locked(act_locked=False, fault_locked=False):
     # reached disk - live behaviour and stored behaviour disagreeing
     # until the next restart silently reverted it. cand is a complete
     # config, so writing it is equivalent to writing the merged CFG.
+    if plug_changed:
+        # Retire the old confirmation on disk before installing the new
+        # host. A crash between the two writes leaves a latched,
+        # unconfirmed fault and never lends confirmation to the new plug.
+        with (nullcontext() if fault_locked else _fault_lock):
+            with _state_lock:
+                fault = copy.deepcopy(STATE["fault"])
+                owed = STATE["fault_unsaved"]
+            if fault and (fault.get("stopped") or owed):
+                fault.update(stopped=False)
+                try:
+                    save_fault(fault)
+                except OSError:
+                    return jsonify(error="Could not durably reset the previous plug's "
+                                         "stop confirmation. Plug address was not changed."), 503
+                with _state_lock:
+                    STATE["fault"] = fault
+                    STATE["fault_unsaved"] = False
+            with _state_lock:
+                STATE["relay_revision"] += 1
     durable = True
     try:
         save_cfg(cand)
@@ -6096,9 +6134,6 @@ def _api_config_locked(act_locked=False, fault_locked=False):
     # The recursive entry above already holds _act_lock through validation,
     # durable marker creation, persistence and commit. Keep state locks inside it.
     was = CFG["control"].get("mode")
-    plug_changed = cand["plug"]["host"] != CFG["plug"]["host"]
-    sensor_changed = any(cand["protect"][key] != CFG["protect"][key]
-                         for key in ("host", "sensor_id"))
     recovery_changed = any(cand[key] != CFG[key]
                            for key in ("plug", "protect", "control"))
     draw_changed = (cand["plug"] != CFG["plug"] or
@@ -6118,18 +6153,11 @@ def _api_config_locked(act_locked=False, fault_locked=False):
         _oob_generation = _cfg_generation
     now_mode = CFG["control"].get("mode")
     if plug_changed:
-        with (nullcontext() if fault_locked else _fault_lock), _state_lock:
+        with _state_lock:
             STATE.update(fan=None, watts=None, watts_at=None, changed_at=None)
-            STATE["relay_revision"] += 1
             _end_run_locked()
             for key in ("watts_at", "changed_at", "min_run_at"):
                 _elapsed_clocks.pop(key, None)
-            fault = STATE["fault"]
-            if fault and fault.get("stopped"):
-                # The fault stays latched, but its old OFF confirmation
-                # belongs to the previous plug.
-                fault.update(stopped=False)
-                STATE["fault_unsaved"] = True
     if recovery_changed:
         with _state_lock:
             STATE["cold_start_pending"] = False
@@ -6138,6 +6166,11 @@ def _api_config_locked(act_locked=False, fault_locked=False):
         with _state_lock:
             if entering_manual:
                 STATE["manual_off_pending"] = True
+            if sensor_changed:
+                STATE.update(co2=None, co2_path=None, reading_at=None, temperature=None,
+                             humidity=None, pm25=None, sensor_error=None)
+                _elapsed_clocks.pop("reading_at", None)
+                _elapsed_clocks["sensor_selected"] = (time.time(), time.monotonic())
             for key in STATE["latch"]:
                 STATE["latch"][key] = False
     if was == "on" and now_mode != "on":
@@ -6427,6 +6460,9 @@ def _apply_resume(allow_old_monotonic=False):
         START_TIME = st
     carried = d.get("elapsed_clocks")
     if isinstance(carried, dict):
+        selected = clock_pair(carried.get("sensor_selected"))
+        if selected is not None and selected[1] <= mono:
+            _elapsed_clocks["sensor_selected"] = selected
         for key in ("startup", "changed_at", "min_run_at", "reading_at", "watts_at"):
             pair = clock_pair(carried.get(key))
             wall = START_TIME if key == "startup" else STATE.get(key)

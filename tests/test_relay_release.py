@@ -433,7 +433,7 @@ def test_manual_recovery_persistence_retry_finishes_stop_before_acknowledgement(
     # The recovered fast path and subsequent acknowledgement owe no new OFF.
     before = list(plug.commands)
     assert C._enforce_stop(plug, C._cfg_generation)
-    response = C.app.test_client().post('/api/fault/clear', json={})
+    response = C.app.test_client().post('/api/fault/clear', json=harness.fault_ack(C))
     assert response.status_code == 200 and response.get_json()['cleared']
     assert C.STATE['fault'] is None
     plug.relay = True
@@ -456,7 +456,7 @@ def test_shutdown_saved_manual_recovery_is_not_owed_after_cold_start():
     D._notify = lambda *args, **kwargs: None
     D._restore_manual_stop_promise()
     assert not D.STATE['manual_off_pending']
-    response = D.app.test_client().post('/api/fault/clear', json={})
+    response = D.app.test_client().post('/api/fault/clear', json=harness.fault_ack(D))
     assert response.status_code == 200 and response.get_json()['cleared']
     p = Plug(D, relay=True, watts=23)
     D._record_relay_observation(True)

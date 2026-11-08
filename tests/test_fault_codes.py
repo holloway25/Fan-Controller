@@ -229,7 +229,7 @@ def test_the_clear_codes_are_pinned_too():
 
 def _ack(C):
     """Acknowledge through the endpoint, as the dashboard does."""
-    with C.app.test_request_context("/api/fault/clear", method="POST", json={}):
+    with C.app.test_request_context("/api/fault/clear", method="POST", json=harness.fault_ack(C)):
         return C.api_fault_clear()
 
 
@@ -267,7 +267,8 @@ def test_no_all_clear_for_a_fault_nobody_was_told_about():
 def test_clearing_with_no_fault_standing_says_nothing():
     C = harness.load()
     sent = E.wire(C)
-    _ack(C)
+    _, status = _ack(C)
+    assert status == 409
     assert sent == [], "sent an all-clear for nothing: %r" % sent
     return "silent when there was no fault"
 
@@ -712,8 +713,7 @@ def test_a_late_callback_cannot_vouch_for_the_next_fault():
     assert C._unsaved_delivered is not None, "A never recorded delivery"
 
     # A is acknowledged and a NEW fault is raised.
-    with C.app.test_request_context("/api/fault/clear", method="POST", json={}):
-        C.api_fault_clear()
+    _ack(C)
     E.raise_draw_fault(C, 27.6, lo=15.0, hi=22.0)
 
     # B goes unsaved, and its own send fails.
@@ -764,8 +764,7 @@ def test_the_whole_draw_episode_carries_one_code():
     C = harness.load()
     E.wire(C)
     E.raise_draw_fault(C, 8.2, lo=15.0, hi=22.0)
-    with C.app.test_request_context("/api/fault/clear", method="POST", json={}):
-        C.api_fault_clear()
+    _ack(C)
     hits = [e["msg"] for e in C.load_events()
             if C.FC_UNDER_POWER in e["msg"]]
     assert len(hits) >= 2, "episode is not searchable: %r" % [

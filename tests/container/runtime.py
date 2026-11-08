@@ -102,7 +102,7 @@ try:
         current=until(lambda s:s['co2']==1200 and s['fan'] is False)
         assert current['fault']['code']=='FC-004'
         assert not plug.state.snapshot()['relay'], 'Standing fault allowed Auto ON'
-        assert request('/api/fault/clear',{})['cleared']
+        assert request('/api/fault/clear', {'fault_ack_token': current['fault_ack_token']})['cleared']
         until(lambda s:s['fan'] is True and s['fault'] is None)
         process.kill()  # Forced exit must not create a clean-stop checkpoint.
         process.wait(timeout=5)

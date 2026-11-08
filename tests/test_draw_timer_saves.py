@@ -92,6 +92,13 @@ def test_each_relevant_plug_setting_resets_timer():
         clock[0] += 30
         save(C, {"plug": {key: value}})
         assert C._oob_since is None, key
+        if key == "host":
+            C._draw_check(plug, C._cfg_generation)
+            assert C._oob_since is None and C.STATE["watts"] is None
+            C._refresh_relay(plug, C._cfg_generation)
+            assert C._oob_since is None
+            clock[0] += C.SETTLE_SECONDS + 1
+            C.STATE["watts"] = 0.0  # first fresh replacement meter reading
         tick(C, clock, plug, 0)
         assert C.STATE["fault"] is None, key
         if key != "watts_enabled":
