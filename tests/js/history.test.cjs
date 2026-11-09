@@ -2,6 +2,47 @@ const assert = require('assert');
 const H = require('./harness.cjs');
 const tests = {};
 
+tests['history timeout preserves chart and discards a late body after retry'] = async () => {
+  const t=H.now();
+  const state=H.baseState();
+  const page=await H.open({state,history:H.baseHistory([{t:t-60,v:700},{t:t-30,v:800}])});
+  const {window,document}=page;
+  const points=()=>document.querySelector('#trace polyline').getAttribute('points');
+  const original=points();
+  const fetch=window.fetch;
+  const setTimeout=window.setTimeout;
+  let expire,late,signal,requests=0;
+  window.setTimeout=(fn,ms)=>{
+    if(ms===4000)expire=fn;
+    return setTimeout(fn,ms);
+  };
+  window.fetch=(url,opts)=>{
+    if(!url.startsWith('/api/history'))return fetch(url,opts);
+    if(++requests===1){
+      signal=opts.signal;
+      return Promise.resolve({ok:true,json:()=>new Promise(resolve=>{late=resolve})});
+    }
+    const fresh=H.baseHistory([{t:t-60,v:700},{t:t-30,v:800},{t,v:900}]);
+    return Promise.resolve({ok:true,json:async()=>({...fresh,history_rev:3})});
+  };
+  state.history_rev=2;
+  await H.poll(window);
+  assert(expire&&late);
+  expire();
+  assert(signal.aborted);
+  assert.equal(points(),original);
+  assert(document.getElementById('historymsg').textContent.includes('last available chart'));
+  state.history_rev=3;
+  await H.poll(window);
+  assert.equal(requests,2);
+  const recovered=points();
+  assert.notEqual(recovered,original);
+  assert.equal(document.getElementById('historymsg').textContent,'');
+  late({...H.baseHistory([{t:t-60,v:650},{t:t-30,v:650}]),history_rev:2});
+  await H.settle(window);
+  assert.equal(points(),recovered);
+};
+
 tests['rollback epoch replaces cached chart with all sorted samples'] = async () => {
   const t = H.now();
   const state = H.baseState({history_rev:2,history_generation:'g1'});

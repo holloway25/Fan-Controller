@@ -380,6 +380,7 @@ def test_the_unsaved_alert_names_the_fault_it_could_not_save():
     assert subject.startswith(C.FC_FAULT_UNSAVED), subject
     assert "Standing fault:" in body, body
     assert C.FC_UNDER_POWER in body, body
+    assert "FC-206 safety latch" in body and "keeps Auto blocked" in body
     return "FC-005 names the standing fault"
 
 

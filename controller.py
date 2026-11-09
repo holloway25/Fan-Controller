@@ -3632,12 +3632,11 @@ def _unsaved_edge():
                 "A fault is active but could not be written to fault.json.\n"
                 + stop_text + "\nAutomatic starts are blocked while the "
                 "fault stands; Force on overrides stop enforcement.\n"
-                "The risk is a restart: the fault would be "
-                "forgotten and normal control would resume as though "
-                "nothing were wrong.\nThe service retries the write on "
-                "its own.",
+                "A restart may lose the latest fault details. Startup safety "
+                "protection keeps Auto blocked with the saved fault or an "
+                "FC-206 safety latch.\nThe service retries the write on its own.",
                 [("Standing fault", standing.get("code") or "unknown"),
-                 ("Action taken", stop_action + "; fault held in memory only"),
+                 ("Action taken", stop_action + "; latest fault state held in memory"),
                  ("Manual action", "Yes"),
                  ("How to clear", "Fix the disk; the write retries "
                                   "itself"),
