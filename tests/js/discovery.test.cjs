@@ -13,6 +13,38 @@ async function find(sensors) {
 }
 
 module.exports = {
+  async test_console_change_discards_old_sensor_options_and_blocks_their_save() {
+    const state = H.baseState();
+    let saves=0;
+    const {window,document} = await H.open({state,beforeParse(w) {
+      const fetch=w.fetch;
+      w.fetch=(url,opts)=>{
+        if(url==="/api/config")saves++;
+        if(url==="/api/protect/sensors")
+          return Promise.resolve({ok:true,json:async()=>({protect_host:state.config.protect.host,
+            sensors:[{id:"old-only",name:"Old console sensor"}]})});
+        return fetch(url,opts);
+      };
+    }});
+    const picker=document.getElementById("p_sensor");
+    assert(Array.from(picker.options).some(option=>option.value==="old-only"));
+    picker.value="old-only";
+    picker.dispatchEvent(new window.Event("change"));
+    document.getElementById("p_host").value="replacement.invalid";
+    document.getElementById("save2").click();
+    await H.settle(window);
+    assert.equal(saves,0);
+    assert(document.getElementById("pmsg").textContent.includes("find sensors on that console"));
+
+    // Return the form to untouched state as another tab replaces the console.
+    window.eval("touched=false");
+    state.config.protect.host="replacement.invalid";
+    state.config.protect.sensor_id="new-sensor";
+    await H.poll(window);
+    assert(!Array.from(picker.options).some(option=>option.value==="old-only"));
+    assert.equal(picker.value,"new-sensor");
+  },
+
   async test_disconnected_discovery_labels_retained_co2_and_does_not_invite_selection() {
     const doc = await find([{id:"s",name:"Offline sensor",co2:500,isConnected:false}]);
     const options = doc.getElementById("p_sensor").textContent;

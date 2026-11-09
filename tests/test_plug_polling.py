@@ -333,7 +333,7 @@ def test_response_diagnostics_are_classified_not_copied_from_device():
         status_code = 200
         content = b'PRIVATE'
         value = {}
-        def json(self):
+        def json(self, **kwargs):
             if isinstance(self.value,Exception):
                 raise self.value
             return self.value

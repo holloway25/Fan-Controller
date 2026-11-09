@@ -692,18 +692,11 @@ function render(s){
   say("topmsg",fmsg?fmsg+recoveryHint:s.error||"", "err");
   say("drawloopmsg",drawLate?"Power monitoring loop is not responding":
     (s.draw_loop_error?"Power monitoring loop: "+s.draw_loop_error:""),"err");
-  // fault_unsaved: the fault is live in memory and the fan is stopped,
-  // but it could not be written, so a restart would forget it and
-  // resume on a fan already judged faulty. It gets its own line rather
-  // than being folded into topmsg, which a fault message or a poll
-  // error would otherwise crowd out - this is the one state the fan
-  // cannot recover from on its own, so it must not be the thing that
-  // gets dropped. Driven off the flag directly rather than off
-  // s.fault, so it still shows if the two ever disagree.
-  say("unsavedmsg",s.fault_unsaved?
-    "Fault not saved to disk \u2014 in force now, but a restart would "+
-    "clear it and the fan would resume. Check free space and "+
-    "permissions on fault.json.":"", "err");
+  const pendingStopSave=s.fault_unsaved&&s.fault?.stop_recheck===true;
+  say("unsavedmsg",pendingStopSave?
+    "Latest stop status pending disk save. The fault remains latched.":
+    s.fault_unsaved?"Fault state not saved to disk. Check free space and permissions on fault.json.":"",
+    pendingStopSave?"":"err");
   // Held on by the minimum-run lease rather than by demand: fan running,
   // neither rule latched, and the lease not yet expired. decide() returns
   // None in exactly this case, which is otherwise invisible.
@@ -901,7 +894,7 @@ function render(s){
   if(touched)return;
   CFG=JSON.parse(JSON.stringify(s.config));
   passwordVersions=s.password_versions||{};
-  syncSensorSelection(CFG.protect.sensor_id);
+  syncSensorConsole();
   ["on_at","off_at","min_run_minutes","cold_start_minutes","poll_seconds","temp_on","temp_off",
    "humidity_on","humidity_off","stale_minutes"]
     .forEach(k=>$(k).value=k==="cold_start_minutes"?(c[k]??15):c[k]);
@@ -936,7 +929,18 @@ function render(s){
 
 // Checkboxes and selects fire "change", not "input". Listening for both
 let sensorSelectionTouched=false;
+let sensorListHost=null;
 $("p_sensor").addEventListener("change",()=>{sensorSelectionTouched=true});
+
+function syncSensorConsole(){
+  const host=CFG.protect.host;
+  if(sensorListHost!==host){
+    $("p_sensor").innerHTML='<option value="">Not selected</option>';
+    sensorListHost=host;
+    sensorSelectionTouched=false;
+  }
+  syncSensorSelection(CFG.protect.sensor_id);
+}
 
 function syncSensorSelection(id){
   if(sensorSelectionTouched)return;
@@ -1012,8 +1016,12 @@ async function saveAll(msgEl){
   // Only send a selection when the picker is actually populated, so a
   // save from a freshly loaded page cannot wipe a stored choice.
   const sid=$("p_sensor").value;
-  if(sensorSelectionTouched)body.protect.sensor_id=sid;
   if(!CFG)throw new Error("Wait for settings to load before saving.");
+  if(sensorSelectionTouched){
+    if(sid&&body.protect.host!==sensorListHost)
+      throw new Error("Save the Protect address and find sensors on that console before choosing one.");
+    body.protect.sensor_id=sid;
+  }
   const expected={};
   for(const [section,values] of Object.entries(body)){
     const baseline=CFG[section]||{};
@@ -1029,6 +1037,7 @@ async function saveAll(msgEl){
         compare[key]=previous;
         if(key==="host"&&passwordVersions[section])compare.password=passwordVersions[section];
         if(section==="plug"&&key.startsWith("watts_"))compare.host=baseline.host;
+        if(section==="protect"&&key==="sensor_id")compare.host=baseline.host;
       }
     }
     if(Object.keys(compare).length)expected[section]=compare;
@@ -1051,6 +1060,7 @@ async function saveAll(msgEl){
   }
   if(Object.hasOwn(body.protect,"sensor_id")&&$("p_sensor").value===body.protect.sensor_id)
     sensorSelectionTouched=false;
+  if(Object.hasOwn(body.protect,"host"))syncSensorConsole();
   touched=editRevision!==submittedRevision;
   // A cleared secret is reported so the change is never silent.
   say(msgEl, j.notice || "Saved.", j.notice ? "err" : "ok");
@@ -1082,7 +1092,11 @@ document.querySelectorAll("#mode button").forEach(b=>
     tickUI()}));
 
 async function loadSensors(msgEl,notice=""){
+  const host=CFG?.protect.host;
   const j=await post("/api/protect/sensors");
+  if(host!==CFG?.protect.host||(j.protect_host!==undefined&&j.protect_host!==host))
+    throw new Error("Protect address changed. Find sensors again.");
+  sensorListHost=host;
   const sel=$("p_sensor"), cur=sensorSelectionTouched?sel.value:(CFG?.protect.sensor_id||"");
   const editedOption=sensorSelectionTouched?sel.selectedOptions[0]?.cloneNode(true):null;
   sel.innerHTML='<option value="">Not selected</option>';

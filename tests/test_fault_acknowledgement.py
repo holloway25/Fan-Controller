@@ -295,5 +295,20 @@ def test_saved_stop_requires_fresh_verification_before_acknowledgement():
     assert token and client.post("/api/fault/clear", json={"fault_ack_token": token}).get_json()["cleared"]
 
 
+def test_saved_unconfirmed_stop_requires_a_new_check_after_startup():
+    C, fault = _latched()
+    C._store_fault(dict(fault, stopped=False, stop_recheck="unconfirmed"))
+    C.CFG["plug"]["host"] = "replacement.invalid"
+    C.STATE["fault"] = C.load_fault()
+    C._recheck_saved_stop()
+    client = C.app.test_client()
+    snapshot = client.get("/api/state").get_json()
+    assert snapshot["fault"]["stop_recheck"] is True
+    assert snapshot["fault_ack_token"] is None
+    assert client.post("/api/fault/clear", json=dict(
+        harness.fault_ack(C), confirm_unverified_stop=True)).status_code == 409
+    assert C.STATE["fault"]["at"] == fault["at"]
+
+
 if __name__ == "__main__":
     sys.exit(harness.run(dict(globals())))

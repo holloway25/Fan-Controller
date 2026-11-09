@@ -109,5 +109,16 @@ def test_old_plug_calibration_edit_conflicts_after_address_change():
     assert C.load_cfg()["plug"]["watts_off_max"] == baseline["watts_off_max"]
 
 
+def test_stale_sensor_selection_conflicts_with_console_replacement():
+    C = harness.load()
+    client = C.app.test_client()
+    baseline = client.get("/api/state").get_json()["config"]["protect"]
+    assert client.post("/api/config", json={"protect": {"host": "replacement.invalid"}}).status_code == 200
+    response = client.post("/api/config", json={"protect": {"sensor_id": "old-only"},
+        "expected": {"protect": {"host": baseline["host"], "sensor_id": baseline["sensor_id"]}}})
+    assert response.status_code == 409
+    assert C.load_cfg()["protect"]["sensor_id"] == baseline["sensor_id"]
+
+
 if __name__ == '__main__':
     sys.exit(harness.run(dict(globals())))

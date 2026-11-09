@@ -1983,7 +1983,10 @@ class Tasmota:
                             "HTTP command API is enabled on the device.",
                             reason="empty reply", elapsed=elapsed)
         try:
-            data = r.json()
+            data = r.json(object_pairs_hook=_unique_json_object)
+        except DuplicateJSONKey:
+            raise PlugError("Plug returned duplicate JSON keys",
+                            reason="duplicate JSON keys", elapsed=elapsed)
         except ValueError:
             raise PlugError("Plug returned a non-JSON reply",
                             reason="non-JSON reply", elapsed=elapsed)
@@ -6314,7 +6317,9 @@ def _api_config_locked(act_locked=False, fault_locked=False):
 
 @app.route("/api/protect/sensors", methods=["POST"])
 def api_sensors():
-    p, _ = _clients()
+    with _cfg_lock:
+        p, _ = _clients()
+        host = CFG["protect"]["host"]
     try:
         out = []
         for s in p.sensors():
@@ -6323,7 +6328,7 @@ def api_sensors():
                         "state": s.get("state"),
                         "isConnected": s.get("isConnected"),
                         "co2": hit[0] if hit else None})
-        return jsonify(sensors=out)
+        return jsonify(sensors=out, protect_host=host)
     except ProtectError as e:
         return jsonify(error=str(e)), 400
 
@@ -7087,7 +7092,7 @@ def _run_controller():
 def _recheck_saved_stop():
     with _state_lock:
         fault = STATE["fault"]
-        if fault and fault.get("stopped"):
+        if fault and (fault.get("stopped") or fault.get("stop_recheck") == "unconfirmed"):
             fault.update(stopped=False, stop_recheck=True)
             STATE["fault_unsaved"] = True
 

@@ -39,7 +39,7 @@ the fan and power draw are safe.
 | GET | `/signin` | Protected | Trigger the browser authentication prompt |
 | POST | `/api/config` | Protected | Validate and apply a partial settings update |
 | POST | `/api/fault/clear` | Protected | Acknowledge the displayed fault with `{"fault_ack_token":"…"}` from `/api/state`. Missing or stale tokens return HTTP 409. |
-| POST | `/api/protect/sensors` | Protected | List adopted sensors and current CO2 values |
+| POST | `/api/protect/sensors` | Protected | List adopted sensors and current CO2 values, with the source console address in `protect_host` |
 | POST | `/api/plug/test` | Protected | Read relay state and power from the plug |
 | POST | `/api/email/test` | Protected | Send a test email |
 | POST | `/api/ui/password` | Protected | Set or clear the UI password |

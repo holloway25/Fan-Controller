@@ -32,6 +32,14 @@ async function action(id, messageId, resultFails = false, confirmFault = false, 
 }
 
 module.exports = {
+  async test_startup_recheck_does_not_say_restart_will_clear_the_fault() {
+    const {document}=await H.open({state:H.baseState({
+      fault:{msg:"Draw fault",stopped:false,stop_recheck:true},fault_unsaved:true})});
+    const message=document.getElementById("unsavedmsg").textContent;
+    assert(message.includes("Latest stop status pending disk save"));
+    assert(message.includes("fault remains latched"));
+  },
+
   async test_relay_fault_banner_does_not_repeat_an_old_fan_off_message() {
     const state = H.baseState({fan:true, fault:{msg:"FC-008 Fan off",stopped:false},
       fault_retry:{phase:"recovered", attempts:6, remaining:0}});

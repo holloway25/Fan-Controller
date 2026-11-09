@@ -78,7 +78,7 @@ def test_a_json_reply_must_be_an_object():
         def __init__(self, value):
             self.value = value
 
-        def json(self):
+        def json(self, **kwargs):
             return self.value
 
     real = C._plug_http_get
@@ -105,7 +105,7 @@ def test_redirect_body_cannot_acknowledge_off():
         status_code = 302
         content = b'{"POWER":"OFF"}'
 
-        def json(self):
+        def json(self, **kwargs):
             return {"POWER": "OFF"}
 
     real = C._plug_http_get

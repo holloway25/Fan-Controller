@@ -967,6 +967,29 @@ def test_contradictory_relay_fields_do_not_discharge_manual_off():
     assert not C.STATE["manual_off_pending"]
 
 
+def test_duplicate_relay_keys_require_a_real_manual_off_command():
+    C = harness.load()
+    setup(C, mode="manual")
+    C.CFG["plug"]["watts_enabled"] = False
+    C.STATE["manual_off_pending"] = True
+    C.promise_manual_off()
+    commands = []
+
+    def reply(url, *, params, timeout):
+        command = params["cmnd"]
+        commands.append(command)
+        response = C.requests.Response()
+        response.status_code = 200
+        response._content = (b'{"POWER":"ON","POWER":"OFF"}'
+                             if command == "Power" else b'{"POWER":"OFF"}')
+        return response
+
+    C._plug_http_get = reply
+    C._manual_off(C.Tasmota("plug.invalid"))
+    assert commands == ["Power", "Power OFF"]
+    assert not C.STATE["manual_off_pending"] and not C.manual_off_promised()
+
+
 def test_a_manual_stop_clears_the_run_record():
     """PRODUCTION MANUAL NEVER REACHES decide().
 

@@ -9,7 +9,7 @@ import harness
 class Reply:
     status_code = 200
     content = b'{}'
-    def json(self):
+    def json(self, **kwargs):
         return {'POWER':'ON', 'StatusSNS':{'ENERGY':{'Power':23}}}
 
 
@@ -78,7 +78,7 @@ def test_transport_and_reply_errors_release_the_request_lock():
     p = C.Tasmota('192.0.2.10')
     old = C._plug_http_get
     class BadReply(Reply):
-        def json(self):
+        def json(self, **kwargs):
             raise ValueError('bad response')
     def timeout(*args,**kwargs):
         raise C.requests.ConnectTimeout('unsafe request details')

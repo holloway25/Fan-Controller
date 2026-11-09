@@ -181,7 +181,7 @@ def test_boolean_http_meter_values_cannot_confirm_fault_stop():
             check(C, clock, fake, 30)
             before = C.STATE['fault']['relay_retry']['attempts']
             class MeterReplyWithRelay(Reply):
-                def json(self):
+                def json(self, **kwargs):
                     return {'POWER':'OFF', 'StatusSNS':{'ENERGY':{'Power':raw}}}
             C._plug_http_get = lambda *a, **kw: MeterReplyWithRelay()
             plug = C.Tasmota('192.0.2.10')
@@ -193,7 +193,7 @@ def test_boolean_http_meter_values_cannot_confirm_fault_stop():
             assert not any(subject.startswith('FC-103') for subject, _ in notices)
     C, _, _, _ = setup()
     class MeterReplySensorOnly(Reply):
-        def json(self):
+        def json(self, **kwargs):
             return {'StatusSNS':{'ENERGY':{'Power':raw}}}
     C._plug_http_get = lambda *a, **kw: MeterReplySensorOnly()
     plug = C.Tasmota('192.0.2.10')
