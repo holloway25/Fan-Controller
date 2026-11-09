@@ -71,6 +71,26 @@ def test_disabled_missing_metrics_are_not_required():
     assert not plug.commands and not sent
 
 
+def test_sensor_recovery_reports_standing_fault_without_rearming_auto():
+    C, vals, plug, sent = setup()
+    C._notify_stale(1, already_on=True)
+    assert C._stale_delivered
+    C._store_fault(dict(at=C.time.time(), msg="Draw fault",
+                        code=C.FC_OVER_POWER, stopped=True))
+    vals["co2"] = 1200
+    C.tick()
+
+    assert C.STATE["co2"] == 1200 and C.STATE["fault"]["code"] == "FC-004"
+    assert not plug.commands
+    subject, body = sent[-1]
+    assert subject.startswith("FC-100")
+    assert "Automatic operation remains blocked by FC-004" in body
+    assert "acknowledge the standing fault once safe" in body
+    assert "normal control resumed" not in body.lower()
+    assert any(e["msg"] == "FC-100 Readings returned — fault still active"
+               for e in C.STATE["events"])
+
+
 def test_partial_outage_waits_for_configured_elapsed_deadline():
     C, vals, plug, sent = setup()
     clock = [1000.0]

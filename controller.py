@@ -2963,25 +2963,29 @@ def tick():
     global _stale_delivered, _stale_inflight, _stale_episode
     with _state_lock:
         recovered = _stale_delivered
+        fault = STATE["fault"]
+        fault_label = (fault.get("code") or "a standing safety fault") if fault else None
         _stale_episode = None
         _stale_delivered = False
         _stale_inflight = False
     if recovered:
-        # LOGGED AS WELL AS MAILED. The recovery was mailed and never
-        # written down, so events.json showed a fail-safe starting and
-        # nothing ending it - and a search for the all-clear found
-        # nothing at all.
-        _log("%s Readings returned \u2014 normal control resumed"
-             % FC_SENSOR_RETURNED)
+        message = "Readings are arriving again."
+        action = "Sensor readings restored"
+        manual = "No"
+        activity = "%s Readings returned" % FC_SENSOR_RETURNED
+        if fault_label:
+            action = "Automatic operation remains blocked by %s" % fault_label
+            manual = "Inspect the fan and acknowledge the standing fault once safe."
+            message += " %s. %s" % (action, manual)
+            activity += " \u2014 fault still active"
+        _log(activity)
         _notify("%s Sensor readings have returned" % FC_SENSOR_RETURNED,
                 _alert_body(
                     FC_SENSOR_RETURNED, "Sensor Readings Restored",
                     time.time(),
-                    "Readings are arriving again and normal control has "
-                    "resumed.\nThis is the all-clear for the earlier "
-                    "sensor alert.",
-                    [("Action taken", "Normal control resumed"),
-                     ("Manual action", "No"),
+                    message,
+                    [("Action taken", action),
+                     ("Manual action", manual),
                      ("Controller mode", _mode_now())]))
     # Outside _state_lock: the daily fold takes its own lock and must
     # not extend a hold a reader is waiting on.
