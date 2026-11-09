@@ -1028,10 +1028,8 @@ MUTATIONS = [
 
     # ------------------------------------------------------ the scanner
     ("scanner-prints-the-value", "tools/scan_secrets.py",
-     '''    print("%s:%s: credential-looking assignment (value redacted)"
-          % (where, lineno))''',
-     '''    print("%s:%s: credential-looking assignment: %s"
-          % (where, lineno, line.strip()[:120]))''',
+     '            _report(path, "+")',
+     '            print("%s:+: credential-looking assignment: %s" % (path, line[1:].strip()))',
      "test_secret_scanner.py",
      "test_a_finding_never_prints_the_value"),
     # A FAITHFUL REGRESSION, not a token edit. The first version of
