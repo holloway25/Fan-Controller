@@ -226,5 +226,25 @@ def test_lost_stop_confirmation_invalidates_old_acknowledgement():
     assert plug.calls == []
 
 
+def test_failed_plug_save_still_invalidates_withdrawn_stop_confirmation():
+    C, fault = _latched()
+    C.CFG["plug"]["host"] = "original.invalid"
+    C.save_cfg(C.CFG)
+    client = C.app.test_client()
+    token = client.get("/api/state").get_json()["fault_ack_token"]
+
+    def fail(_):
+        raise OSError("test settings write failure")
+
+    C.save_cfg = fail
+    response = client.post("/api/config", json={"plug": {"host": "replacement.invalid"}})
+    assert response.status_code == 500
+    assert "confirmation was withdrawn" in response.get_json()["error"]
+    assert C.CFG["plug"]["host"] == C.load_cfg()["plug"]["host"] == "original.invalid"
+    assert client.post("/api/fault/clear", json={"fault_ack_token": token}).status_code == 409
+    assert C.STATE["fault"]["at"] == fault["at"] and not C.STATE["fault"]["stopped"]
+    assert C.load_fault()["at"] == fault["at"] and not C.load_fault()["stopped"]
+
+
 if __name__ == "__main__":
     sys.exit(harness.run(dict(globals())))

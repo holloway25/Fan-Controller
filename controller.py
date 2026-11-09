@@ -432,7 +432,7 @@ def load_fault():
         return None
     try:
         with open(FAULT_PATH) as f:
-            d = json.load(f)
+            d = json.load(f, object_pairs_hook=_unique_json_object)
     except (ValueError, OSError) as e:
         why = type(e).__name__
     else:
@@ -6077,6 +6077,12 @@ def _api_config_locked(act_locked=False, fault_locked=False):
         return jsonify(error=str(e)), 400
     summary = _describe_changes(cand)
     plug_changed = cand["plug"]["host"] != CFG["plug"]["host"]
+    if plug_changed and cand["control"]["mode"] == "on":
+        with _state_lock:
+            if STATE["fault"] is not None:
+                return jsonify(error="Select Auto or Manual before changing the plug "
+                                     "with a fault active. Confirm Force on separately "
+                                     "after saving the replacement."), 409
     sensor_changed = any(cand["protect"][key] != CFG["protect"][key]
                          for key in ("host", "sensor_id"))
     # Before save_cfg, not after. The promise has to reach disk BEFORE
@@ -6125,6 +6131,7 @@ def _api_config_locked(act_locked=False, fault_locked=False):
     # reached disk - live behaviour and stored behaviour disagreeing
     # until the next restart silently reverted it. cand is a complete
     # config, so writing it is equivalent to writing the merged CFG.
+    confirmation_withdrawn = False
     if plug_changed:
         # Retire the old confirmation on disk before installing the new
         # host. A crash between the two writes leaves a latched,
@@ -6134,13 +6141,25 @@ def _api_config_locked(act_locked=False, fault_locked=False):
                 fault = copy.deepcopy(STATE["fault"])
                 owed = STATE["fault_unsaved"]
             if fault and (fault.get("stopped") or owed):
+                confirmation_withdrawn = bool(fault.get("stopped"))
                 fault.update(stopped=False)
                 try:
                     save_fault(fault)
+                except InstalledNotDurable:
+                    with _state_lock:
+                        if confirmation_withdrawn:
+                            _rotate_fault_token_locked()
+                        STATE["fault"] = fault
+                        STATE["fault_unsaved"] = True
+                        STATE["relay_revision"] += 1
+                    return jsonify(error="Plug address was not changed. The fault remains "
+                                         "latched and stop confirmation needs to be checked again."), 503
                 except OSError:
                     return jsonify(error="Could not durably reset the previous plug's "
                                          "stop confirmation. Plug address was not changed."), 503
                 with _state_lock:
+                    if confirmation_withdrawn:
+                        _rotate_fault_token_locked()
                     STATE["fault"] = fault
                     STATE["fault_unsaved"] = False
             with _state_lock:
@@ -6155,8 +6174,10 @@ def _api_config_locked(act_locked=False, fault_locked=False):
         # told had been rejected take effect later, unannounced.
         durable = False
     except OSError as e:
-        return jsonify(error="Could not save settings (%s). Nothing "
-                             "was changed." % e), 500
+        detail = ("Settings were not changed, but the fault's stop confirmation "
+                  "was withdrawn. Review the fault before acknowledging it."
+                  if confirmation_withdrawn else "Nothing was changed.")
+        return jsonify(error="Could not save settings (%s). %s" % (e, detail)), 500
     # The recursive entry above already holds _act_lock through validation,
     # durable marker creation, persistence and commit. Keep state locks inside it.
     was = CFG["control"].get("mode")

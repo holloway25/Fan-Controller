@@ -15,8 +15,9 @@ Non-public API writes also reject browser requests from another origin,
 regardless of whether a password is set. `Origin`, or `Referer` when Origin is absent, must
 match the request's scheme, host and port; cross-site and same-site fetches
 from another origin are rejected. Scripts without browser origin headers
-remain supported. Fault acknowledgement requires a valid JSON object (`{}`
-is sufficient); rejected requests leave the safety latch intact.
+remain supported. To acknowledge a fault, send
+`{"fault_ack_token":"…"}` using the token from the `/api/state` response
+shown to the operator. Rejected acknowledgements leave the safety latch intact.
 
 | Method | Path | Access | Purpose |
 |---|---|---|---|
@@ -60,7 +61,9 @@ fault locks. Without a fault it succeeds normally. With an active fault it
 returns 409 with `fault_override_required: true` and a `fault_override_token`,
 without saving any settings. After the operator explicitly confirms that
 override, repeat the request with `X-Fault-Override` set to that token. A token
-from another fault episode or process is rejected with a new 409 challenge.
+from another fault episode, process, plug or stop revision is rejected with a
+new 409 challenge. During a fault, save a replacement plug in Auto or Manual
+before requesting a fresh Force on override.
 The check remains locked through settings persistence and mode commit.
 Confirmation permits Force on; it does not acknowledge or clear the fault.
 The token is not authentication and does not replace Basic/origin checks.

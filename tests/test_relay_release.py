@@ -660,5 +660,18 @@ def test_initial_manual_retry_wait_survives_preserving_and_cold_restarts():
     assert p.commands==[False] and E.STATE['fault']['relay_retry']['attempts']==1
 
 
+def test_duplicate_retry_fields_cannot_disable_fault_stop():
+    C, clock, mail, plug = setup()
+    with open(C.FAULT_PATH, "w") as f:
+        f.write('{"at":10000,"msg":"draw fault","code":"FC-008","stopped":false,'
+                '"relay_retry":{"attempts":0,"phase":"first"},'
+                '"relay_retry":{"attempts":6,"phase":"exhausted"}}')
+    C.STATE["fault"] = C.load_fault()
+    assert C.STATE["fault"]["code"] == "FC-206"
+    plug.relay = True
+    C._enforce_stop(plug)
+    assert plug.commands == [False]
+
+
 if __name__ == '__main__':
     sys.exit(harness.run(dict(globals())))

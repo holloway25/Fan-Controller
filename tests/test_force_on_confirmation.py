@@ -95,5 +95,33 @@ def test_fault_check_and_commit_hold_actuation_and_fault_locks():
     assert seen == {"_act_lock": False, "_fault_lock": False}, seen
 
 
+def test_replacement_plug_requires_separate_force_on_confirmation():
+    for already_forced in (False, True):
+        C = setup()
+        C.CFG["plug"]["host"] = "original.invalid"
+        if already_forced:
+            C.CFG["control"]["mode"] = "on"
+        C.save_cfg(C.CFG)
+        fault(C)
+        client = C.app.test_client()
+        force = {"control": {"mode": "on"}}
+        old = client.post("/api/config", json=force).get_json()["fault_override_token"]
+        change = {"plug": {"host": "replacement.invalid"}}
+        request = change if already_forced else dict(change, **force)
+        response = client.post("/api/config", json=request, headers={"X-Fault-Override": old})
+        assert response.status_code == 409
+        assert C.CFG["plug"]["host"] == C.load_cfg()["plug"]["host"] == "original.invalid"
+        assert C.STATE["fault"]["stopped"] and C.load_fault()["stopped"]
+
+        assert client.post("/api/config", json=dict(change, control={"mode": "auto"})).status_code == 200
+        assert C.CFG["plug"]["host"] == "replacement.invalid"
+        response = client.post("/api/config", json=force, headers={"X-Fault-Override": old})
+        assert response.status_code == 409
+        fresh = response.get_json()["fault_override_token"]
+        assert fresh != old
+        assert client.post("/api/config", json=force, headers={"X-Fault-Override": fresh}).status_code == 200
+        assert C.STATE["fault"] is not None
+
+
 if __name__ == "__main__":
     sys.exit(harness.run(dict(globals())))
