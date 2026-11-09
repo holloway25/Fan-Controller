@@ -42,6 +42,39 @@ def test_plug_disabled_shutdown_preserves_an_earlier_crash_marker():
     assert C.load_fault()["code"] == "FC-206"
 
 
+def test_startup_fault_suspends_saved_force_on_until_confirmed_again():
+    from test_actuation import Plug
+
+    for storage_fails in (False, True):
+        C = harness.load()
+        C.CFG["control"]["mode"] = "on"
+        C.save_cfg(C.CFG)
+        C.write_json_durable(C.SAFETY_GUARD_PATH, {"v": 1})
+        C._arm_safety_guard(False)
+        save = C.save_cfg
+        if storage_fails:
+            C.save_cfg = boom
+        C._suspend_startup_override()
+        assert C.CFG["control"]["mode"] == "auto"
+        plug = Plug(on=False)
+        C._force_on(plug)
+        assert plug.calls == [] and C.STATE["fault"]["code"] == "FC-206"
+        client = C.app.test_client()
+        if storage_fails:
+            assert client.post("/api/fault/clear", json=harness.fault_ack(C)).status_code == 503
+            C.save_cfg = save
+        else:
+            assert C.load_cfg()["control"]["mode"] == "auto"
+        body = {"control": {"mode": "on"}}
+        challenge = client.post("/api/config", json=body)
+        assert challenge.status_code == 409
+        token = challenge.get_json()["fault_override_token"]
+        assert client.post("/api/config", json=body,
+                           headers={"X-Fault-Override": token}).status_code == 200
+        C._force_on(plug)
+        assert plug.calls == [True] and C.STATE["fault"]["code"] == "FC-206"
+
+
 def test_shutdown_reports_activity_stalled_past_its_wait():
     C = harness.load()
     C._activity_wake = threading.Event()

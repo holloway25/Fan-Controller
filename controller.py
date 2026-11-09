@@ -462,6 +462,25 @@ def _arm_safety_guard(handover):
     write_json_durable(SAFETY_GUARD_PATH, {"v": 1})
 
 
+_startup_mode_unsaved = False
+
+
+def _suspend_startup_override():
+    """A saved override is not consent to run through a startup fault."""
+    global _startup_mode_unsaved
+    fault = STATE["fault"]
+    if CFG["control"]["mode"] != "on" or not fault or fault.get("code") != "FC-206":
+        return
+    CFG["control"]["mode"] = "auto"
+    try:
+        save_cfg(CFG)
+    except OSError:
+        _startup_mode_unsaved = True
+        _log("FC-205 Force on suspended. Save settings before clearing the startup fault.")
+    else:
+        _log("FC-205 Force on suspended by startup fault. Confirm Force on again to override.")
+
+
 def _disarm_safety_guard():
     if PLUG_ACCESS_DISABLED:
         return
@@ -2910,7 +2929,7 @@ def tick():
     with _act_lock:
         if _stale_client(gen):
             _wake.set()
-            return
+            return False  # No reading was accepted.
         actual = _fan_status(h)
         if actual is not None:
             _normal_relay_at = (h, gen, time.time())
@@ -4156,6 +4175,8 @@ def _clear_fault_locked(expected_token=None, confirm_unverified_stop=False):
             return had, None
         if had is None:
             return None, True
+        if _startup_mode_unsaved:
+            return had, False
         try:
             save_fault(None)
         except InstalledNotDurable:
@@ -5353,19 +5374,14 @@ def loop():
         except (TypeError, ValueError, KeyError):
             base = 30
         try:
-            tick()
-            if last_logged is not None:
-                # Recovery carries the code of the failure it ends, so
-                # both halves come back from one search. 2xx has no
-                # separate all-clear series: 1xx exists so a MAIL RULE
-                # can split alarms from clears, and nothing here is
-                # mailed.
-                _log("%s Poll recovered" % (last_code or FC_POLL_ERROR))
-                _queue_unifi_recovery(outage_since)
-                outage_since = None
-            fails = 0
-            last_logged = None
-            last_code = None
+            if tick() is not False:
+                if last_logged is not None:
+                    _log("%s Poll recovered" % (last_code or FC_POLL_ERROR))
+                    _queue_unifi_recovery(outage_since)
+                    outage_since = None
+                fails = 0
+                last_logged = None
+                last_code = None
         except (ProtectError, PlugError) as e:
             # Logged as well as shown: making login() raise ProtectError
             # moved the restart-time DNS failure into this branch, so
@@ -5888,6 +5904,8 @@ def api_fault_clear():
     if ok is None:
         return jsonify(error="The fault changed. Review the current fault before clearing it."), 409
     if not ok:
+        if _startup_mode_unsaved:
+            return jsonify(error="Save settings before clearing the startup fault."), 503
         # The fault is still live and still on disk. Saying "cleared"
         # here would leave the operator believing the fan is available
         # when the next restart brings the fault straight back.
@@ -6255,7 +6273,9 @@ def _api_config_locked(act_locked=False, fault_locked=False):
     draw_changed = (cand["plug"] != CFG["plug"] or
                     (was == "on") !=
                     (cand["control"].get("mode") == "on"))
-    global _cfg_generation, _oob_generation, _oob_since, _off_draw_since
+    global _cfg_generation, _oob_generation, _oob_since, _off_draw_since, _startup_mode_unsaved
+    if durable:
+        _startup_mode_unsaved = False
     old_generation = _cfg_generation
     for section in cand:
         CFG[section] = cand[section]
@@ -7109,6 +7129,7 @@ def _start_controller(server, channels):
     resumed = handover or _load_stop_state()
     if not PLUG_ACCESS_DISABLED:
         _arm_safety_guard(handover is not False)
+    _suspend_startup_override()
     _recheck_saved_stop()
     # Immediately after, and before anything else can log: this line is
     # what explains every line that appears below it.

@@ -404,6 +404,47 @@ def test_update_session_recovers_from_expiry_without_reauthenticating_permission
     assert client._s is replacement
 
 
+def test_discarded_poll_does_not_report_recovery():
+    from test_actuation import Plug
+
+    C = harness.load()
+    C.CFG["control"]["mode"] = "manual"
+    C.CFG["protect"]["sensor_id"] = "test"
+    C._wait_for_dns = lambda: True
+    polls = []
+
+    class Protect:
+        def readings(self, _):
+            polls.append(True)
+            if len(polls) == 1:
+                raise C.ProtectError("console restarting")
+            if len(polls) == 2:
+                C._cfg_generation += 1
+            return {"co2": 700, "temperature": 20, "humidity": 40}, "co2"
+
+    class Wake:
+        def set(self):
+            pass
+
+        def clear(self):
+            pass
+
+        def wait(self, _):
+            if len(polls) == 2:
+                assert C.STATE["reading_at"] is None
+                assert C._unifi_update_pending is None
+                assert not any("Poll recovered" in e["msg"] for e in C.STATE["events"])
+            if len(polls) == 3:
+                C._stopping.set()
+
+    plug = Plug()
+    C._client_snapshot = lambda: (Protect(), plug, C._cfg_generation)
+    C._wake = Wake()
+    C.loop()
+    assert C.STATE["co2"] == 700
+    assert sum("Poll recovered" in e["msg"] for e in C.STATE["events"]) == 1
+
+
 def test_real_poll_and_meter_recovery_queue_context_without_fetching_it():
     C = harness.load()
     C.time.time = lambda: 1010
