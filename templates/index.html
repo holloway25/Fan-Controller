@@ -353,7 +353,9 @@ window.addEventListener("unhandledrejection",e=>_report(
   "unhandled promise: "+(e.reason&&e.reason.message||e.reason),"",0));
 const $=id=>document.getElementById(id);
 let CFG=null, touched=false, editRevision=0;
+let passwordVersions={};
 let displayedFaultToken=null;
+let displayedFaultNeedsCheck=false;
 const dirty=()=>{touched=true;editRevision++};
 
 function say(el,text,kind){const n=$(el);n.textContent=text||"";
@@ -636,6 +638,7 @@ function drawMini(hist,c){
 
 function render(s){
   displayedFaultToken=s.fault_ack_token??null;
+  displayedFaultNeedsCheck=!!s.fault?.stop_recheck;
   const c=s.config.control;
   $("ppm").textContent=(s.co2==null?"--":Math.round(s.co2))+" ppm";
   const f=$("fan");
@@ -675,12 +678,13 @@ function render(s){
   // a retry while that override is active, even if an earlier stop was confirmed.
   const retry=s.fault_retry;
   const retryText=retry?(s.fault.stopped?" — stop confirmed; acknowledge fault":
-    (retry.phase==="exhausted"||retry.phase==="recovered")?" — automatic retries stopped":
+    (retry.phase==="exhausted"||retry.phase==="recovered")?" — stop unconfirmed; automatic retries stopped":
     retry.phase==="wait"?` — final retries in ${Math.ceil(retry.remaining)}s`:
     retry.attempts===0?` — first OFF retry in ${Math.ceil(retry.remaining)}s`:
     ` — stop unconfirmed; ${retry.phase==="final"?"final ":""}retry ${Math.max(1,retry.attempts>3?retry.attempts-3:retry.attempts)} of 3`):
     (s.fault&&s.fault.stopped?"":" — stop unconfirmed, retrying");
-  const fmsg=s.fault?(s.fault.msg+(c.mode==="on"?
+  const faultLabel=s.fault?.msg.replace(/^(FC-00[789]) Fan off$/, "$1 Relay fault");
+  const fmsg=s.fault?(faultLabel+(c.mode==="on"?
     " — Force on overrides fault stop":retryText)):"";
   say("topmsg",fmsg||s.error||"", "err");
   say("drawloopmsg",drawLate?"Power monitoring loop is not responding":
@@ -892,7 +896,8 @@ function render(s){
       logEl.appendChild(row)});
   }else{logEl.textContent="Nothing yet."}
   if(touched)return;
-  CFG=s.config;
+  CFG=JSON.parse(JSON.stringify(s.config));
+  passwordVersions=s.password_versions||{};
   ["on_at","off_at","min_run_minutes","cold_start_minutes","poll_seconds","temp_on","temp_off",
    "humidity_on","humidity_off","stale_minutes"]
     .forEach(k=>$(k).value=k==="cold_start_minutes"?(c[k]??15):c[k]);
@@ -991,7 +996,27 @@ async function saveAll(msgEl){
   // Only send a selection when the picker is actually populated, so a
   // save from a freshly loaded page cannot wipe a stored choice.
   const sid=$("p_sensor").value;
-  if(sensorSelectionTouched||sid||!(CFG&&CFG.protect.sensor_id))body.protect.sensor_id=sid;
+  if(sensorSelectionTouched||sid)body.protect.sensor_id=sid;
+  if(!CFG)throw new Error("Wait for settings to load before saving.");
+  const expected={};
+  for(const [section,values] of Object.entries(body)){
+    const baseline=CFG[section]||{};
+    const compare={};
+    for(const [key,value] of Object.entries(values)){
+      const previous=baseline[key]??(key==="cold_start_minutes"?15:key==="watts_off_max"?1:undefined);
+      if(key!=="password"&&value===previous){
+        delete values[key];
+      }else if(key==="password"){
+        if(passwordVersions[section])compare.password=passwordVersions[section];
+        compare.host=baseline.host;
+      }else if(previous!==undefined){
+        compare[key]=previous;
+        if(key==="host"&&passwordVersions[section])compare.password=passwordVersions[section];
+      }
+    }
+    if(Object.keys(compare).length)expected[section]=compare;
+  }
+  body.expected=expected;
   const j=await post("/api/config",body);
   for(const [id,section] of [["p_pass","protect"],["g_pass","plug"],["e_pass","email"]]){
     const input=$(id);
@@ -1000,8 +1025,15 @@ async function saveAll(msgEl){
     if(j.config&&j.config[section])
       input.placeholder=j.config[section].password==="SET"?"unchanged":"";
   }
-  if(CFG&&Object.prototype.hasOwnProperty.call(body.protect,"sensor_id"))
-    CFG.protect.sensor_id=body.protect.sensor_id;
+  for(const section of ["control","protect","plug","email"]){
+    for(const key of Object.keys(body[section])){
+      if(key!=="password")CFG[section][key]=j.config?.[section]?.[key]??body[section][key];
+    }
+    if((Object.hasOwn(body[section],"password")||Object.hasOwn(body[section],"host"))
+       &&j.password_versions?.[section])passwordVersions[section]=j.password_versions[section];
+  }
+  if(Object.hasOwn(body.protect,"sensor_id")&&$("p_sensor").value===body.protect.sensor_id)
+    sensorSelectionTouched=false;
   touched=editRevision!==submittedRevision;
   // A cleared secret is reported so the change is never silent.
   say(msgEl, j.notice || "Saved.", j.notice ? "err" : "ok");
@@ -1065,7 +1097,11 @@ $("find").addEventListener("click",async()=>{
 // is surfaced at the top rather than buried in the plug card.
 $("faultclear").addEventListener("click",async()=>{
   const token=displayedFaultToken;
-  if(!token){say("hmsg","No current fault to clear","err"); return}
+  if(!token){
+    say("hmsg",displayedFaultNeedsCheck?"Wait for a fresh stop check before clearing the fault.":
+      "No current fault to clear","err");
+    return;
+  }
   if(!window.confirm("Clear the fault and allow automatic running again? " +
     "Confirm the fan and power draw are safe first."))return;
   try{await post("/api/fault/clear",{fault_ack_token:token}); say("hmsg","Fault cleared","ok")}

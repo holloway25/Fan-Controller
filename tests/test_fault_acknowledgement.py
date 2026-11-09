@@ -272,5 +272,28 @@ def test_stricter_off_limit_requires_new_fault_acknowledgement():
     assert plug.calls == []
 
 
+def test_saved_stop_requires_fresh_verification_before_acknowledgement():
+    from test_actuation import Plug
+
+    C, _ = _latched()
+    C.CFG["plug"].update(host="replacement.invalid", watts_enabled=True, watts_off_max=1)
+    C.STATE["fault"] = C.load_fault()
+    C._recheck_saved_stop()
+    client = C.app.test_client()
+    snapshot = client.get("/api/state").get_json()
+    assert not snapshot["fault"]["stopped"] and snapshot["fault_ack_token"] is None
+    assert client.post("/api/fault/clear", json=harness.fault_ack(C)).status_code == 409
+    plug = Plug(on=False)
+    plug.power_w = lambda: 4
+    assert not C._enforce_stop(plug, verify_only=True)
+    C.save_fault(C.STATE["fault"])
+    C.STATE["fault"] = C.load_fault()
+    assert client.get("/api/state").get_json()["fault_ack_token"] is None
+    plug.power_w = lambda: 0
+    assert C._enforce_stop(plug, verify_only=True)
+    token = client.get("/api/state").get_json()["fault_ack_token"]
+    assert token and client.post("/api/fault/clear", json={"fault_ack_token": token}).get_json()["cleared"]
+
+
 if __name__ == "__main__":
     sys.exit(harness.run(dict(globals())))

@@ -30,7 +30,11 @@ module.exports = {
       await H.settle(window);
       assert.strictEqual(writes.length,1,id+" rejected explicit value");
       const section=id==="e_port"?"email":id.startsWith("watts_")?"plug":"control";
-      assert.strictEqual(writes[0][section][id==="e_port"?"port":id],Number(accepted));
+      const key=id==="e_port"?"port":id;
+      if(Number(accepted)===Number(originalValue))
+        assert(!Object.hasOwn(writes[0][section],key),id+" resubmitted an unchanged value");
+      else
+        assert.strictEqual(writes[0][section][key],Number(accepted));
     }
   },
 };

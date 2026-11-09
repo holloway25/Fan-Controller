@@ -82,5 +82,21 @@ def test_oversized_numbers_return_json_validation_errors_without_saving():
             assert C.CFG == before
 
 
+def test_concurrent_settings_edits_merge_only_when_fields_do_not_conflict():
+    C = harness.load()
+    first, second = C.app.test_client(), C.app.test_client()
+    baseline = first.get("/api/state").get_json()["config"]
+    assert second.post("/api/config", json={"plug": {"watts_off_max": 0}}).status_code == 200
+    email = {"email": {"sender": "fan@example.com"},
+             "expected": {"email": {"sender": baseline["email"]["sender"]}}}
+    assert first.post("/api/config", json=email).status_code == 200
+    assert C.load_cfg()["plug"]["watts_off_max"] == 0
+
+    stale = {"plug": {"watts_off_max": 5},
+             "expected": {"plug": {"watts_off_max": baseline["plug"]["watts_off_max"]}}}
+    assert first.post("/api/config", json=stale).status_code == 409
+    assert C.load_cfg()["plug"]["watts_off_max"] == 0
+
+
 if __name__ == '__main__':
     sys.exit(harness.run(dict(globals())))

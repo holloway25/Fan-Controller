@@ -32,6 +32,39 @@ async function action(id, messageId, resultFails = false, confirmFault = false, 
 }
 
 module.exports = {
+  async test_relay_fault_banner_does_not_repeat_an_old_fan_off_message() {
+    const state = H.baseState({fan:true, fault:{msg:"FC-008 Fan off",stopped:false},
+      fault_retry:{phase:"recovered", attempts:6, remaining:0}});
+    const {document} = await H.open({state});
+    const text = document.getElementById("topmsg").textContent;
+    assert(text.includes("FC-008") && text.includes("stop unconfirmed"));
+    assert(!text.includes("Fan off"));
+  },
+
+  async test_email_save_does_not_resubmit_other_tabs_safety_settings() {
+    const state = H.baseState();
+    state.config.plug.watts_off_max = 5;
+    let body;
+    const {window,document} = await H.open({state,beforeParse(w){
+      const fetch = w.fetch;
+      w.fetch = (url,opts) => {
+        if(url!=="/api/config")return fetch(url,opts);
+        body=JSON.parse(opts.body);
+        return Promise.resolve({ok:true,json:async()=>({ok:true,config:state.config})});
+      };
+    }});
+    const input = document.getElementById("e_sender");
+    input.value = "fan@example.com";
+    input.dispatchEvent(new window.Event("input"));
+    state.config.plug.watts_off_max = 1;
+    await H.poll(window);
+    document.getElementById("save").click();
+    await H.settle(window);
+    assert.deepStrictEqual(body.email,{sender:"fan@example.com"});
+    assert.deepStrictEqual(body.plug,{});
+    assert.deepStrictEqual(body.expected,{email:{sender:""}});
+  },
+
   async test_fault_banner_distinguishes_force_on_override_from_stop_retry() {
     for (const mode of ["auto","manual","on"]) {
       for (const stopped of [false,true]) {

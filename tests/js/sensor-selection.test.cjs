@@ -49,7 +49,7 @@ module.exports = {
       assert.strictEqual(select.value, replacement);
       page.document.getElementById('save2').click();
       await H.settle(page.window);
-      assert.strictEqual(saves[1].protect.sensor_id, replacement);
+      assert(!Object.hasOwn(saves[1].protect, 'sensor_id'));
     }
   },
   async test_explicit_not_selected_clears_sensor() {

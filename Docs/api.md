@@ -18,6 +18,8 @@ from another origin are rejected. Scripts without browser origin headers
 remain supported. To acknowledge a fault, send
 `{"fault_ack_token":"…"}` using the token from the `/api/state` response
 shown to the operator. Rejected acknowledgements leave the safety latch intact.
+After startup, a saved stop confirmation requires a fresh check before
+`/api/state` issues an acknowledgement token for that fault.
 
 | Method | Path | Access | Purpose |
 |---|---|---|---|
@@ -55,6 +57,12 @@ when Basic credentials are required, 403 for a rejected browser origin, and
 not acknowledge the fault. See [request troubleshooting](troubleshooting.md#settings-or-fault-clear-request-is-rejected).
 
 ## Validation and persistence
+
+Settings saves accept partial sections. A client can send an `expected`
+object with the previous values of the fields it is editing. The controller
+returns HTTP 409 if any expected value has changed. For a password field, use
+the corresponding opaque `password_versions` value from `/api/state` in
+`expected` and send the new password only in the settings section.
 
 Setting `control.mode` to `on` checks the live fault under the actuation and
 fault locks. Without a fault it succeeds normally. With an active fault it

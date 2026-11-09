@@ -510,7 +510,10 @@ def _valid_fault_record(value):
         return False
     if set(value) - {"at", "msg", "code", "stopped",
                      "attempted_at", "delivered_at", "relay_retry", "relay_notice",
-                     "manual_stop_id"}:
+                     "manual_stop_id", "stop_recheck"}:
+        return False
+    if "stop_recheck" in value and (
+            value["stop_recheck"] is not True or value.get("stopped") is not False):
         return False
     if "manual_stop_id" in value and (
             not isinstance(value["manual_stop_id"], str)
@@ -4143,7 +4146,8 @@ def _clear_fault_locked(expected_token=None):
         with _state_lock:
             had = STATE["fault"]
         if expected_token is not None and (
-                had is None or expected_token != _fault_override_token(had)):
+                had is None or had.get("stop_recheck")
+                or expected_token != _fault_override_token(had)):
             return had, None
         if had is None:
             return None, True
@@ -4200,6 +4204,7 @@ def _confirm_fault_stopped(expected_at, relay_revision):
                 return False
             snap = dict(cur)
             snap["stopped"] = True
+            snap.pop("stop_recheck", None)
         try:
             save_fault(snap)
         except OSError:
@@ -4217,6 +4222,7 @@ def _confirm_fault_stopped(expected_at, relay_revision):
                 if STATE["fault"] is not None:
                     STATE["fault"]["stopped"] = True
                     STATE["fault_unsaved"] = False
+                    STATE["fault"].pop("stop_recheck", None)
                 # Confirmed, so the run is over. Reached only when
                 # the fault write landed: an unconfirmed stop is
                 # retried, and until it lands the fan may still be
@@ -4273,6 +4279,8 @@ def _relay_retry_update(reserving=False, **changes):
         previous = copy.deepcopy(f) if reserving else None
         previous_retry = f.get("relay_retry")
         f.update(changes)
+        if changes.get("stopped"):
+            f.pop("stop_recheck", None)
         if changes.get("stopped") and _relay_recovered(f):
             marker_id = _manual_stop_id()
             if marker_id is not None:
@@ -5462,6 +5470,36 @@ def _safe_cfg():
     return c
 
 
+_config_version_key = os.urandom(32)
+
+
+def _password_version(section):
+    value = json.dumps([section, CFG[section]["password"]]).encode()
+    return hmac.new(_config_version_key, value,
+                    hashlib.sha256).hexdigest()
+
+
+def _password_versions():
+    return {section: _password_version(section) for section in ("protect", "plug", "email")}
+
+
+def _check_config_expectations(expected):
+    """Compare edited fields while the configuration lock is held."""
+    if not isinstance(expected, dict):
+        return jsonify(error="Expected settings must be an object."), 400
+    for section, values in expected.items():
+        if section not in ("control", "protect", "plug", "email") or not isinstance(values, dict):
+            return jsonify(error="Invalid expected settings section."), 400
+        for key, value in values.items():
+            if key not in SCHEMAS[section]:
+                return jsonify(error="Unknown expected setting."), 400
+            current = _password_version(section) if key == "password" else CFG[section][key]
+            if isinstance(value, bool) != isinstance(current, bool) or current != value:
+                return jsonify(error="Setting %s.%s changed in another session. "
+                                     "Reload before saving it again." % (section, key)), 409
+    return None
+
+
 @app.after_request
 def _no_cache(resp):
     """The UI is small and always dynamic; never let a browser hold a stale
@@ -5739,7 +5777,9 @@ def api_state():
         s = copy.deepcopy({k: v for k, v in STATE.items()
                            if k not in ("history", "daily")})
         s["config"] = _safe_cfg()
-        s["fault_ack_token"] = _fault_override_token(s["fault"]) if s["fault"] else None
+        s["password_versions"] = _password_versions()
+        s["fault_ack_token"] = (_fault_override_token(s["fault"])
+                                if s["fault"] and not s["fault"].get("stop_recheck") else None)
         watt_age = _elapsed_age_locked("watts_at")
         s["sensor_age"] = _elapsed_age_locked("reading_at")
         draw_age = _elapsed_age_locked("draw_loop_at")
@@ -6003,8 +6043,11 @@ def api_config():
         bad = _body_error(body)
         if bad:
             return bad
-        if set(body) - {"protect", "plug", "control", "email"}:
+        if set(body) - {"protect", "plug", "control", "email", "expected"}:
             return jsonify(error="Unknown configuration section"), 400
+        conflict = _check_config_expectations(body.get("expected", {}))
+        if conflict:
+            return conflict
         control = body.get("control")
         if isinstance(control, dict) and control.get("mode") == "on":
             # Hold both locks from the live-fault check through persistence
@@ -6249,7 +6292,7 @@ def _api_config_locked(act_locked=False, fault_locked=False):
                 "will survive a power cut. Check free space and the "
                 "filesystem, then save again.")
         notice = "%s %s" % (notice, warn) if notice else warn
-    return jsonify(ok=True, config=_safe_cfg(), notice=notice)
+    return jsonify(ok=True, config=_safe_cfg(), password_versions=_password_versions(), notice=notice)
 
 
 @app.route("/api/protect/sensors", methods=["POST"])
@@ -7024,6 +7067,13 @@ def _run_controller():
         _close_http_server(channels, dispatcher)
 
 
+def _recheck_saved_stop():
+    with _state_lock:
+        fault = STATE["fault"]
+        if fault and fault.get("stopped"):
+            fault.update(stopped=False, stop_recheck=True)
+
+
 def _start_controller(server, channels):
     global _restart_dispatch, _activity_wake, _history_wake
     _activity_wake = threading.Event()
@@ -7036,6 +7086,7 @@ def _start_controller(server, channels):
     resumed = handover or _load_stop_state()
     if not PLUG_ACCESS_DISABLED:
         _arm_safety_guard(handover is not False)
+    _recheck_saved_stop()
     # Immediately after, and before anything else can log: this line is
     # what explains every line that appears below it.
     _announce_start(resumed)

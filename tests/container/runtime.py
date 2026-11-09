@@ -99,7 +99,7 @@ try:
         assert process.wait(timeout=60)==0
         assert (data/'resume.json').exists()
     elif phase=='fault':
-        current=until(lambda s:s['co2']==1200 and s['fan'] is False)
+        current=until(lambda s:s['co2']==1200 and s['fan'] is False and s['fault_ack_token'])
         assert current['fault']['code']=='FC-004'
         assert not plug.state.snapshot()['relay'], 'Standing fault allowed Auto ON'
         assert request('/api/fault/clear', {'fault_ack_token': current['fault_ack_token']})['cleared']
