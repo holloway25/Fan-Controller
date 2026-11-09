@@ -98,5 +98,16 @@ def test_concurrent_settings_edits_merge_only_when_fields_do_not_conflict():
     assert C.load_cfg()["plug"]["watts_off_max"] == 0
 
 
+def test_old_plug_calibration_edit_conflicts_after_address_change():
+    C = harness.load()
+    client = C.app.test_client()
+    baseline = client.get("/api/state").get_json()["config"]["plug"]
+    assert client.post("/api/config", json={"plug": {"host": "replacement.invalid"}}).status_code == 200
+    response = client.post("/api/config", json={"plug": {"watts_off_max": 0},
+        "expected": {"plug": {"host": baseline["host"], "watts_off_max": baseline["watts_off_max"]}}})
+    assert response.status_code == 409
+    assert C.load_cfg()["plug"]["watts_off_max"] == baseline["watts_off_max"]
+
+
 if __name__ == '__main__':
     sys.exit(harness.run(dict(globals())))

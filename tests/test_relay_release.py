@@ -689,5 +689,32 @@ def test_replacement_save_warns_when_off_retry_budget_is_exhausted():
     assert replacement.relay and not replacement.commands
 
 
+def test_terminal_relay_fault_exposes_explicit_recovery_after_fresh_high_draw():
+    C, clock, mail, plug = setup()
+    fault = dict(at=clock[0], code=C.FC_RELAY_RELEASE, msg="FC-008 Fan off",
+                 stopped=True, relay_retry={"attempts": 6, "phase": "recovered"})
+    C._store_fault(fault)
+    C._recheck_saved_stop()
+    assert C._retry_fault_persist()
+    client = C.app.test_client()
+    C.STATE.update(fan=None, watts=None, watts_at=None)
+    assert not C._enforce_stop(plug)
+    assert client.get("/api/state").get_json()["fault_ack_token"] is None
+
+    plug.relay = True
+    C._refresh_relay(plug, C._cfg_generation)
+    check(C, clock, plug, watts=23)
+    snapshot = client.get("/api/state").get_json()
+    assert snapshot["fault"]["stop_recheck"] == "unconfirmed"
+    assert snapshot["fault"]["relay_retry"]["attempts"] == 6 and not plug.commands
+    assert C.load_fault()["stop_recheck"] == "unconfirmed"
+    body = {"fault_ack_token": snapshot["fault_ack_token"]}
+    assert body["fault_ack_token"]
+    assert client.post("/api/fault/clear", json=body).status_code == 409
+    assert C.STATE["fault"] is not None
+    response = client.post("/api/fault/clear", json=dict(body, confirm_unverified_stop=True))
+    assert response.status_code == 200 and response.get_json()["cleared"]
+
+
 if __name__ == '__main__':
     sys.exit(harness.run(dict(globals())))

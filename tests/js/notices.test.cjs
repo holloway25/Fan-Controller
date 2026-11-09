@@ -53,6 +53,9 @@ module.exports = {
         return Promise.resolve({ok:true,json:async()=>({ok:true,config:state.config})});
       };
     }});
+    state.config.protect.sensor_id = "replacement";
+    await H.poll(window);
+    assert.equal(document.getElementById("p_sensor").value,"replacement");
     const input = document.getElementById("e_sender");
     input.value = "fan@example.com";
     input.dispatchEvent(new window.Event("input"));
@@ -62,7 +65,27 @@ module.exports = {
     await H.settle(window);
     assert.deepStrictEqual(body.email,{sender:"fan@example.com"});
     assert.deepStrictEqual(body.plug,{});
+    assert.deepStrictEqual(body.protect,{});
     assert.deepStrictEqual(body.expected,{email:{sender:""}});
+  },
+
+  async test_calibration_save_expects_original_plug_address() {
+    let body;
+    const {window,document} = await H.open({beforeParse(w){
+      const fetch = w.fetch;
+      w.fetch = (url,opts) => {
+        if(url!=="/api/config")return fetch(url,opts);
+        body=JSON.parse(opts.body);
+        return Promise.resolve({ok:true,json:async()=>({ok:true})});
+      };
+    }});
+    const limit = document.getElementById("watts_off_max");
+    limit.value = "0";
+    limit.dispatchEvent(new window.Event("input"));
+    document.getElementById("save").click();
+    await H.settle(window);
+    assert.deepStrictEqual(body.plug,{watts_off_max:0});
+    assert.deepStrictEqual(body.expected.plug,{watts_off_max:1,host:"192.0.2.10"});
   },
 
   async test_fault_banner_distinguishes_force_on_override_from_stop_retry() {

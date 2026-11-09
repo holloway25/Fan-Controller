@@ -513,7 +513,8 @@ def _valid_fault_record(value):
                      "manual_stop_id", "stop_recheck"}:
         return False
     if "stop_recheck" in value and (
-            value["stop_recheck"] is not True or value.get("stopped") is not False):
+            (value["stop_recheck"] is not True and value["stop_recheck"] != "unconfirmed")
+            or value.get("stopped") is not False):
         return False
     if "manual_stop_id" in value and (
             not isinstance(value["manual_stop_id"], str)
@@ -4110,7 +4111,7 @@ def _store_fault(value, stop_plug=None, gen=None):
     return had
 
 
-def _clear_fault(expected_token=None):
+def _clear_fault(expected_token=None, confirm_unverified_stop=False):
     """Acknowledge a fault. Takes _act_lock before _fault_lock.
 
     The lock is not for the fault - _fault_lock covers that - it is to
@@ -4126,14 +4127,14 @@ def _clear_fault(expected_token=None):
     invert.
     """
     with _act_lock:
-        result = _clear_fault_locked(expected_token)
+        result = _clear_fault_locked(expected_token, confirm_unverified_stop)
     # Outside both locks, deliberately: see _clear_fault_locked. A
     # no-op unless the flag actually moved.
     _unsaved_edge()
     return result
 
 
-def _clear_fault_locked(expected_token=None):
+def _clear_fault_locked(expected_token=None, confirm_unverified_stop=False):
     """Acknowledge a fault. Returns (had, ok), with None for a stale token.
 
     Deletes from disk BEFORE clearing memory. The other order cleared
@@ -4146,7 +4147,8 @@ def _clear_fault_locked(expected_token=None):
         with _state_lock:
             had = STATE["fault"]
         if expected_token is not None and (
-                had is None or had.get("stop_recheck")
+                had is None or had.get("stop_recheck") is True
+                or (had.get("stop_recheck") == "unconfirmed" and not confirm_unverified_stop)
                 or expected_token != _fault_override_token(had)):
             return had, None
         if had is None:
@@ -4300,7 +4302,9 @@ def _relay_retry_update(reserving=False, **changes):
             if reserving:
                 f = previous
         with _state_lock:
-            if STATE["fault"].get("stopped") and not f.get("stopped"):
+            if ((STATE["fault"].get("stopped") and not f.get("stopped"))
+                    or (STATE["fault"].get("stop_recheck") is True
+                        and f.get("stop_recheck") == "unconfirmed")):
                 _rotate_fault_token_locked()
             STATE["fault"] = f
             STATE["fault_unsaved"] = not saved
@@ -4457,6 +4461,7 @@ def _relay_release_step(plug, gen=None):
         # Only fresh low watts warrant an extra read-only relay check. High
         # draw does not create an extra five-second command/polling loop.
         confirmed = False
+        actual = None
         low = (watts is not None and _finite(watts) and watts <= CFG["plug"]["watts_off_max"]
                and age is not None and age <= WATTS_STALE)
         if low and fan is False and retry["phase"] == "recovered" and f.get("stopped"):
@@ -4485,7 +4490,16 @@ def _relay_release_step(plug, gen=None):
             result = bool(f.get("stopped"))
         elif retry["phase"] in ("exhausted", "recovered"):
             # Exhaustion is terminal. A relapse does not grant six new tries.
-            if f.get("stopped"):
+            cached = _relay_cache
+            fresh_on = (cached is not None and cached[0] is plug
+                        and cached[1] == _cfg_generation and cached[3] is True
+                        and 0 <= time.time() - cached[2] < RELAY_SECONDS)
+            fresh_high = (age is not None and age <= WATTS_STALE
+                          and _finite(watts) and watts > CFG["plug"]["watts_off_max"])
+            if f.get("stop_recheck") is True and (fresh_on or fresh_high or (
+                    low and actual is True)):
+                _relay_retry_update(stop_recheck="unconfirmed")
+            elif f.get("stopped"):
                 _relay_retry_update(stopped=False)
         elif time.monotonic() >= _relay_retry_deadline(f):
             n = retry["attempts"] + 1
@@ -5779,7 +5793,7 @@ def api_state():
         s["config"] = _safe_cfg()
         s["password_versions"] = _password_versions()
         s["fault_ack_token"] = (_fault_override_token(s["fault"])
-                                if s["fault"] and not s["fault"].get("stop_recheck") else None)
+                                if s["fault"] and s["fault"].get("stop_recheck") is not True else None)
         watt_age = _elapsed_age_locked("watts_at")
         s["sensor_age"] = _elapsed_age_locked("reading_at")
         draw_age = _elapsed_age_locked("draw_loop_at")
@@ -5867,7 +5881,7 @@ def api_fault_clear():
         return jsonify(error="Refresh the dashboard and confirm the current fault."), 409
     # One transaction: clearing memory and deleting the file separately
     # let a concurrent confirmation write the old fault back afterwards.
-    had, ok = _clear_fault(token)
+    had, ok = _clear_fault(token, body.get("confirm_unverified_stop") is True)
     if ok is None:
         return jsonify(error="The fault changed. Review the current fault before clearing it."), 409
     if not ok:
@@ -6189,9 +6203,12 @@ def _api_config_locked(act_locked=False, fault_locked=False):
                 warning = ("The fault remains latched and automatic OFF retries have ended. "
                            "The replacement plug will not receive an automatic OFF command.")
                 notice = " ".join(filter(None, (notice, warning)))
-            if fault and (fault.get("stopped") or owed):
-                confirmation_withdrawn = bool(fault.get("stopped"))
+            checked_unconfirmed = fault and fault.get("stop_recheck") == "unconfirmed"
+            if fault and (fault.get("stopped") or owed or checked_unconfirmed):
+                confirmation_withdrawn = bool(fault.get("stopped") or checked_unconfirmed)
                 fault.update(stopped=False)
+                if checked_unconfirmed:
+                    fault["stop_recheck"] = True
                 try:
                     save_fault(fault)
                 except InstalledNotDurable:
@@ -7072,6 +7089,7 @@ def _recheck_saved_stop():
         fault = STATE["fault"]
         if fault and fault.get("stopped"):
             fault.update(stopped=False, stop_recheck=True)
+            STATE["fault_unsaved"] = True
 
 
 def _start_controller(server, channels):

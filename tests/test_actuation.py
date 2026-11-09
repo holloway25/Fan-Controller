@@ -423,12 +423,12 @@ def test_clear_fault_serialises_against_enforcement():
     seen = {}
     real = C._clear_fault_locked
 
-    def watched(expected_token):
+    def watched(expected_token, confirm_unverified_stop):
         free = C._act_lock.acquire(blocking=False)
         seen["free"] = free
         if free:
             C._act_lock.release()
-        return real(expected_token)
+        return real(expected_token, confirm_unverified_stop)
 
     C._clear_fault_locked = watched
     try:

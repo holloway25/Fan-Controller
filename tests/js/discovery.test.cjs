@@ -29,6 +29,9 @@ module.exports = {
                            {id:"c",name:"Legacy",co2:700}]);
     assert(doc.getElementById("pmsg").textContent.includes("2 reporting CO2"));
     assert(doc.getElementById("pmsg").textContent.includes("1 disconnected"));
-    assert.equal(doc.getElementById("p_sensor").options.length,4);
+    const picker = doc.getElementById("p_sensor");
+    assert.equal(picker.options.length,5);
+    assert.equal(picker.value,"s");
+    assert(picker.selectedOptions[0].textContent.includes("not in list"));
   },
 };

@@ -76,6 +76,21 @@ def test_host_reboot_rebases_clocks_without_renewing_lease_or_draw_timer():
     assert D._draw_grace[1] <= D.time.monotonic()
 
 
+def test_checkpoint_persists_pending_stop_recheck_before_fingerprinting():
+    C, clock = setup()
+    fault = dict(at=clock[0], code="FC-004", msg="Draw fault", stopped=True)
+    C._store_fault(fault)
+    C._recheck_saved_stop()
+    assert C.load_fault()["stopped"]
+    assert C._save_stop_state()
+    D = replacement(C, clock)
+    D.FAULT_PATH = C.FAULT_PATH
+    D.STATE["fault"] = D.load_fault()
+    assert D.STATE["fault"]["stop_recheck"] is True
+    assert not D.STATE["fault"]["stopped"]
+    assert D._load_stop_state()
+
+
 def test_fault_retry_budget_and_spacing_survive_container_replacement():
     C, clock = setup()
     fault = dict(at=clock[0]-30, code='FC-008', msg='Unable to stop', stopped=False,

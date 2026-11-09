@@ -20,6 +20,10 @@ remain supported. To acknowledge a fault, send
 shown to the operator. Rejected acknowledgements leave the safety latch intact.
 After startup, a saved stop confirmation requires a fresh check before
 `/api/state` issues an acknowledgement token for that fault.
+If fresh evidence shows a terminal relay fault is still unconfirmed,
+`fault.stop_recheck` is `"unconfirmed"`. Acknowledgement then also requires
+`"confirm_unverified_stop": true` after the operator independently verifies
+the fan and power draw are safe.
 
 | Method | Path | Access | Purpose |
 |---|---|---|---|

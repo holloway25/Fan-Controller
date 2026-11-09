@@ -356,6 +356,7 @@ let CFG=null, touched=false, editRevision=0;
 let passwordVersions={};
 let displayedFaultToken=null;
 let displayedFaultNeedsCheck=false;
+let displayedStopUnconfirmed=false;
 const dirty=()=>{touched=true;editRevision++};
 
 function say(el,text,kind){const n=$(el);n.textContent=text||"";
@@ -638,7 +639,8 @@ function drawMini(hist,c){
 
 function render(s){
   displayedFaultToken=s.fault_ack_token??null;
-  displayedFaultNeedsCheck=!!s.fault?.stop_recheck;
+  displayedFaultNeedsCheck=s.fault?.stop_recheck===true;
+  displayedStopUnconfirmed=s.fault?.stop_recheck==="unconfirmed";
   const c=s.config.control;
   $("ppm").textContent=(s.co2==null?"--":Math.round(s.co2))+" ppm";
   const f=$("fan");
@@ -686,7 +688,8 @@ function render(s){
   const faultLabel=s.fault?.msg.replace(/^(FC-00[789]) Fan off$/, "$1 Relay fault");
   const fmsg=s.fault?(faultLabel+(c.mode==="on"?
     " — Force on overrides fault stop":retryText)):"";
-  say("topmsg",fmsg||s.error||"", "err");
+  const recoveryHint=displayedStopUnconfirmed?" — verify the fan is safe before clearing":"";
+  say("topmsg",fmsg?fmsg+recoveryHint:s.error||"", "err");
   say("drawloopmsg",drawLate?"Power monitoring loop is not responding":
     (s.draw_loop_error?"Power monitoring loop: "+s.draw_loop_error:""),"err");
   // fault_unsaved: the fault is live in memory and the fan is stopped,
@@ -898,6 +901,7 @@ function render(s){
   if(touched)return;
   CFG=JSON.parse(JSON.stringify(s.config));
   passwordVersions=s.password_versions||{};
+  syncSensorSelection(CFG.protect.sensor_id);
   ["on_at","off_at","min_run_minutes","cold_start_minutes","poll_seconds","temp_on","temp_off",
    "humidity_on","humidity_off","stale_minutes"]
     .forEach(k=>$(k).value=k==="cold_start_minutes"?(c[k]??15):c[k]);
@@ -933,6 +937,18 @@ function render(s){
 // Checkboxes and selects fire "change", not "input". Listening for both
 let sensorSelectionTouched=false;
 $("p_sensor").addEventListener("change",()=>{sensorSelectionTouched=true});
+
+function syncSensorSelection(id){
+  if(sensorSelectionTouched)return;
+  const select=$("p_sensor");
+  if(id&&!Array.from(select.options).some(option=>option.value===id)){
+    const option=document.createElement("option");
+    option.value=id;
+    option.textContent="Selected sensor (not in list)";
+    select.appendChild(option);
+  }
+  select.value=id||"";
+}
 // stops the 5s refresh from overwriting a control the user just touched.
 ["on_at","off_at","min_run_minutes","cold_start_minutes","poll_seconds","p_host",
  "p_user","p_pass","g_host","g_user","g_pass","p_sensor","co2_enabled","temp_enabled","temp_on","temp_off","humidity_enabled","humidity_on","humidity_off","p_verify","stale_minutes","watts_min","watts_max","watts_off_max","watts_enabled","watts_fault_seconds",
@@ -996,7 +1012,7 @@ async function saveAll(msgEl){
   // Only send a selection when the picker is actually populated, so a
   // save from a freshly loaded page cannot wipe a stored choice.
   const sid=$("p_sensor").value;
-  if(sensorSelectionTouched||sid)body.protect.sensor_id=sid;
+  if(sensorSelectionTouched)body.protect.sensor_id=sid;
   if(!CFG)throw new Error("Wait for settings to load before saving.");
   const expected={};
   for(const [section,values] of Object.entries(body)){
@@ -1012,6 +1028,7 @@ async function saveAll(msgEl){
       }else if(previous!==undefined){
         compare[key]=previous;
         if(key==="host"&&passwordVersions[section])compare.password=passwordVersions[section];
+        if(section==="plug"&&key.startsWith("watts_"))compare.host=baseline.host;
       }
     }
     if(Object.keys(compare).length)expected[section]=compare;
@@ -1066,7 +1083,8 @@ document.querySelectorAll("#mode button").forEach(b=>
 
 async function loadSensors(msgEl,notice=""){
   const j=await post("/api/protect/sensors");
-  const sel=$("p_sensor"), cur=CFG?CFG.protect.sensor_id:"";
+  const sel=$("p_sensor"), cur=sensorSelectionTouched?sel.value:(CFG?.protect.sensor_id||"");
+  const editedOption=sensorSelectionTouched?sel.selectedOptions[0]?.cloneNode(true):null;
   sel.innerHTML='<option value="">Not selected</option>';
   j.sensors.forEach(s=>{
     const o=document.createElement("option");
@@ -1076,6 +1094,10 @@ async function loadSensors(msgEl,notice=""){
       : (s.co2!=null?"  — "+Math.round(s.co2)+" ppm":"  — no CO2 field"));
     if(s.id===cur)o.selected=true;
     sel.appendChild(o)});
+  if(editedOption){
+    if(!Array.from(sel.options).some(option=>option.value===cur))sel.appendChild(editedOption);
+    sel.value=cur;
+  }else syncSensorSelection(cur);
   if(msgEl){
     const n=j.sensors.filter(s=>s.co2!=null&&s.isConnected!==false).length;
     const disconnected=j.sensors.filter(s=>s.isConnected===false).length;
@@ -1097,14 +1119,19 @@ $("find").addEventListener("click",async()=>{
 // is surfaced at the top rather than buried in the plug card.
 $("faultclear").addEventListener("click",async()=>{
   const token=displayedFaultToken;
+  const unconfirmed=displayedStopUnconfirmed;
   if(!token){
     say("hmsg",displayedFaultNeedsCheck?"Wait for a fresh stop check before clearing the fault.":
       "No current fault to clear","err");
     return;
   }
-  if(!window.confirm("Clear the fault and allow automatic running again? " +
-    "Confirm the fan and power draw are safe first."))return;
-  try{await post("/api/fault/clear",{fault_ack_token:token}); say("hmsg","Fault cleared","ok")}
+  const message=unconfirmed?
+    "The stop check could not confirm OFF. Clear only after independently verifying the fan and power draw are safe. Allow automatic running again?":
+    "Clear the fault and allow automatic running again? Confirm the fan and power draw are safe first.";
+  if(!window.confirm(message))return;
+  const body={fault_ack_token:token};
+  if(unconfirmed)body.confirm_unverified_stop=true;
+  try{await post("/api/fault/clear",body); say("hmsg","Fault cleared","ok")}
   catch(e){say("hmsg",e.message,"err")}});
 $("plugtest").addEventListener("click",async()=>{
   say("hmsg","Testing...","ok");
