@@ -3210,11 +3210,10 @@ _stale_episode = None
 
 SMTP_TIMEOUT = 20
 EMAIL_TEST_SECONDS = 30
+ALERT_EMAIL_SECONDS = 30
+_alert_mail_slots = threading.BoundedSemaphore(2)
 _email_test_lock = threading.Lock()
 _email_test_pending = None
-# Long enough that a slow relay still delivers, short enough that a
-# wedged one cannot pile threads up: at one alert per fault transition
-# there is no realistic way to accumulate them.
 
 
 def _split_recipients(raw):
@@ -3239,7 +3238,7 @@ def _email_ready():
                 and _recipients())
 
 
-def _send_mail(subject, body, email_cfg=None, deadline=None):
+def _send_mail(subject, body, email_cfg=None, deadline=None, watch_socket=None):
     """Send one message. Returns None on success or a reason string.
 
     Runs on a throwaway thread, never on the control path. AUTH is chosen
@@ -3274,9 +3273,11 @@ def _send_mail(subject, body, email_cfg=None, deadline=None):
                                         or time.monotonic() >= deadline)
     def budget(s=None):
         if expired():
-            raise TimeoutError('Email test deadline reached')
+            raise TimeoutError('Email deadline reached')
         sock = getattr(s, 'sock', None)
         if deadline is not None and sock is not None:
+            if watch_socket is not None:
+                watch_socket(sock)
             sock.settimeout(max(0.001, min(SMTP_TIMEOUT, deadline-time.monotonic())))
     try:
         # Validate raw recipients before splitting, which would hide newlines.
@@ -3349,7 +3350,7 @@ def _send_mail(subject, body, email_cfg=None, deadline=None):
         return "SMTP send failed (%s)" % type(exc).__name__
     finally:
         try:
-            if expired():
+            if expired() or watch_socket is not None:
                 s.close()
             else:
                 budget(s)
@@ -3409,41 +3410,79 @@ def _notify(subject, body, on_complete=None):
             except Exception:
                 pass
 
-    try:
-        if not _email_ready():
-            complete(False)
-            return
+    if not _email_ready():
+        complete(False)
+        return
 
-        def run():
-            # _send_mail reports failures by returning a reason rather
-            # than raising, so this guard is redundant today. It is here
-            # because a daemon thread that DOES raise prints a traceback
-            # to stderr and dies silently otherwise, and the next edit
-            # to _send_mail should not be able to cause that.
-            try:
-                why = _send_mail(subject, body)
-            except Exception as exc:
-                why = "SMTP send failed (%s)" % type(exc).__name__
+    def report(why):
+        try:
             if why:
-                # Redacted: a relay's rejection can quote what it was
-                # given, and the activity log is served without a
-                # password.
                 _log(_redact("%s Alert email failed (%s): %s"
                              % (FC_ALERT_FAILED, subject, why)))
-            complete(why is None)
-        threading.Thread(target=run, daemon=True,
-                         name="notify").start()
-    except Exception as exc:            # pragma: no cover - belt and braces
-        # Thread creation can fail. Reporting completion here as well
-        # means an in-flight flag is released even then. complete()
-        # swallows, so this cannot become a second call for a callback
-        # that already raised above.
-        complete(False)
-        try:
-            _log("%s Alert email could not be queued: %s"
-                 % (FC_ALERT_FAILED, type(exc).__name__))
         except Exception:
             pass
+        finally:
+            complete(why is None)
+
+    # Keep the slot until the worker actually exits. A blocked DNS lookup
+    # cannot be cancelled, but one such worker still leaves room to retry.
+    if not _alert_mail_slots.acquire(blocking=False):
+        report("automatic email workers are busy")
+        return
+    deadline = time.monotonic() + ALERT_EMAIL_SECONDS
+    lock = threading.Lock()
+    finished = False
+    active_socket = None
+    timer = None
+
+    def watch(sock):
+        nonlocal active_socket
+        with lock:
+            if finished or time.monotonic() >= deadline:
+                raise TimeoutError("Email deadline reached")
+            active_socket = sock
+
+    def finish(why, timed_out=False):
+        nonlocal finished
+        with lock:
+            if finished:
+                return
+            finished = True
+            sock = active_socket
+        if timer is not None:
+            timer.cancel()
+        try:
+            if timed_out and sock is not None:
+                sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        finally:
+            report(why)
+
+    def timeout():
+        finish("automatic email deadline reached", timed_out=True)
+
+    def run():
+        try:
+            try:
+                why = _send_mail(subject, body, deadline=deadline, watch_socket=watch)
+            except Exception as exc:
+                why = "SMTP send failed (%s)" % type(exc).__name__
+            if time.monotonic() >= deadline:
+                timeout()
+            else:
+                finish(why)
+        finally:
+            _alert_mail_slots.release()
+
+    try:
+        timer = threading.Timer(ALERT_EMAIL_SECONDS, timeout)
+        timer.daemon = True
+        timer.start()
+        threading.Thread(target=run, daemon=True, name="notify").start()
+    except Exception as exc:
+        _alert_mail_slots.release()
+        finish("could not start automatic email (%s)" % type(exc).__name__)
 
 
 def _notify_stale(mins, already_on, fan_confirmed=True):

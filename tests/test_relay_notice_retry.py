@@ -3,6 +3,8 @@ import copy
 import json
 import os
 import sys
+import threading
+from unittest.mock import patch
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import harness
 import test_alert_delivery as E
@@ -38,6 +40,79 @@ def test_failed_terminal_email_retries_once_after_delay_without_hardware():
         C._retry_relay_notice()
     assert len(sent) == 1 and len(plug.commands) == 6
     assert C.STATE['fault']['relay_retry'] == budget
+
+
+def test_stalled_smtp_times_out_and_retries_on_replacement_server():
+    C = harness.load()
+    clock = [10000.0]
+    C.time.time = lambda: clock[0]
+    C.time.monotonic = lambda: clock[0]
+    E.live_email(C)
+    C.CFG["email"]["host"] = "original.invalid"
+    budget = {"attempts": 6, "phase": "exhausted"}
+    C._store_fault(dict(at=clock[0], code=C.FC_RELAY_RELEASE, msg="Unable to stop",
+                        stopped=False, relay_retry=budget,
+                        relay_notice={"stage": "exhausted", "delivered": False}))
+    entered, release, delivered = (threading.Event() for _ in range(3))
+    timers, workers, connections, completed = [], [], [], []
+    real_thread = threading.Thread
+    old, new = E.FakeSMTP(), E.FakeSMTP()
+
+    class Timer:
+        def __init__(self, seconds, callback):
+            assert seconds == C.ALERT_EMAIL_SECONDS
+            self.fire = callback
+            timers.append(self)
+        def start(self):
+            pass
+        def cancel(self):
+            pass
+
+    def thread(*args, **kwargs):
+        worker = real_thread(*args, **kwargs)
+        workers.append(worker)
+        return worker
+
+    def smtp(host, *args, **kwargs):
+        connections.append(host)
+        if host == "original.invalid":
+            entered.set()
+            assert release.wait(5)
+            return old
+        return new
+
+    finish = C._relay_notice_completed
+    def record(token, ok):
+        completed.append(ok)
+        finish(token, ok)
+        if ok:
+            delivered.set()
+    C._relay_notice_completed = record
+
+    with (patch.object(C.threading, "Timer", Timer),
+          patch.object(C.threading, "Thread", thread),
+          patch.object(C.smtplib, "SMTP", smtp)):
+        try:
+            C._retry_relay_notice()
+            assert entered.wait(2)
+            clock[0] += C.ALERT_EMAIL_SECONDS
+            timers[0].fire()
+            assert completed == [False] and not C._relay_notice_inflight
+            assert any("automatic email deadline reached" in e["msg"] for e in C.STATE["events"])
+            assert C.app.test_client().post("/api/config", json={
+                "email": {"host": "replacement.invalid"}}).status_code == 200
+            clock[0] += C.RELAY_NOTICE_RETRY_SECONDS
+            C._retry_relay_notice()
+            assert delivered.wait(2) and not release.is_set()
+            assert C.load_fault()["relay_notice"]["delivered"]
+        finally:
+            release.set()
+            for worker in workers:
+                worker.join(2)
+    assert all(not worker.is_alive() for worker in workers)
+    assert connections == ["original.invalid", "replacement.invalid"]
+    assert completed == [False, True] and old.sent is None and new.sent is not None
+    assert C.STATE["fault"]["relay_retry"] == budget
 
 
 def test_failed_recovery_email_retries_but_not_while_stop_is_superseded():

@@ -855,7 +855,7 @@ class Gate(object):
         self.calls = []
         self.result = None          # None means delivered
 
-    def __call__(self, subject, body):
+    def __call__(self, subject, body, **kwargs):
         self.calls.append(subject)
         self.started.set()
         self.release.wait(5)
