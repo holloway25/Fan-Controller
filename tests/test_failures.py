@@ -543,5 +543,40 @@ def test_empty_payload_never_refreshes_reading_at():
     assert C.STATE["reading_at"] == 123.0, \
         "reading_at advanced, so stale_minutes would never expire"
     return "fail-safe stays armed"
+def test_duplicate_config_keys_are_rejected_at_startup_and_in_saves():
+    for raw in ('{"control":{"mode":"manual","mode":"auto"}}',
+                '{"control":{"mode":"manual"},"control":{"mode":"auto"}}'):
+        C = harness.load()
+        C.CFG["control"]["mode"] = "manual"
+        before = C._cfg_generation
+        response = C.app.test_client().post("/api/config", data=raw,
+                                            content_type="application/json")
+        assert response.status_code == 400
+        assert C._cfg_generation == before and C.CFG["control"]["mode"] == "manual"
+
+        with open(C.CFG_PATH, "w") as f:
+            f.write(raw)
+        try:
+            C.load_cfg()
+        except C.ConfigurationError:
+            pass
+        else:
+            assert False, "startup accepted ambiguous configuration"
+
+
+def test_set_placeholder_is_only_special_for_password_fields():
+    C = harness.load()
+    C.CFG["control"]["mode"] = "manual"
+    client = C.app.test_client()
+    for body in ({"control": {"mode": "SET"}}, {"plug": {"unknown": "SET"}}):
+        assert client.post("/api/config", json=body).status_code == 400
+    assert C.CFG["control"]["mode"] == "manual"
+    C.CFG["plug"]["password"] = "example-password"
+    response = client.post("/api/config", json={"plug": {"user": "SET", "password": "SET"}})
+    assert response.status_code == 200
+    assert C.CFG["plug"]["user"] == "SET"
+    assert C.CFG["plug"]["password"] == "example-password"
+
+
 if __name__ == "__main__":
     sys.exit(harness.run(dict(globals())))

@@ -210,13 +210,26 @@ def normalise(section, data):
     return out
 
 
+class DuplicateJSONKey(ValueError):
+    pass
+
+
+def _unique_json_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise DuplicateJSONKey("Duplicate JSON key: %s" % key)
+        result[key] = value
+    return result
+
+
 def load_cfg():
     cfg = copy.deepcopy(DEFAULTS)
     if not os.path.exists(CFG_PATH):
         return cfg
     try:
         with open(CFG_PATH) as f:
-            disk = json.load(f)
+            disk = json.load(f, object_pairs_hook=_unique_json_object)
     except (ValueError, OSError) as e:
         raise ConfigurationError(
             "config.json cannot be read safely (%s); refusing to start"
@@ -2193,6 +2206,13 @@ STATE["daily"] = load_daily()
 # it is waiting for can be skipped by a power cycle.
 STATE["fault"] = load_fault()
 _fault_episode = os.urandom(16).hex()
+
+
+def _rotate_fault_token_locked():
+    global _fault_episode
+    _fault_episode = os.urandom(16).hex()
+
+
 STATE["history_rev"] = 1
 STATE["events"] = load_events()
 
@@ -2620,6 +2640,7 @@ def _adopt_relay_locked(actual, now):
         STATE["relay_revision"] += 1
     if actual is True and STATE["fault"] and STATE["fault"].get("stopped"):
         STATE["fault"].update(stopped=False)
+        _rotate_fault_token_locked()
         STATE["fault_unsaved"] = True
     startup_msg = None
     if STATE["cold_start_pending"] and actual is not None:
@@ -4031,13 +4052,12 @@ def _store_fault(value, stop_plug=None, gen=None):
     Returns the fault that was there before.
     """
     def latch():
-        global _fault_episode
         with _state_lock:
             had = STATE["fault"]
             STATE["fault"] = value
             STATE["fault_unsaved"] = value is not None
             if value is not None:
-                _fault_episode = os.urandom(16).hex()
+                _rotate_fault_token_locked()
                 STATE["cold_start_pending"] = False
                 STATE["cold_start_hold_until"] = None
             return had
@@ -4223,6 +4243,7 @@ def _record_relay_observation(actual):
             fault = STATE["fault"]
             if actual is True and fault and fault.get("stopped"):
                 fault["stopped"] = False
+                _rotate_fault_token_locked()
                 STATE["fault_unsaved"] = True
 
 
@@ -4232,6 +4253,7 @@ def _invalidate_fault_stop():
             fault = STATE["fault"]
             if fault and fault.get("stopped"):
                 fault.update(stopped=False)
+                _rotate_fault_token_locked()
                 STATE["fault_unsaved"] = True
 
 
@@ -4270,6 +4292,8 @@ def _relay_retry_update(reserving=False, **changes):
             if reserving:
                 f = previous
         with _state_lock:
+            if STATE["fault"].get("stopped") and not f.get("stopped"):
+                _rotate_fault_token_locked()
             STATE["fault"] = f
             STATE["fault_unsaved"] = not saved
             if saved and f.get("stopped"):
@@ -5631,7 +5655,7 @@ def _json_body():
     if not request.is_json:
         return _NO_JSON
     try:
-        return request.get_json()
+        return json.loads(request.get_data(), object_pairs_hook=_unique_json_object)
     except RequestEntityTooLarge:
         # Let Flask answer 413. Catching it here turned "your body is
         # too big" into "your JSON is malformed", which sends whoever
@@ -6000,7 +6024,7 @@ def api_config():
 
 
 def _fault_override_token(fault):
-    """Identify this fault episode, process and plug configuration.
+    """Identify this fault episode, plug configuration and stop revision.
 
     The token is explicit override acknowledgement, not authentication.
     Normal auth and origin checks still apply before this endpoint runs.
@@ -6037,7 +6061,9 @@ def _api_config_locked(act_locked=False, fault_locked=False):
         if not isinstance(raw_section, dict):
             return jsonify(
                 error="%s must be an object." % section), 400
-        raw = {k: v for k, v in raw_section.items() if v != "SET"}
+        raw = dict(raw_section)
+        if section in ("protect", "plug", "email") and raw.get("password") == "SET":
+            del raw["password"]
         try:
             cand[section].update(normalise(section, raw))
         except ValueError as e:
@@ -6139,7 +6165,7 @@ def _api_config_locked(act_locked=False, fault_locked=False):
     draw_changed = (cand["plug"] != CFG["plug"] or
                     (was == "on") !=
                     (cand["control"].get("mode") == "on"))
-    global _cfg_generation, _oob_generation, _oob_since, _off_draw_since, _fault_episode
+    global _cfg_generation, _oob_generation, _oob_since, _off_draw_since
     old_generation = _cfg_generation
     for section in cand:
         CFG[section] = cand[section]
@@ -6155,7 +6181,7 @@ def _api_config_locked(act_locked=False, fault_locked=False):
     if plug_changed:
         with _state_lock:
             # Rotate even when returning to a previously configured address.
-            _fault_episode = os.urandom(16).hex()
+            _rotate_fault_token_locked()
             STATE.update(fan=None, watts=None, watts_at=None, changed_at=None)
             _end_run_locked()
             for key in ("watts_at", "changed_at", "min_run_at"):

@@ -193,5 +193,38 @@ def test_old_plug_acknowledgement_cannot_rearm_auto_on_replacement():
         assert plug.calls == []
 
 
+def test_lost_stop_confirmation_invalidates_old_acknowledgement():
+    from test_actuation import Plug
+
+    C, fault = _latched()
+    C.CFG["plug"]["watts_enabled"] = True
+    C.CFG["control"].update(mode="auto", on_at=1000, off_at=800)
+    C.CFG["protect"]["sensor_id"] = "test"
+    client = C.app.test_client()
+    token = client.get("/api/state").get_json()["fault_ack_token"]
+    plug = Plug(on=False)
+    plug.power_w = lambda: 23
+
+    assert not C._enforce_stop(plug, verify_only=True)
+    assert not C.STATE["fault"]["stopped"]
+    body = {"fault_ack_token": token}
+    assert client.post("/api/fault/clear", json=body).status_code == 409
+
+    # A later recovery must not make the old acknowledgement valid again.
+    plug.power_w = lambda: 0
+    assert C._enforce_stop(plug, verify_only=True)
+    assert C.STATE["fault"]["stopped"]
+    assert client.post("/api/fault/clear", json=body).status_code == 409
+
+    class Protect:
+        def readings(self, _):
+            return {"co2": 1500, "temperature": 20, "humidity": 40}, "co2"
+
+    C._client_snapshot = lambda: (Protect(), plug, C._cfg_generation)
+    C.tick()
+    assert C.STATE["co2"] == 1500 and C.STATE["fault"]["at"] == fault["at"]
+    assert plug.calls == []
+
+
 if __name__ == "__main__":
     sys.exit(harness.run(dict(globals())))
