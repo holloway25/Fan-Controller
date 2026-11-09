@@ -172,7 +172,7 @@ def suspicious(line):
     return None
 
 
-def _report(where, lineno, line):
+def _report(where, lineno):
     """Say WHERE, never WHAT.
 
     This printed the offending line. In CI that copies the credential
@@ -223,7 +223,7 @@ def scan_worktree():
             continue                    # deleted, or not readable as text
         for i, line in enumerate(lines, 1):
             if suspicious(line):
-                _report(path, i, line)
+                _report(path, i)
                 hits += 1
     return hits
 
@@ -238,7 +238,7 @@ def scan_staged():
         if not line.startswith("+"):
             continue
         if suspicious(line[1:]):
-            _report(path, "+", line[1:])
+            _report(path, "+")
             hits += 1
     return hits
 
@@ -262,7 +262,7 @@ def scan_tree(commit=None):
             continue                    # binary
         for i, line in enumerate(blob.splitlines(), 1):
             if suspicious(line):
-                _report("%s %s" % (ref, path), i, line)
+                _report("%s %s" % (ref, path), i)
                 hits += 1
     return hits
 

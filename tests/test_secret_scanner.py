@@ -253,11 +253,12 @@ def test_a_finding_never_prints_the_value():
     C = _scanner()
     import io as _io
     import contextlib
+    C._git = lambda *args: "+++ b/some/file.py\n+" + _f('{k} = "Password123!"')
     buf = _io.StringIO()
     with contextlib.redirect_stdout(buf):
-        C._report("some/file.py", 12, _f('{k} = "Password123!"'))
+        assert C.scan_staged() == 1
     out = buf.getvalue()
-    assert "some/file.py" in out and "12" in out, out
+    assert "some/file.py:+" in out, out
     assert "Password123!" not in out, "the value was printed: %r" % out
     assert "redacted" in out.lower(), out
     return "location only"

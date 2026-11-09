@@ -3,9 +3,9 @@
 #
 # Writes restart.request, waits for the controller to consume it, and
 # proves a replacement process actually started. A restart is REFUSED
-# while a fault is live but unsaved, because the replacement would load
-# fault.json, find nothing, and let Auto start a fan that was stopped
-# for drawing wrong.
+# while a fault is live but unsaved, so an orderly handover keeps the
+# original fault details. An interrupted stop leaves the safety marker
+# armed. Startup raises FC-206 if there is no saved fault.
 # Busy settings, plug actions or fault writes can also temporarily refuse
 # a restart. Those cases need a later retry, not fault acknowledgement.
 #

@@ -1153,7 +1153,7 @@ def _apply(tree, old, new, path):
     return 1
 
 
-def run_one(name, path, old, new, module, expect, verbose=False):
+def run_one(path, old, new, module, expect):
     tmp = tempfile.mkdtemp(prefix="mutate-")
     try:
         tree = _copy(os.path.join(tmp, "t"))
@@ -1249,7 +1249,7 @@ def main():
 
     bad = 0
     for name, path, old, new, module, expect in picked:
-        verdict, detail = run_one(name, path, old, new, module, expect)
+        verdict, detail = run_one(path, old, new, module, expect)
         print("%-34s %-9s %s" % (name, verdict, detail))
         sys.stdout.flush()
         if verdict != "CAUGHT":

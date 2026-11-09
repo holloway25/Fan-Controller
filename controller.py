@@ -1127,38 +1127,16 @@ def maybe_save_hist(hist, force=False):
 
 
 def _persist_fault_on_exit():
-    """Last chance to write a fault that exists only in memory.
+    """Try once more to persist pending fault state before a signalled stop.
 
-    A signalled shutdown - systemctl restart, a reboot - cannot be
-    refused the way a requested restart can. The replacement loads
-    fault.json, and if the flag is still set there is nothing there to
-    load: Auto would then be free to start a fan that was stopped for
-    drawing wrong. The write that failed may have failed minutes ago
-    and the disk may since have recovered, so try once more on the way
-    down. It costs one write and turns a silent loss into either a save
-    or a loud complaint.
+    A signalled stop cannot be refused. If fault state remains unsaved,
+    the armed marker stays in place. Startup uses the saved latch, or
+    raises FC-206 if there is no saved fault.
 
-    Essential persistence needs only the fault lock, with a bounded wait.
-    If actuation is busy, defer Manual-stop cleanup, never the safety write.
-    The first version skipped the
-    lock entirely, to avoid a signal handler blocking on something
-    another thread held - and reintroduced the exact stale-snapshot race
-    the lock exists to prevent: read the fault, have an acknowledgement
-    clear it, then write the old snapshot back, and the fault returns
-    from the dead at the next start with nothing to say why. Correctness
-    first; the timeout is what keeps it from waiting until systemd
-    escalates to SIGKILL. If a fault transaction outlasts the bound,
-    report that refusal rather than waiting through the stop deadline.
-
-    Giving up without writing is the right failure. Whoever holds the
-    lock is in the middle of a fault transaction of their own, so the
-    write is very likely to land anyway - and writing without the lock
-    is what caused the bug.
-
-    Reports to stderr rather than the activity log. _log takes
-    _events_lock, another plain Lock, and this already holds one. stderr
-    is the journal, which is where anyone looks after a stop that went
-    wrong.
+    Bound the fault-lock wait so shutdown can proceed. The lock prevents
+    a stale write from reviving an acknowledged fault. A busy actuation
+    lock defers Manual-stop cleanup while still allowing the fault write.
+    Report failures to stderr without taking activity-log locks.
     """
     act_locked = _act_lock.acquire(blocking=False)
     if not _fault_lock.acquire(timeout=2):
@@ -3060,7 +3038,7 @@ def tick():
                                ran_with=ran_snapshot)
             deadline = STATE["cold_start_hold_until"]
             if deadline is not None:
-                if STATE["fault"] or fan_on is not True:
+                if fan_on is not True:
                     STATE["cold_start_hold_until"] = None
                 elif any(STATE["latch"].values()):
                     # Fresh demand takes over with the configured normal
@@ -3071,14 +3049,7 @@ def tick():
                     if want is False:
                         want, why = True, "cold-start hold"
                 else:
-                    readings = {"co2": co2, "temp": vals.get('temperature'),
-                                "humidity": vals.get('humidity')}
-                    if want is False and any(readings[r["key"]] is None
-                                              for r in active_rules(cur)):
-                        # Missing measurements are not proof demand cleared.
-                        want, why = None, None
-                    else:
-                        STATE["cold_start_hold_until"] = None
+                    STATE["cold_start_hold_until"] = None
         if want is None or want == fan_on:
             # No command needed, so the fan is already in the state the
             # record describes. This is the path most cycles take, and
