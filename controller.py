@@ -6000,7 +6000,7 @@ def api_config():
 
 
 def _fault_override_token(fault):
-    """Identify this fault episode and process, not mutable delivery state.
+    """Identify this fault episode, process and plug configuration.
 
     The token is explicit override acknowledgement, not authentication.
     Normal auth and origin checks still apply before this endpoint runs.
@@ -6139,7 +6139,7 @@ def _api_config_locked(act_locked=False, fault_locked=False):
     draw_changed = (cand["plug"] != CFG["plug"] or
                     (was == "on") !=
                     (cand["control"].get("mode") == "on"))
-    global _cfg_generation, _oob_generation, _oob_since, _off_draw_since
+    global _cfg_generation, _oob_generation, _oob_since, _off_draw_since, _fault_episode
     old_generation = _cfg_generation
     for section in cand:
         CFG[section] = cand[section]
@@ -6154,6 +6154,8 @@ def _api_config_locked(act_locked=False, fault_locked=False):
     now_mode = CFG["control"].get("mode")
     if plug_changed:
         with _state_lock:
+            # Rotate even when returning to a previously configured address.
+            _fault_episode = os.urandom(16).hex()
             STATE.update(fan=None, watts=None, watts_at=None, changed_at=None)
             _end_run_locked()
             for key in ("watts_at", "changed_at", "min_run_at"):

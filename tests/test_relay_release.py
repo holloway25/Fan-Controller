@@ -24,6 +24,9 @@ def test_auto_polls_never_command_around_fault_scheduler():
         C.STATE['fault']['relay_retry'] = dict(attempts=count, phase=phase)
         C.STATE['fault_unsaved'] = unsaved
         plug.relay = True
+        C._refresh_relay(plug, C._cfg_generation)
+        assert C.STATE['fan'] is True
+        C.CFG['control']['min_run_minutes'] = 0
         class Protect:
             def readings(self, _):
                 return dict(co2=500, temperature=20, humidity=40), 'co2'

@@ -166,5 +166,32 @@ def test_stale_acknowledgement_cannot_clear_a_replacement_fault():
     assert second.post("/api/fault/clear", json={"fault_ack_token": current}).get_json()["cleared"]
 
 
+def test_old_plug_acknowledgement_cannot_rearm_auto_on_replacement():
+    from test_actuation import Plug
+
+    C, fault = _latched()
+    C.CFG["plug"]["host"] = "original.invalid"
+    C.CFG["control"].update(mode="auto", on_at=1000, off_at=800)
+    C.CFG["protect"]["sensor_id"] = "test"
+    first, second = C.app.test_client(), C.app.test_client()
+    token = first.get("/api/state").get_json()["fault_ack_token"]
+    plug = Plug(on=False)
+
+    class Protect:
+        def readings(self, _):
+            return {"co2": 1500, "temperature": 20, "humidity": 40}, "co2"
+
+    C._client_snapshot = lambda: (Protect(), plug, C._cfg_generation)
+    for host in ("replacement.invalid", "original.invalid"):
+        assert second.post("/api/config", json={"plug": {"host": host}}).status_code == 200
+        response = first.post("/api/fault/clear", json={"fault_ack_token": token})
+        assert response.status_code == 409
+        assert C.STATE["fault"]["at"] == fault["at"] and not C.STATE["fault"]["stopped"]
+        assert C.load_fault()["at"] == fault["at"]
+        C.tick()
+        assert C.STATE["co2"] == 1500
+        assert plug.calls == []
+
+
 if __name__ == "__main__":
     sys.exit(harness.run(dict(globals())))
