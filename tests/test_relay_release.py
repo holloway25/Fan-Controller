@@ -673,5 +673,21 @@ def test_duplicate_retry_fields_cannot_disable_fault_stop():
     assert plug.commands == [False]
 
 
+def test_replacement_save_warns_when_off_retry_budget_is_exhausted():
+    C, clock, mail, plug = raised()
+    fault = dict(C.STATE["fault"], code=C.FC_RELAY_RELEASE,
+                 relay_retry={"attempts": 6, "phase": "exhausted"})
+    C._store_fault(fault)
+    response = C.app.test_client().post("/api/config", json={
+        "plug": {"host": "replacement.invalid"}, "control": {"mode": "manual"}})
+    assert response.status_code == 200
+    assert "will not receive an automatic OFF command" in response.get_json()["notice"]
+    assert C.STATE["fault"]["relay_retry"] == {"attempts": 6, "phase": "exhausted"}
+    replacement = Plug(C, relay=True, watts=23)
+    C._manual_off(replacement)
+    C._enforce_stop(replacement)
+    assert replacement.relay and not replacement.commands
+
+
 if __name__ == '__main__':
     sys.exit(harness.run(dict(globals())))

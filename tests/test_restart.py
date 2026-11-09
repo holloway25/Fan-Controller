@@ -300,6 +300,42 @@ def test_handover_carries_the_latches_and_the_lease():
     return "latches, lease, draw and fail-safe clocks all carried"
 
 
+def test_handover_drops_control_state_if_device_or_control_settings_changed():
+    from test_actuation import Plug
+
+    class Protect:
+        def readings(self, _):
+            return {"co2": 900, "temperature": 20, "humidity": 40}, "co2"
+
+    for section, key, value in (("protect", "sensor_id", "replacement"),
+                                ("plug", "host", "replacement.invalid"),
+                                ("control", "on_at", 1100)):
+        C = harness.load()
+        C.CFG["control"].update(mode="auto", on_at=1000, off_at=800)
+        C.CFG["protect"]["sensor_id"] = "original"
+        C.save_cfg(C.CFG)
+        C.CFG = C.load_cfg()
+        C.STATE["latch"]["co2"] = True
+        C.STATE["reading_at"] = C.time.time()
+        C.STATE["changed_at"] = C.time.time()
+        C._oob_since = C.time.time()
+        handover = C._resume_payload()
+        D = harness.load()
+        D.CFG.update(C.CFG)
+        D.CFG[section] = dict(D.CFG[section], **{key: value})
+        D.save_cfg(D.CFG)
+        D.CFG = D.load_cfg()
+        D.os.environ[D.RESUME_ENV] = json.dumps(handover)
+        assert not D._apply_resume()
+        assert D.STATE["reading_at"] is None and D.STATE["changed_at"] is None
+        assert D._oob_since is None
+        plug = Plug(on=False)
+        D._client_snapshot = lambda: (Protect(), plug, D._cfg_generation)
+        D.tick()
+        assert D.STATE["co2"] == 900 and not D.STATE["latch"]["co2"]
+        assert plug.calls == []
+
+
 def test_a_cold_start_has_a_short_explicit_message():
     """Cold boot is compact; a confirmed startup hold gets its own entry."""
     C = harness.load()
@@ -463,7 +499,7 @@ def test_handover_rejects_values_that_are_not_numbers():
     """Garbage in a timestamp would break the arithmetic that reads it."""
     C = harness.load()
     C.os.environ[C.RESUME_ENV] = json.dumps({
-        "v": 1, "latch": {}, "changed_at": "soon",
+        "v": 1, "config": C._resume_config_fingerprint(), "latch": {}, "changed_at": "soon",
         "reading_at": True, "oob_since": [], "start_time": None})
     C._apply_resume()
 
@@ -495,8 +531,9 @@ def test_non_finite_times_are_rejected():
     C = harness.load()
     for bad in ("NaN", "Infinity", "-Infinity"):
         C.os.environ[C.RESUME_ENV] = (
-            '{"v": 1, "latch": {}, "changed_at": %s, "reading_at": %s,'
-            ' "oob_since": %s, "start_time": %s}' % (bad, bad, bad, bad))
+            '{"v": 1, "config": "%s", "latch": {}, "changed_at": %s, "reading_at": %s,'
+            ' "oob_since": %s, "start_time": %s}'
+            % (C._resume_config_fingerprint(), bad, bad, bad, bad))
         start_before = C.START_TIME
         C._apply_resume()
 
@@ -512,6 +549,7 @@ def test_latch_restore_requires_real_booleans():
     C = harness.load()
     C.os.environ[C.RESUME_ENV] = json.dumps({
         "v": 1,
+        "config": C._resume_config_fingerprint(),
         "latch": {"co2": "false", "temp": 1, "humidity": None},
         "changed_at": None, "reading_at": None,
         "oob_since": None, "start_time": None})
@@ -822,7 +860,7 @@ def test_a_promised_manual_stop_survives_a_requested_restart():
 def test_a_manual_stop_that_is_not_owed_is_not_invented():
     C = harness.load()
     C.os.environ[C.RESUME_ENV] = json.dumps({
-        "v": 1, "latch": {}, "changed_at": None, "reading_at": None,
+        "v": 1, "config": C._resume_config_fingerprint(), "latch": {}, "changed_at": None, "reading_at": None,
         "manual_off_pending": "yes", "oob_since": None,
         "start_time": None})
     C._apply_resume()
@@ -873,6 +911,7 @@ def test_the_restored_draw_timer_survives_the_first_draw_check():
     # path, and the bug was that the PATH left _oob_generation at None.
     os.environ[C.RESUME_ENV] = json.dumps({
         "v": 1,
+        "config": C._resume_config_fingerprint(),
         "latch": {"co2": True},
         "changed_at": now - 10000,
         "reading_at": now,
@@ -1001,7 +1040,7 @@ def test_resumed_manual_reconciles_durable_stop_promise():
     C = harness.load()
     C.CFG["control"]["mode"] = "manual"
     C.promise_manual_off()
-    C.os.environ[C.RESUME_ENV] = json.dumps({"v": 1, "manual_off_pending": False})
+    C.os.environ[C.RESUME_ENV] = json.dumps(dict(C._resume_payload(), manual_off_pending=False))
     # Execute the actual startup prefix, stopping before notification or
     # threads. This catches removing the reconciliation call from main,
     # not just errors inside a helper the application might never call.

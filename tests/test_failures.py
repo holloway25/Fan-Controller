@@ -578,5 +578,20 @@ def test_set_placeholder_is_only_special_for_password_fields():
     assert C.CFG["plug"]["password"] == "example-password"
 
 
+def test_explicit_null_config_section_rejects_the_whole_save():
+    C = harness.load()
+    C.CFG["control"]["mode"] = "manual"
+    C.save_cfg(C.CFG)
+    client = C.app.test_client()
+    before = C._cfg_generation
+    for section in ("protect", "plug", "email"):
+        response = client.post("/api/config", json={section: None, "control": {"mode": "auto"}})
+        assert response.status_code == 400
+        assert C._cfg_generation == before and C.CFG["control"]["mode"] == "manual"
+        assert C.load_cfg()["control"]["mode"] == "manual"
+    assert client.post("/api/config", json={"control": None}).status_code == 400
+    assert client.post("/api/config", json={"control": {"mode": "manual"}}).status_code == 200
+
+
 if __name__ == "__main__":
     sys.exit(harness.run(dict(globals())))

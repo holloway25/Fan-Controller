@@ -50,7 +50,8 @@ def test_bad_disabled_co2_does_not_abort_temperature_control():
 def test_oversized_handover_numbers_do_not_abort_resume():
     C = harness.load()
     original_start = C.START_TIME
-    payload = {'v': 1, 'changed_at': 10**400, 'reading_at': -(10**400),
+    payload = {'v': 1, 'config': C._resume_config_fingerprint(),
+               'changed_at': 10**400, 'reading_at': -(10**400),
                'oob_since': 10**400, 'start_time': 10**400,
                'latch': {'temp': True}, 'manual_off_pending': False}
     old = os.environ.get(C.RESUME_ENV)

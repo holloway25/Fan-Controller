@@ -246,5 +246,31 @@ def test_failed_plug_save_still_invalidates_withdrawn_stop_confirmation():
     assert C.load_fault()["at"] == fault["at"] and not C.load_fault()["stopped"]
 
 
+def test_stricter_off_limit_requires_new_fault_acknowledgement():
+    from test_actuation import Plug
+
+    C, fault = _latched()
+    C.CFG["plug"].update(watts_enabled=True, watts_off_max=5, watts_min=10)
+    C.CFG["control"].update(mode="auto", on_at=1000, off_at=800)
+    C.CFG["protect"]["sensor_id"] = "test"
+    plug = Plug(on=False)
+    plug.power_w = lambda: 4
+    assert C._enforce_stop(plug, verify_only=True)
+    client = C.app.test_client()
+    token = client.get("/api/state").get_json()["fault_ack_token"]
+    assert client.post("/api/config", json={"plug": {"watts_off_max": 1}}).status_code == 200
+    assert not C.STATE["fault"]["stopped"] and not C.load_fault()["stopped"]
+    assert client.post("/api/fault/clear", json={"fault_ack_token": token}).status_code == 409
+
+    class Protect:
+        def readings(self, _):
+            return {"co2": 1500, "temperature": 20, "humidity": 40}, "co2"
+
+    C._client_snapshot = lambda: (Protect(), plug, C._cfg_generation)
+    C.tick()
+    assert C.STATE["co2"] == 1500 and C.STATE["fault"]["at"] == fault["at"]
+    assert plug.calls == []
+
+
 if __name__ == "__main__":
     sys.exit(harness.run(dict(globals())))

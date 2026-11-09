@@ -6055,9 +6055,7 @@ def _api_config_locked(act_locked=False, fault_locked=False):
         return bad
     cand = copy.deepcopy(CFG)
     for section in ("protect", "plug", "control", "email"):
-        raw_section = body.get(section)
-        if raw_section is None:
-            raw_section = {}
+        raw_section = body.get(section, {})
         if not isinstance(raw_section, dict):
             return jsonify(
                 error="%s must be an object." % section), 400
@@ -6077,6 +6075,9 @@ def _api_config_locked(act_locked=False, fault_locked=False):
         return jsonify(error=str(e)), 400
     summary = _describe_changes(cand)
     plug_changed = cand["plug"]["host"] != CFG["plug"]["host"]
+    old_plug, new_plug = CFG["plug"], cand["plug"]
+    stricter_stop = ((new_plug["watts_enabled"] and not old_plug["watts_enabled"])
+                     or new_plug["watts_off_max"] < old_plug["watts_off_max"])
     if plug_changed and cand["control"]["mode"] == "on":
         with _state_lock:
             if STATE["fault"] is not None:
@@ -6132,14 +6133,19 @@ def _api_config_locked(act_locked=False, fault_locked=False):
     # until the next restart silently reverted it. cand is a complete
     # config, so writing it is equivalent to writing the merged CFG.
     confirmation_withdrawn = False
-    if plug_changed:
-        # Retire the old confirmation on disk before installing the new
-        # host. A crash between the two writes leaves a latched,
-        # unconfirmed fault and never lends confirmation to the new plug.
+    if plug_changed or stricter_stop:
+        # Retire the old confirmation on disk before installing new stop
+        # requirements. A crash between the writes leaves the fault latched
+        # and unconfirmed.
         with (nullcontext() if fault_locked else _fault_lock):
             with _state_lock:
                 fault = copy.deepcopy(STATE["fault"])
                 owed = STATE["fault_unsaved"]
+            if plug_changed and fault and fault.get("relay_retry", {}).get("phase") in (
+                    "exhausted", "recovered"):
+                warning = ("The fault remains latched and automatic OFF retries have ended. "
+                           "The replacement plug will not receive an automatic OFF command.")
+                notice = " ".join(filter(None, (notice, warning)))
             if fault and (fault.get("stopped") or owed):
                 confirmation_withdrawn = bool(fault.get("stopped"))
                 fault.update(stopped=False)
@@ -6152,11 +6158,11 @@ def _api_config_locked(act_locked=False, fault_locked=False):
                         STATE["fault"] = fault
                         STATE["fault_unsaved"] = True
                         STATE["relay_revision"] += 1
-                    return jsonify(error="Plug address was not changed. The fault remains "
+                    return jsonify(error="Settings were not changed. The fault remains "
                                          "latched and stop confirmation needs to be checked again."), 503
                 except OSError:
-                    return jsonify(error="Could not durably reset the previous plug's "
-                                         "stop confirmation. Plug address was not changed."), 503
+                    return jsonify(error="Could not durably reset the fault's stop "
+                                         "confirmation. Settings were not changed."), 503
                 with _state_lock:
                     if confirmation_withdrawn:
                         _rotate_fault_token_locked()
@@ -6385,6 +6391,7 @@ def _resume_payload():
     with _state_lock:
         return {
             "v": 1,
+            "config": _resume_config_fingerprint(),
             "off_draw_since": _off_draw_since,
             "relay_retry_clock": _relay_retry_clock,
             "plug_ports": _plug_port_handover(),
@@ -6417,6 +6424,9 @@ def _apply_resume(allow_old_monotonic=False):
     Anything malformed is ignored rather than raised. Starting from a
     clean slate is the behaviour we had before this existed; not
     starting at all is worse.
+
+    True means state was restored, None means an orderly exec with
+    incompatible settings, and False means no recognised handover.
     """
     global _oob_since, _oob_generation, START_TIME, _oob_monotonic, _draw_grace, _off_draw_since
     global _relay_retry_clock
@@ -6434,6 +6444,10 @@ def _apply_resume(allow_old_monotonic=False):
              "reads, starting clean" % FC_RESTART_PROBLEM)
         return False
     _restore_plug_ports(d.get('plug_ports'))
+    if d.get("config") != _resume_config_fingerprint():
+        _log("%s Restart - settings differ from handover, starting clean"
+             % FC_RESTART_PROBLEM)
+        return None  # Orderly exec, but its control state cannot be reused.
     latch = d.get("latch")
     with _state_lock:
         if isinstance(latch, dict):
@@ -6532,6 +6546,10 @@ def _state_fingerprint(value):
                                     allow_nan=False).encode()).hexdigest()
 
 
+def _resume_config_fingerprint():
+    return _state_fingerprint({key: CFG[key] for key in ("protect", "plug", "control")})
+
+
 def _checkpoint_fault_fingerprint(fault):
     # Email callbacks may finish after the snapshot. They cannot change its
     # safety identity or make an otherwise valid lease checkpoint stale.
@@ -6623,6 +6641,9 @@ def _load_stop_state():
         if not _finite(downtime) or not 0 <= downtime <= 86400:
             raise ValueError('ambiguous checkpoint downtime')
         payload = copy.deepcopy(record['payload'])
+        # Older checkpoints already validated the same settings in the
+        # outer record, so they can supply the fingerprint here.
+        payload.setdefault("config", _resume_config_fingerprint())
         if (payload.get('v') != 1
                 or set(payload) != set(_resume_payload())
                 or not isinstance(payload.get('latch'), dict)
@@ -7014,7 +7035,7 @@ def _start_controller(server, channels):
     handover = _apply_resume()
     resumed = handover or _load_stop_state()
     if not PLUG_ACCESS_DISABLED:
-        _arm_safety_guard(handover)
+        _arm_safety_guard(handover is not False)
     # Immediately after, and before anything else can log: this line is
     # what explains every line that appears below it.
     _announce_start(resumed)

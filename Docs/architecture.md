@@ -146,7 +146,10 @@ asking systemd to start a second process.
 The requested-restart handover preserves latch state, the record of which
 rules have latched during the current run, the minimum-run lease, draw-fault
 timing, stale-reading timing and the original `START_TIME` used for grace
-periods. The API's `process_started_at` is a separate, fresh process-generation
+periods when the Protect, plug and control settings match. A handover with
+different settings or no settings fingerprint starts with fresh control state.
+Persisted faults and pending Manual stops are loaded separately.
+The API's `process_started_at` is a separate, fresh process-generation
 marker used to verify replacement. Draw-fault elapsed time and the active
 draw spin-up grace use monotonic clocks, carried through requested restart;
 successful power/sensor acquisition ages, startup age and minimum-run leases
